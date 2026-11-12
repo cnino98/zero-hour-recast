@@ -69,7 +69,14 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $devcmd = & $vswhere -latest -products '*' -find 'Common7\Tools\VsDevCmd.bat' | Select-Object -First 1
           if (-not $devcmd) { throw 'Visual Studio developer tools are unavailable' }
-          $variables = & cmd.exe /s /c "`"`"$devcmd`" -arch=${{ matrix.msvc-arch }} -host_arch=${{ matrix.msvc-arch }} >nul && set`""
+          $setup = Join-Path $env:RUNNER_TEMP 'zero-hour-msvc.cmd'
+          @(
+            '@echo off'
+            "call `"$devcmd`" -arch=${{ matrix.msvc-arch }} -host_arch=${{ matrix.msvc-arch }}"
+            'if errorlevel 1 exit /b %errorlevel%'
+            'set'
+          ) | Set-Content -Path $setup -Encoding ascii
+          $variables = & cmd.exe /d /c $setup
           if ($LASTEXITCODE -ne 0) { throw 'Visual Studio environment initialization failed' }
           $toolVariables = @('PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VSINSTALLDIR', 'VCToolsInstallDir', 'VCToolsVersion', 'VCToolsRedistDir', 'WindowsSdkDir', 'WindowsSDKVersion', 'WindowsLibPath', 'UCRTVersion', 'UniversalCRTSdkDir', 'VisualStudioVersion', 'VSCMD_ARG_TGT_ARCH', 'VSCMD_ARG_HOST_ARCH')
           foreach ($line in $variables) {

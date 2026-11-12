@@ -1,0 +1,23 @@
+[package]
+name = "generals-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+generals-assets = { path = "../generals-assets" }
+generals-sim = { path = "../generals-sim" }
+num-traits = "0.2.19"
+sysinfo = { version = "=0.40.1", default-features = false, features = ["system"] }
+hostname = "=0.4.1"
+fontdb = "=0.23.0"
+rodio = { version = "=0.22.2", default-features = false, features = ["symphonia-adpcm"] }
+bevy = { version = "=0.19.1", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_asset", "bevy_audio", "bevy_color", "bevy_core_pipeline", "bevy_pbr", "bevy_render", "bevy_window", "bevy_winit", "bevy_text", "bevy_ui", "bevy_ui_render", "bevy_log", "debug", "default_font", "png", "dds", "tga", "symphonia-wav", "mp3", "x11"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "=0.55.0"
+
+[lints]
+workspace = true

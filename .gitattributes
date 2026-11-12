@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# Keep the upstream license and native-program output byte-for-byte.
+LICENSE.md whitespace=-trailing-space
+tests/reference/*-reference.txt whitespace=-trailing-space

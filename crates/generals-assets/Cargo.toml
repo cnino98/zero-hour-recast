@@ -1,0 +1,18 @@
+[package]
+name = "generals-assets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+num-traits = "0.2.19"
+sha2 = "0.10.9"
+
+[[test]]
+name = "content_inventory"
+path = "../../tests/integration/content_inventory.rs"

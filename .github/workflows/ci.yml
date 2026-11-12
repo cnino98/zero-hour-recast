@@ -1,0 +1,115 @@
+name: Source checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            python-arch: x64
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            python-arch: arm64
+          - name: Windows x64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            python-arch: x64
+            msvc-arch: amd64
+          - name: Windows ARM64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            python-arch: arm64
+            msvc-arch: arm64
+          - name: macOS x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            python-arch: x64
+          - name: macOS ARM64
+            os: macos-15
+            target: aarch64-apple-darwin
+            python-arch: arm64
+    env:
+      RUSTUP_TOOLCHAIN: 1.96.0-${{ matrix.target }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+          architecture: ${{ matrix.python-arch }}
+      - name: Keep build and test files outside the checkout
+        run: |
+          python -c "import os; from pathlib import Path; root = Path(os.environ['RUNNER_TEMP']); paths = {'RUSTUP_HOME': root / 'zero-hour-cache/rustup', 'CARGO_HOME': root / 'zero-hour-cache/cargo', 'CARGO_TARGET_DIR': root / 'zero-hour-cache/target', 'GENERALS_GAME_ROOT': root / 'zero-hour-private', 'GENERALS_TEST_OUTPUT': root / 'zero-hour-test-results'}; Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8').write(''.join(key + '=' + str(value) + '\n' for key, value in paths.items()))"
+      - name: Install Linux native libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential clang pkg-config libasound2-dev libudev-dev libx11-dev libxi-dev libxkbcommon-dev libxrandr-dev libxinerama-dev libxcursor-dev libgl1-mesa-dev libvulkan-dev
+      - name: Select native Visual Studio environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $devcmd = & $vswhere -latest -products '*' -find 'Common7\Tools\VsDevCmd.bat' | Select-Object -First 1
+          if (-not $devcmd) { throw 'Visual Studio developer tools are unavailable' }
+          $variables = & cmd.exe /s /c "`"`"$devcmd`" -arch=${{ matrix.msvc-arch }} -host_arch=${{ matrix.msvc-arch }} >nul && set`""
+          if ($LASTEXITCODE -ne 0) { throw 'Visual Studio environment initialization failed' }
+          $toolVariables = @('PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VSINSTALLDIR', 'VCToolsInstallDir', 'VCToolsVersion', 'VCToolsRedistDir', 'WindowsSdkDir', 'WindowsSDKVersion', 'WindowsLibPath', 'UCRTVersion', 'UniversalCRTSdkDir', 'VisualStudioVersion', 'VSCMD_ARG_TGT_ARCH', 'VSCMD_ARG_HOST_ARCH')
+          foreach ($line in $variables) {
+            if (($line -match '^([^=]+)=(.*)$') -and ($toolVariables -contains $Matches[1])) { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
+          }
+      - name: Install pinned native Rust toolchain
+        run: rustup toolchain install 1.96.0-${{ matrix.target }} --profile minimal --component rustfmt --component clippy
+      - name: Check and link without an installed game
+        run: python -B tests/run.py
+      - name: Fetch exact public reference revision outside the checkout
+        if: always() && matrix.os == 'ubuntu-24.04'
+        env:
+          GENERALS_REFERENCE_SOURCE: ${{ runner.temp }}/reference/GeneralsGameCode
+        run: |
+          mkdir -p "$GENERALS_REFERENCE_SOURCE"
+          git -C "$GENERALS_REFERENCE_SOURCE" init
+          git -C "$GENERALS_REFERENCE_SOURCE" remote add origin https://github.com/TheSuperHackers/GeneralsGameCode.git
+          git -C "$GENERALS_REFERENCE_SOURCE" config remote.origin.promisor true
+          git -C "$GENERALS_REFERENCE_SOURCE" config remote.origin.partialclonefilter blob:none
+          git -C "$GENERALS_REFERENCE_SOURCE" sparse-checkout set --no-cone '*.h' '*.hpp' '*.c' '*.cc' '*.cpp' '*.inl' '*.inc' '/LICENSE.md'
+          git -C "$GENERALS_REFERENCE_SOURCE" fetch --no-tags --filter=blob:none --depth=1 origin 2bfaea60b3b9d5a798a0d0a1aff7ea61b6cee3ed
+          git -C "$GENERALS_REFERENCE_SOURCE" checkout --detach FETCH_HEAD
+      - name: Compare pinned C++ algorithms with Rust
+        if: always() && matrix.os == 'ubuntu-24.04'
+        shell: bash
+        env:
+          GENERALS_REFERENCE_SOURCE: ${{ runner.temp }}/reference/GeneralsGameCode
+          TMPDIR: ${{ runner.temp }}/zero-hour-private/cache/tmp
+          CXX: clang++
+        run: |
+          set -o pipefail
+          mkdir -p "$GENERALS_TEST_OUTPUT"
+          python -B tests/reference/run.py 2>&1 | tee "$GENERALS_TEST_OUTPUT/reference.log"
+      - name: Retain source check logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-checks-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/zero-hour-test-results/**/*.log
+            ${{ runner.temp }}/zero-hour-test-results/**/manifest.json
+          retention-days: 7
+          if-no-files-found: warn

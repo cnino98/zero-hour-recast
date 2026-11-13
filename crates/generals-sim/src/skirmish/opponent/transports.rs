@@ -160,6 +160,13 @@ mod tests {
         let host = game.spawn(kind, 1, [400.0, 300.0], true);
         let infantry = game.type_for(1, Kind::Infantry).unwrap();
         let rider = game.spawn(infantry, 1, [400.0, 300.0], true);
+        let prototype = game
+            .team_membership
+            .add_prototype(1, "USA attack team".into());
+        let native = game.team_membership.create_team(prototype);
+        game.team_membership.set_team(rider, Some(native));
+        game.team_membership.set_team(host, Some(native));
+        state.teams[0].native_instance = Some(native);
         state.teams[0].members = vec![host, rider];
         rules.map.waypoints.push(AiWaypoint {
             id: 1,
@@ -192,6 +199,7 @@ mod tests {
         }
         assert_eq!(game.entities[rider].contained_by(), Some(host));
         assert!(game.entities[rider].ai_idle());
+        assert_eq!(game.team_membership.team_of(rider), Some(native));
         teams::sequence(&mut game, &rules, &mut state, 0);
         assert_eq!(state.teams[0].sequence, Some((0, 2)));
         assert!(matches!(game.entities[host].ai.order, Order::Move(_)));

@@ -282,8 +282,12 @@ fn simultaneous_sales_eject_at_the_last_endpoint_instead_of_caving_in() {
     let rider = game.spawn(5, 0, [0.0; 2], true);
     board(&mut game, rider, first);
     game.ai_busy_from_ai(rider);
+    assert!(game.entities[rider].ai_busy());
     game.sell(0, first).unwrap();
     assert_eq!(game.entities[rider].contained_by(), Some(second));
+    // BuildAssistant idles the sold endpoint after onSelling; privateIdle
+    // reaches riders through the virtual shared tunnel passenger list.
+    assert!(game.entities[rider].ai_idle());
     game.sell(0, second).unwrap();
     assert!(game.entities[rider].alive());
     assert!(game.entities[rider].contained_by().is_none());
@@ -291,7 +295,7 @@ fn simultaneous_sales_eject_at_the_last_endpoint_instead_of_caving_in() {
         game.entities[rider].position.map(f32::to_bits),
         game.entities[second].position.map(f32::to_bits)
     );
-    assert!(game.entities[rider].ai_busy());
+    assert!(game.entities[rider].ai_idle());
     assert!(game.tunnels[0].endpoints.is_empty());
     game.destroy_maintenance_object(first);
     game.destroy_maintenance_object(second);
@@ -454,6 +458,7 @@ fn native_tunnel_removal_retains_ai_order_and_uses_endpoint_xyz_before_world_reg
     let rider = game.spawn(5, 0, [355.0, 255.0], true);
     game.add_to_contain(rider, first);
     game.ai_busy_from_ai(rider);
+    assert!(game.entities[rider].ai_busy());
     game.set_object_position(second, [555.0, 255.0, 73.0]);
     let position = game.object_position(second);
     game.tick = 7;

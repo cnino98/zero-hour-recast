@@ -121,7 +121,11 @@ fn attack_approach_does_not_stop_just_outside_the_weapon_range() {
             break;
         }
     }
-    assert!(game.entities[target].health < health);
+    assert!(
+        game.entities[target].health < health,
+        "{}",
+        crate::skirmish::diagnostics::movement_details(&game, actor)
+    );
     assert!(
         distance_squared(
             game.entities[actor].position,
@@ -167,7 +171,11 @@ fn minimum_weapon_range_moves_away_before_firing() {
             break;
         }
     }
-    assert!(game.entities[target].health < health);
+    assert!(
+        game.entities[target].health < health,
+        "{}",
+        crate::skirmish::diagnostics::movement_details(&game, actor)
+    );
     assert!(game.within_attack_range(actor, target));
     assert!(distance_squared(initial, game.entities[actor].position) > 25.0);
 }

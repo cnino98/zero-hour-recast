@@ -350,27 +350,25 @@ impl Skirmish {
                 radius,
             )
         };
-        let squared = target.map_or_else(
-            || point_distance(position, self.object_radius(id)),
-            |target| {
-                self.bridge_attack_points(target).map_or_else(
-                    || {
-                        point_distance(
-                            self.object_position(target),
-                            self.object_radius(id) + self.object_radius(target),
-                        )
-                    },
-                    |points| {
-                        let first = point_distance(points[0], self.object_radius(id));
-                        if first > maximum_squared {
-                            point_distance(points[1], self.object_radius(id))
-                        } else {
-                            first
-                        }
-                    },
-                )
-            },
-        );
+        let radius = self.object_radius(id);
+        let squared = match target {
+            Some(target) if self.attack_kind(target, "BRIDGE") => {
+                let points = self
+                    .bridge_attack_points(target)
+                    .expect("existing bridge target");
+                let first = point_distance(points[0], radius);
+                if first > maximum_squared {
+                    point_distance(points[1], radius)
+                } else {
+                    first
+                }
+            }
+            Some(target) => point_distance(
+                self.object_position(target),
+                radius + self.object_radius(target),
+            ),
+            None => point_distance(position, radius),
+        };
         let minimum = weapon.min_range + range_inset;
         squared >= minimum * minimum && squared <= maximum_squared
     }

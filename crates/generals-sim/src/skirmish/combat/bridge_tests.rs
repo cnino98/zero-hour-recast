@@ -42,10 +42,18 @@ fn bridge_weapon_range_uses_ordered_endpoints_without_bridge_body_radius() {
     // First endpoint (325,205) is too close; the second would be valid,
     // but the native function does not test it in this branch.
     assert!(!game.within_attack_range(tank, bridge));
+    let bridge_position = game.object_position(bridge);
+    assert!(!game.weapon_goal_in_range(tank, [335.0, 205.0, 0.0], Some(bridge), bridge_position));
     game.entities[tank].position = [435.0, 205.0];
     assert!(game.within_attack_range(tank, bridge));
     game.entities[tank].position = [455.0, 205.0];
     assert!(!game.within_attack_range(tank, bridge));
+    let goal = [455.0, 205.0, 0.0];
+    assert!(!game.weapon_goal_in_range(tank, goal, Some(bridge), bridge_position));
+    let barracks = game.type_for(1, Kind::Barracks).unwrap();
+    game.catalog[barracks].geometry.major = 55.0;
+    let target = game.spawn(barracks, 1, [355.0, 205.0], true);
+    assert!(game.weapon_goal_in_range(tank, goal, Some(target), game.object_position(target)));
     // Ground/deck altitude is ignored by ATTACK_RANGE_IS_2D.
     game.entities[tank].position = [350.0, 205.0];
     assert!(game.within_attack_range(tank, bridge));

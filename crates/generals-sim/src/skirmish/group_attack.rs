@@ -243,7 +243,7 @@ impl Skirmish {
         self.finish_dozer_player_command(id);
     }
 
-    fn release_group_temporary_lock(&mut self, id: usize) {
+    pub(super) fn release_group_temporary_lock(&mut self, id: usize) {
         if matches!(self.entities[id].weapon_set.lock, Lock::Temporary) {
             self.entities[id].weapon_set.lock = Lock::None;
         }

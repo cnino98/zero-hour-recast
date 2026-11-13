@@ -2,6 +2,14 @@
 
 Zero Hour Recast is a work-in-progress Rust and Bevy translation of *Command & Conquer: Generals – Zero Hour* for local skirmish. Play as USA, China or GLA against computer opponents using the maps, models, interface and sounds from your own installation. Faction rosters and map support are still incomplete. The [roadmap](ROADMAP.md) tracks known issues and planned work.
 
+## Development releases
+
+Version 0.2.0 is the ground, aircraft and delivery checkpoint. Development releases
+remain incomplete and are marked as pre-releases. Each release identifies a source
+revision; original game assets are supplied separately using the layout below.
+Version 1.0 is reserved for completion of the skirmish scope and final acceptance
+in the [roadmap](ROADMAP.md).
+
 ## Build and play
 
 Install Rust through rustup. The checkout selects the toolchain and components in [rust-toolchain.toml](rust-toolchain.toml). Use the Xcode Command Line Tools on macOS, the [native libraries used by CI](.github/workflows/ci.yml) on Linux, or the Visual Studio C++ build tools and Windows SDK with the MSVC Rust toolchain on Windows. To play, you also need a GPU supported by Bevy, an audio output device, and the original UI fonts installed locally, including Arial (regular and bold) and Times New Roman (regular).

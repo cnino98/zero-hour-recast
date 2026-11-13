@@ -8,17 +8,19 @@ use crate::{
     playtest::{CameraRig, Match},
     playtest_ui::dispatch_command,
     playtest_view::Capture,
-    skirmish_verification::require,
+    skirmish_verification::{advance_until, friendly_entity, produce_type, require},
     source_audio::FiringAudioInspection,
     strategy_verification::template,
     terrain::Terrain,
 };
 use bevy::{ecs::system::SystemParam, prelude::*};
+use generals_sim::skirmish::{Kind, Skirmish, visibility::Status};
 use std::error::Error;
 
 #[derive(Resource)]
 struct Check {
     setup: Setup,
+    spotter: usize,
     phase: u8,
     bomb: Option<usize>,
     hull: Option<usize>,
@@ -26,14 +28,17 @@ struct Check {
     captured_camera: Option<(Vec2, f32)>,
     pose_wait: Option<(u8, f64)>,
     crash_started: Option<u64>,
+    bomb_diagnostic: Option<String>,
 }
 
 pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> {
     let setup = helix_verification::prepare(&mut battle.simulation)?;
     helix_verification::arm_bomb(&mut battle.simulation, setup.helicopters[1])?;
+    let spotter = stage_crash_spotter(&mut battle.simulation, &setup)?;
     battle.select_objects(&[setup.helicopters[0]], true);
     app.insert_resource(Check {
         setup,
+        spotter,
         phase: 0,
         bomb: None,
         hull: None,
@@ -41,9 +46,60 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         captured_camera: None,
         pose_wait: None,
         crash_started: None,
+        bomb_diagnostic: None,
     });
     app.world_mut().resource_mut::<Time<Virtual>>().pause();
     Ok(())
+}
+
+fn stage_crash_spotter(game: &mut Skirmish, setup: &Setup) -> Result<usize, Box<dyn Error>> {
+    let center = friendly_entity(game, Kind::CommandCenter, 0)?;
+    let dozer = template(game, "ChinaVehicleDozer")?;
+    let cost = game.catalog[dozer].cost;
+    advance_until(
+        game,
+        18_000,
+        "ordinary supplies funding crash spotter",
+        |game| game.players[0].cash >= cost,
+    )?;
+    let spotter = produce_type(game, center, dozer, 0)?;
+    let origin = Vec2::from_array(game.entities[setup.helicopters[0]].position);
+    let battery = Vec2::from_array(game.entities[setup.defenders[0]].position);
+    let bearing = (origin.y - battery.y).atan2(origin.x - battery.x);
+    let footprint = game.entities[center].type_index;
+    // Keep a nonattacking observer outside the Patriot ground weapon's
+    // authored 225-unit range. Dozer sight clears the ground after the Helix dies.
+    let goal = [0.0, -0.3, 0.3, -0.6, 0.6]
+        .into_iter()
+        .filter_map(|turn| {
+            let direction = Vec2::from_angle(bearing + turn);
+            game.placement_near(footprint, (battery + direction * 330.0).to_array())
+        })
+        .find(|&goal| {
+            game.build_site_reachable(spotter, goal)
+                && setup.defenders.iter().all(|&id| {
+                    Vec2::from_array(game.entities[id].position).distance(Vec2::from_array(goal))
+                        > 275.0
+                })
+                && Vec2::from_array(goal).distance(battery) < 380.0
+        })
+        .ok_or("no safe ground for the paid Helix crash spotter")?;
+    game.move_to(spotter, goal)?;
+    advance_until(
+        game,
+        7_200,
+        "paid spotter approaching the Helix trial",
+        |game| {
+            Vec2::from_array(game.entities[spotter].position).distance(Vec2::from_array(goal))
+                < 15.0
+        },
+    )?;
+    game.stop(spotter)?;
+    println!(
+        "Native Helix crash spotter at {:?}",
+        game.entities[spotter].position
+    );
+    Ok(spotter)
 }
 
 pub fn register(app: &mut App) {
@@ -138,9 +194,9 @@ fn begin(mut check: ResMut<Check>, mut control: Control) {
                     // Frame the actual fall from the side. A height difference alone
                     // can still leave the bomb behind the aircraft's fuselage.
                     control.camera.settings.yaw = game.entities[id].facing;
-                    control.camera.distance = (control.camera.settings.min_height
-                        + control.camera.settings.max_height)
-                        * 0.5;
+                    // Keep the whole rotor above the near plane while framing
+                    // the aircraft and the bomb below it at original camera limits.
+                    control.camera.distance = control.camera.settings.max_height;
                     check.bomb = Some(bomb);
                     check.phase = 3;
                 }
@@ -310,14 +366,30 @@ fn inspect(mut check: ResMut<Check>, mut view: View) {
             let helicopter = check.setup.helicopters[1];
             require(
                 view.battle.simulation.entities[bomb].alive(),
-                "Helix bomb hit the ground before its falling body cleared the fuselage in view",
+                &format!(
+                    "Helix bomb hit the ground before its falling body cleared the fuselage in view; last live frame: {}",
+                    check.bomb_diagnostic.as_deref().unwrap_or("not observed")
+                ),
             )?;
-            if view.framing.visible(&view.battle, helicopter)?
-                && view
-                    .framing
-                    .separated_actor(&view.battle, helicopter, bomb)?
-                && view.framing.physical_pose(&view.battle, bomb)?
-            {
+            let helicopter_visible = view.framing.visible(&view.battle, helicopter)?;
+            let separated = view
+                .framing
+                .separated_actor(&view.battle, helicopter, bomb)?;
+            let bomb_pose = view.framing.physical_pose(&view.battle, bomb)?;
+            let game = &view.battle.simulation;
+            check.bomb_diagnostic = Some(format!(
+                "tick={} helicopter_position={:?} bomb_position={:?} ground={} camera_yaw={} distance={} helicopter_visible={helicopter_visible} separated={separated} bomb_pose={bomb_pose}; helicopter: {}; bomb: {}",
+                game.tick,
+                game.object_position(helicopter),
+                game.object_position(bomb),
+                game.ground_height(game.entities[bomb].position),
+                view.camera.settings.yaw,
+                view.camera.distance,
+                view.framing
+                    .visibility_diagnostic(&view.battle, helicopter)?,
+                view.framing.visibility_diagnostic(&view.battle, bomb)?
+            ));
+            if helicopter_visible && separated && bomb_pose {
                 view.time.pause();
                 check.captured_camera = Some((view.camera.focus, view.camera.distance));
                 view.capture.intermediate("helix-bomb.png");
@@ -394,6 +466,16 @@ fn diagnose_stalled_pose(check: &mut Check, view: &mut View) -> Result<(), Box<d
                 view.framing.visible(&view.battle, child)?,
             ));
         }
+    }
+    if let Some(hull) = check.hull {
+        let spotter = &game.entities[check.spotter];
+        error!(
+            "Helix hull diagnostic: shrouded={} spotter_alive={} spotter_position={:?}; {}",
+            matches!(game.visibility_status(0, hull), Status::Shrouded),
+            spotter.alive(),
+            spotter.position,
+            view.framing.visibility_diagnostic(&view.battle, hull)?,
+        );
     }
     error!(
         "Helix pose stalled phase={} audio={:?} camera_focus={:?} distance={} body_XYZ_framed={bodies:?}; saving helix-capture-failure.png before exit",
@@ -473,10 +555,12 @@ fn inspect_crash(check: &mut Check, view: &mut View) -> Result<(), Box<dyn Error
         );
     } else if check.phase == 11 {
         let hull = check.hull.ok_or("missing physical Helix hull")?;
-        if view.framing.visible(&view.battle, hull)?
+        let game = &view.battle.simulation;
+        if game.entities[check.spotter].alive()
+            && !matches!(game.visibility_status(0, hull), Status::Shrouded)
+            && view.framing.visible(&view.battle, hull)?
             && view.framing.physical_pose(&view.battle, hull)?
         {
-            let game = &view.battle.simulation;
             require(
                 game.entities[id].masked()
                     && check

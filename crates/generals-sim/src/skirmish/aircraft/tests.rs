@@ -710,6 +710,23 @@ fn parked_aircraft() -> (crate::skirmish::Skirmish, usize, usize) {
 }
 
 #[test]
+fn selling_airfield_immediately_kills_parked_jet_and_spares_airborne_jet() {
+    let (mut game, parked, producer) = parked_aircraft();
+    let kind = game.entities[parked].type_index;
+    let airborne = game.new_object(kind, 0, true);
+    game.entities[airborne].producer = Some(producer);
+    game.reserve_parking_space(producer, airborne).unwrap();
+    game.choose_aircraft_locomotor(airborne, true);
+    game.set_object_position(airborne, [500.0, 350.0, 100.0]);
+
+    game.sell(0, producer).unwrap();
+
+    assert!(game.entities[producer].alive() && game.entities[producer].selling());
+    assert!(game.entities[parked].is_effectively_dead());
+    assert!(game.entities[airborne].alive());
+}
+
+#[test]
 fn parked_move_runs_taxi_pause_takeoff_and_replays_full_script_goal() {
     let (mut game, id, producer) = parked_aircraft();
     let goal = [950.0, 550.0, 87.0];
@@ -828,4 +845,212 @@ fn queued_jet_deletion_releases_parking_before_destroying_lockon_drawable() {
     game.process_update_destruction();
     assert!(!game.entities[jet].exists());
     assert!(game.entities[jet].lockon_drawable().is_none());
+}
+
+#[test]
+fn airborne_jet_replaces_sold_or_destroyed_producer_with_available_owned_airfield() {
+    for sold in [false, true] {
+        let (mut game, jet, producer) = parked_aircraft();
+        game.initialize_aircraft_producer(jet);
+        game.choose_aircraft_locomotor(jet, true);
+        game.set_object_position(jet, [500.0, 350.0, 100.0]);
+        let kind = game.entities[producer].type_index;
+        let replacement = game.spawn(kind, 0, [250.0, 350.0], true);
+        game.build_parking_info(replacement);
+        assert!(!game.entities[replacement].is_off_map());
+        let enemy = game.spawn(kind, 1, [480.0, 350.0], true);
+        game.build_parking_info(enemy);
+        // New objects enter the partition's search cells during its update.
+        game.update_ground_contacts();
+        if sold {
+            game.sell(0, producer).unwrap();
+        } else {
+            game.kill_object(producer, DeathType::Normal);
+        }
+        assert!(game.entities[jet].alive());
+        assert!(game.aircraft_producer(jet).is_none());
+        game.entities[jet].weapon_set.weapons[0].clip_remaining = 0;
+        game.enter_aircraft_phase(jet, Phase::Return);
+        assert_eq!(
+            game.entities[jet].producer,
+            Some(replacement),
+            "sold={sold}"
+        );
+        assert!(
+            game.entities[replacement]
+                .parking
+                .as_ref()
+                .unwrap()
+                .space_index(jet)
+                .is_some()
+        );
+        assert!(
+            game.entities[enemy]
+                .parking
+                .as_ref()
+                .unwrap()
+                .space_index(jet)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn exhausted_jet_circles_until_queue_cancellation_releases_an_alternate_space() {
+    let (mut game, jet, producer) = parked_aircraft();
+    game.initialize_aircraft_producer(jet);
+    game.choose_aircraft_locomotor(jet, true);
+    game.set_object_position(jet, [500.0, 350.0, 100.0]);
+    let kind = game.entities[producer].type_index;
+    let replacement = game.spawn(kind, 0, [250.0, 350.0], true);
+    game.build_parking_info(replacement);
+    assert!(!game.entities[replacement].is_off_map());
+    let jet_kind = game.entities[jet].type_index;
+    game.catalog[jet_kind].build_seconds = 30.0;
+    for _ in 0..4 {
+        game.queue_unit(replacement, jet_kind).unwrap();
+    }
+    game.kill_object(producer, DeathType::Normal);
+    game.entities[jet].weapon_set.weapons[0].clip_remaining = 0;
+    game.stop(jet).unwrap();
+    let mut returned_to_dead = false;
+    for _ in 0..900 {
+        game.step();
+        let phase = game.entities[jet].aircraft.as_ref().unwrap().phase;
+        returned_to_dead |= phase == Phase::ReturnDead;
+        if phase == Phase::CircleDead {
+            break;
+        }
+    }
+    assert!(returned_to_dead);
+    assert!(game.entities[jet].aircraft.as_ref().unwrap().phase == Phase::CircleDead);
+    assert!(game.entities[jet].producer.is_none());
+    let canceled = game.entities[replacement].queue[0].id;
+    game.cancel_production(0, replacement, canceled).unwrap();
+    let before = game.entities[jet].health;
+    let maximum = game.entities[jet].max_health;
+    for frame in 1..30 {
+        game.step();
+        assert_eq!(
+            game.entities[jet].producer, None,
+            "airfield reacquired before frame 30: {frame}"
+        );
+        if frame == 1 {
+            let damage = (0.1 * (1.0 / 30.0)) * maximum;
+            let expected = before - damage;
+            assert_eq!(game.entities[jet].health.to_bits(), expected.to_bits());
+        }
+    }
+    game.step();
+    assert_eq!(game.entities[jet].producer, Some(replacement));
+    assert!(game.entities[jet].aircraft.as_ref().unwrap().phase == Phase::Idle);
+    game.step();
+    assert!(game.entities[jet].aircraft.as_ref().unwrap().phase == Phase::Return);
+}
+
+#[test]
+fn alternate_airfield_search_reserves_before_rejecting_a_different_map_status() {
+    let (mut game, jet) = aircraft();
+    game.set_object_position(jet, [20.0, 300.0, 100.0]);
+    let off_map = airfield(&mut game);
+    game.set_object_position(off_map, [-1.0, 300.0, 0.0]);
+    let kind = game.entities[off_map].type_index;
+    let available = game.spawn(kind, 0, [250.0, 300.0], true);
+    game.update_ground_contacts();
+    assert!(game.entities[off_map].is_off_map());
+    assert!(!game.entities[available].is_off_map());
+    assert_eq!(game.find_airfield(jet), Some(available));
+    for producer in [off_map, available] {
+        assert!(
+            game.entities[producer]
+                .parking
+                .as_ref()
+                .unwrap()
+                .space_index(jet)
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn captured_airfield_keeps_airborne_takeoff_and_landing_aircraft_with_the_producer() {
+    for transition in [TAKEOFF, LANDING] {
+        let (mut game, jet, producer) = parked_aircraft();
+        game.set_object_position(jet, [350.0, 250.0, 100.0]);
+        game.entities[jet]
+            .aircraft
+            .as_mut()
+            .unwrap()
+            .set(transition, true);
+        assert!(game.height_above_ground(jet) > 0.0);
+        let team = game.team_membership.default_team(1);
+        game.defect_to_team(producer, team, 0);
+        assert_eq!(game.entities[jet].owner, 1);
+        assert_eq!(game.entities[jet].producer, Some(producer));
+        assert!(
+            game.entities[producer]
+                .parking
+                .as_ref()
+                .unwrap()
+                .space_index(jet)
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn airfield_death_kills_airborne_transitioning_jets_but_spares_free_flight() {
+    for transition in [None, Some(TAKEOFF), Some(LANDING)] {
+        let (mut game, jet, producer) = parked_aircraft();
+        game.set_object_position(jet, [350.0, 250.0, 100.0]);
+        if let Some(flag) = transition {
+            game.entities[jet]
+                .aircraft
+                .as_mut()
+                .unwrap()
+                .set(flag, true);
+        }
+        assert!(game.height_above_ground(jet) > 0.0);
+        game.kill_object(producer, DeathType::Normal);
+        assert_eq!(
+            game.entities[jet].is_effectively_dead(),
+            transition.is_some()
+        );
+    }
+}
+
+#[test]
+fn explicit_heli_approach_replaces_angle_and_brakes_into_landing_threshold() {
+    let (mut game, id) = aircraft();
+    let kind = game.entities[id].type_index;
+    game.catalog[kind]
+        .locomotor
+        .flight
+        .as_mut()
+        .unwrap()
+        .appearance = flight::Appearance::Hover;
+    game.choose_aircraft_locomotor(id, true);
+    game.set_flight_precision(id, true, true);
+    let start = game.object_position(id);
+    let goal = [start[0] + 5.0, start[1], start[2]];
+    game.entities[id].facing = std::f32::consts::PI;
+    game.entities[id]
+        .ai
+        .motion
+        .request_angle(std::f32::consts::FRAC_PI_2);
+    game.aircraft_explicit_flight_goal(id, goal);
+    assert!(game.entities[id].ai.motion.angle_goal().is_none());
+    game.update_flight(id);
+    // Native's first call establishes OBJECT_STATUS_BRAKING. The next call
+    // corrects XY even when the stationary helicopter points away from the goal.
+    let before = game.entities[id].position;
+    game.aircraft_explicit_flight_goal(id, goal);
+    game.update_flight(id);
+    assert!(game.entities[id].position[0] > before[0]);
+    for _ in 0..30 {
+        game.aircraft_explicit_flight_goal(id, goal);
+        game.update_flight(id);
+    }
+    let position = game.entities[id].position;
+    assert!((goal[0] - position[0]).hypot(goal[1] - position[1]) <= 3.0);
 }

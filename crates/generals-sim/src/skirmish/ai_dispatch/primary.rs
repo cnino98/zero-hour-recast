@@ -212,6 +212,9 @@ impl Skirmish {
         }
         let sleep = if matches!(self.entities[id].ai.order, Order::Idle) {
             self.update_primary_idle(id)
+        } else if self.entities[id].ai.follow_waypoint.is_some() {
+            self.update_native_waypoint_follow(id);
+            1
         } else {
             self.update_order(id);
             1

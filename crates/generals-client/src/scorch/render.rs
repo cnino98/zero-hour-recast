@@ -59,7 +59,11 @@ pub fn update(
         } else {
             Visibility::Hidden
         });
-        if let Some(mesh) = mesh.take() {
+        // An empty source buffer submits nothing. Keep the last allocation hidden;
+        // uploading zero vertices would free its GPU slabs before an empty copy.
+        if data.index_count > 0
+            && let Some(mesh) = mesh.take()
+        {
             if let Some(new_bounds) = mesh.compute_aabb() {
                 *bounds = new_bounds;
             }
@@ -81,6 +85,7 @@ fn spawn(commands: &mut Commands, data: &Scorches, art: &mut Art, mesh: Mesh, vi
     let mut material =
         SourceMaterial::new([0.0; 3], [0.0; 3], [0.0; 3], 1.0, AlphaMode::Blend, false);
     material.parameters.vertex_diffuse = 4;
+    material.parameters.shroud_mode = 1;
     material.texture = Some(texture.clone());
     commands.spawn((
         Visual { mesh: mesh.clone() },
@@ -93,6 +98,83 @@ fn spawn(commands: &mut Commands, data: &Scorches, art: &mut Art, mesh: Mesh, vi
         } else {
             Visibility::Hidden
         },
-        RenderLayers::layer(0),
+        RenderLayers::layer(crate::source_material::terrain::SCORCH),
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::asset::AssetPlugin;
+
+    #[test]
+    #[ignore = "requires original game installation"]
+    fn populated_scorch_clear_and_resume_never_uploads_empty_geometry() {
+        let (assets, battle) = crate::cleanup_verification::tests::installed();
+        let map = generals_assets::map::MapData::parse(
+            &assets.read(crate::playtest::MAP_NAME).unwrap().bytes,
+        )
+        .unwrap();
+        let terrain = Terrain::new(map.heightmap, map.tiles, true, true).unwrap();
+        let mut particles = Particles::draw_order_fixture(&[]);
+        particles.scorches.add([100.0, 100.0, 0.0], 16.0, 1);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<SourceMaterial>();
+        particles.scorches.texture = Some(
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(Image::default()),
+        );
+        app.insert_resource(battle)
+            .insert_resource(terrain)
+            .insert_resource(particles)
+            .add_systems(Update, update);
+        app.update();
+        let entity = app
+            .world_mut()
+            .query::<EntityRef>()
+            .iter(app.world())
+            .find(EntityRef::contains::<Visual>)
+            .unwrap()
+            .id();
+        let handle = app.world().get::<Visual>(entity).unwrap().mesh.clone();
+        let before = app
+            .world()
+            .resource::<Assets<Mesh>>()
+            .get(&handle)
+            .unwrap()
+            .clone();
+        assert!(before.count_vertices() > 0);
+        app.world_mut().resource_mut::<Particles>().scorches.clear();
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(entity).unwrap(),
+            Visibility::Hidden
+        );
+        let retained = app.world().resource::<Assets<Mesh>>().get(&handle).unwrap();
+        assert_eq!(retained.indices(), before.indices());
+        assert_eq!(
+            retained.attribute(Mesh::ATTRIBUTE_POSITION),
+            before.attribute(Mesh::ATTRIBUTE_POSITION),
+        );
+        app.world_mut()
+            .resource_mut::<Particles>()
+            .scorches
+            .add([200.0, 200.0, 0.0], 24.0, 2);
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(entity).unwrap(),
+            Visibility::Visible
+        );
+        assert_eq!(app.world().get::<Visual>(entity).unwrap().mesh, handle);
+        let resumed = app.world().resource::<Assets<Mesh>>().get(&handle).unwrap();
+        assert!(resumed.count_vertices() > 0);
+        assert_ne!(
+            resumed.attribute(Mesh::ATTRIBUTE_POSITION),
+            before.attribute(Mesh::ATTRIBUTE_POSITION),
+        );
+    }
 }

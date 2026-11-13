@@ -79,7 +79,12 @@ fn collect(partition: &mut Partition, cells: &[[u16; 2]]) -> Vec<[usize; 2]> {
         .contacts
         .into_iter()
         .rev()
-        .map(|contact| contact.pair)
+        .map(|contact| {
+            let Identity::Actor(other) = contact.other else {
+                panic!("Actor contact fixture contains map objects")
+            };
+            [contact.actor, other]
+        })
         .collect()
 }
 
@@ -97,7 +102,7 @@ fn contact_hash_collisions_preserve_first_orientation_and_callback_order() {
                 {
                     expected.push(pair);
                 }
-                contacts.add(pair[0], pair[1]);
+                contacts.add(pair[0], Identity::Actor(pair[1]));
             }
         }
     }
@@ -105,7 +110,12 @@ fn contact_hash_collisions_preserve_first_orientation_and_callback_order() {
         .contacts
         .into_iter()
         .rev()
-        .map(|contact| contact.pair)
+        .map(|contact| {
+            let Identity::Actor(other) = contact.other else {
+                panic!("Actor contact fixture contains map objects")
+            };
+            [contact.actor, other]
+        })
         .collect();
     expected.reverse();
     assert_eq!(actual, expected);

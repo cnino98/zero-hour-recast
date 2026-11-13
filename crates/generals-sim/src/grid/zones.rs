@@ -4,6 +4,36 @@
 use super::{Cell, Grid};
 
 impl Grid {
+    /// `Pathfinder::findBrokenBridge` and `PathfindLayer::connectsZones`.
+    pub(crate) fn broken_bridge_connecting_zones(
+        &self,
+        terrain: &crate::terrain::TerrainMap,
+        from: super::LayerCell,
+        to: super::LayerCell,
+        surfaces: u8,
+    ) -> Option<u8> {
+        let effective = |zone| self.effective_source_zone(surfaces, false, zone);
+        let zones = [from, to]
+            .map(|node| effective(self.source_terrain_zone(effective(self.source_zone(node)))));
+        if zones[0] == zones[1] {
+            return None;
+        }
+        terrain
+            .destroyed_bridge_connections()
+            .find_map(|(layer, cells)| {
+                let mut joined = [false; 2];
+                for cell in cells {
+                    let zone = self.source_zone(super::LayerCell { cell, layer: 1 });
+                    let zone =
+                        self.source_terrain_zone(self.effective_source_zone(surfaces, true, zone));
+                    for (found, endpoint) in joined.iter_mut().zip(zones) {
+                        *found |= endpoint == zone;
+                    }
+                }
+                (joined == [true; 2]).then_some(layer)
+            })
+    }
+
     /// Native build-preview reachability ignores structures and accepts zones
     /// still uninitialized between footprint modification and recalculation.
     pub(crate) fn quick_ui_path_exists(

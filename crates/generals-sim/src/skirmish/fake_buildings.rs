@@ -1,5 +1,7 @@
 //! SH `ReplaceObjectUpgrade` and fake-building command weapons.
-use super::{Skirmish, UnitType};
+use super::{
+    Skirmish, UnitType, ai_goals::COMMAND_FROM_PLAYER, combat::attack::Goal, weapons::Lock,
+};
 
 pub struct Replacement {
     pub upgrade: String,
@@ -37,6 +39,7 @@ impl Skirmish {
                     && !actor.hacked()
                     && !actor.paralyzed()
                     && self.catalog[actor.type_index].fake_building()
+                    && self.allocated_weapon(id, 0).is_some()
             })
     }
 
@@ -47,7 +50,20 @@ impl Skirmish {
         if !self.can_detonate_fake(owner, id) {
             return Err("Fake building cannot detonate");
         }
-        self.fire_temporary_weapon(id, 0);
+        // MSG_DO_WEAPON locks the allocated weapon before groupAttackPosition
+        // supplies each member's own position to its ordinary AI attack state.
+        let weapons = &mut self.entities[id].weapon_set;
+        if !matches!(weapons.lock, Lock::Permanent) {
+            weapons.current = 0;
+            weapons.lock = Lock::Temporary;
+        }
+        self.native_attack_goal_from(
+            id,
+            Goal::Position(self.object_position(id)),
+            i32::MAX.unsigned_abs(),
+            COMMAND_FROM_PLAYER,
+            false,
+        );
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 use super::{
-    AiCall, AiScript, Counter, OpponentRules, State, construction, defenses, priorities,
+    AiCall, AiScript, Counter, OpponentRules, State, construction, defenses, map, priorities,
     recruitment, teams,
 };
 use crate::skirmish::Skirmish;
@@ -26,7 +26,7 @@ pub(super) fn update(game: &mut Skirmish, rules: &OpponentRules, state: &mut Sta
         if script.delay_frames > 0 {
             state.scripts[index].next = game.tick + u64::from(script.delay_frames);
         }
-        let Some(result) = conditions(game, rules, state, script, None) else {
+        let Some(result) = conditions(game, rules, state, index, None) else {
             continue;
         };
         let actions = if result {
@@ -52,17 +52,24 @@ pub(super) fn conditions(
     game: &Skirmish,
     rules: &OpponentRules,
     state: &mut State,
-    script: &AiScript,
+    script_index: usize,
     team: Option<usize>,
 ) -> Option<bool> {
+    let script = &rules.factions[state.faction].scripts[script_index];
     let mut unknown = false;
-    for branch in &script.conditions {
+    for (branch_index, branch) in script.conditions.iter().enumerate() {
         if branch.is_empty() {
             continue;
         }
         let mut accepted = true;
-        for call in branch {
-            match condition(game, rules, state, call, team) {
+        for (call_index, call) in branch.iter().enumerate() {
+            let key = (script_index, branch_index, call_index);
+            let result = if call.name == "SKIRMISH_TECH_BUILDING_WITHIN_DISTANCE" {
+                tech_within_distance(game, rules, state, call, key)
+            } else {
+                condition(game, rules, state, call, team)
+            };
+            match result {
                 Some(true) => {}
                 Some(false) => {
                     accepted = false;
@@ -138,6 +145,45 @@ fn condition(
         _ => return teams::condition(game, rules, state, call, team),
     })
 }
+// ScriptConditions caches this result on the condition itself, even after capture.
+fn tech_within_distance(
+    game: &Skirmish,
+    rules: &OpponentRules,
+    state: &mut State,
+    call: &AiCall,
+    key: (usize, usize, usize),
+) -> Option<bool> {
+    let Some(owner) = owner(state, &call.parameters.first()?.text) else {
+        return Some(false);
+    };
+    if let Some(&cached) = state.tech_conditions.get(&key) {
+        return Some(cached);
+    }
+    let Some(area) = map::area(rules, state, &call.parameters.get(2)?.text) else {
+        return Some(false);
+    };
+    let (center, radius) = map::bounds(area);
+    let radius = radius + call.parameters.get(1)?.real;
+    let found = game
+        .partition
+        .outward_range_rings(center, radius)
+        .into_iter()
+        .any(|(_, id)| {
+            let actor = &game.entities[id];
+            let allied = game
+                .map_side_relationship(owner, actor.owner)
+                .map_or_else(|| game.allied(owner, actor.owner), |relation| relation == 2);
+            game.attack_kind(id, "TECH_BUILDING")
+                && actor.owner != owner
+                && !allied
+                && !actor.is_off_map()
+                && crate::skirmish::movement::distance_squared(center, actor.position)
+                    < radius * radius
+        });
+    state.tech_conditions.insert(key, found);
+    Some(found)
+}
+
 fn count(game: &Skirmish, state: &State, owner: usize, name: &str) -> i64 {
     let templates: Vec<_> = game
         .catalog

@@ -79,6 +79,10 @@ impl Entity {
         self.maintenance.effects.command_set.as_deref()
     }
 
+    pub(in crate::skirmish) fn set_bike_command_set(&mut self, commands: String) {
+        self.maintenance.effects.command_set = Some(commands);
+    }
+
     pub(in crate::skirmish) const fn experience_scalar(&self) -> f32 {
         self.maintenance.effects.experience_scalar
     }
@@ -179,6 +183,11 @@ impl Entity {
     }
 
     pub(in crate::skirmish) fn upgraded_speed(&self, unit: &UnitType) -> f32 {
+        if self.ai.locomotor_set == super::super::locomotor::set::SLUGGISH
+            && let Some(bike) = &unit.combat_bike
+        {
+            return bike.sluggish[self.ai.surface_locomotor].speed;
+        }
         if self.ai.locomotor_set == super::super::locomotor::set::WANDER
             && !unit.locomotor_sets.wander.is_empty()
         {

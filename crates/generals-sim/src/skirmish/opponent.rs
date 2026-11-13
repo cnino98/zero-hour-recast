@@ -1,5 +1,6 @@
 //! Selected original `AISkirmishPlayer` and SCB-script execution branches.
 //! Source: pinned `GeneralsMD` `AIPlayer.cpp`, `AISkirmishPlayer.cpp` and `ScriptEngine.cpp`.
+mod bridge_repair;
 mod collectors;
 mod commands;
 mod construction;
@@ -29,6 +30,7 @@ pub enum OpponentDifficulty {
 pub struct OpponentRules {
     pub defense_extra_distance: f32,
     pub max_recruit_distance: f32,
+    pub skirmish_group_fudge: f32,
     pub attack_priority_distance: f32,
     pub alert_range_modifier: f32,
     pub aggressive_range_modifier: f32,
@@ -147,6 +149,8 @@ struct State {
     owner: usize,
     enemy: Option<usize>,
     base_center: [f32; 2],
+    repair_center: Option<[f32; 3]>,
+    repair: super::ai_repair::State,
     defenses: defenses::Placement,
     next_enemy_check: u64,
     start: usize,
@@ -158,6 +162,7 @@ struct State {
     counters: BTreeMap<String, Counter>,
     flags: BTreeMap<String, bool>,
     object_lists: BTreeMap<String, Vec<String>>,
+    tech_conditions: BTreeMap<(usize, usize, usize), bool>,
     buildings: Vec<Building>,
     teams: Vec<Team>,
     team_prototypes: Vec<usize>,
@@ -219,7 +224,6 @@ struct Team {
     callbacks: lifecycle::Callbacks,
     scripts: Vec<ScriptState>,
     sequence: Option<(usize, usize)>,
-    follow: Option<(usize, Option<usize>)>,
 }
 struct WorkOrder {
     type_index: usize,
@@ -249,7 +253,6 @@ impl Team {
                 })
                 .collect(),
             sequence: None,
-            follow: None,
         }
     }
 }
@@ -316,6 +319,7 @@ impl Skirmish {
             })
             || !rules.attack_priority_distance.is_finite()
             || rules.attack_priority_distance <= 0.0
+            || !rules.skirmish_group_fudge.is_finite()
         {
             return Err("Invalid computer-player rules");
         }
@@ -416,6 +420,7 @@ impl Skirmish {
             if let Some(mut opponent) = self.opponents[owner].take() {
                 construction::update(self, &opponent.rules, &mut opponent.state);
                 teams::update(self, &opponent.rules, &mut opponent.state);
+                bridge_repair::update(self, &mut opponent.state);
                 self.opponents[owner] = Some(opponent);
             }
         }
@@ -457,7 +462,7 @@ impl Skirmish {
         }
         if resource_gatherer {
             collectors::assign_produced(self, &mut opponent.state, unit);
-        } else if self.catalog[self.entities[unit].type_index].kind == super::Kind::Builder {
+        } else if self.attack_kind(unit, "DOZER") && !opponent.state.repair.produced(unit) {
             opponent.state.build_delay = 0;
             opponent.state.structure_timer = 1.0;
         }
@@ -541,7 +546,9 @@ impl State {
         let mut base_center = [0.0; 2];
         let mut count = 0_u16;
         for building in &buildings {
-            if building.name.is_empty() {
+            if building.name.is_empty()
+                || !game.catalog.iter().any(|unit| unit.name == building.name)
+            {
                 continue;
             }
             base_center[0] += building.position[0];
@@ -556,6 +563,8 @@ impl State {
         Self {
             owner,
             base_center,
+            repair_center: (count > 0).then_some([base_center[0], base_center[1], 0.0]),
+            repair: super::ai_repair::State::new(),
             defenses,
             enemy: None,
             next_enemy_check: 0,
@@ -568,6 +577,7 @@ impl State {
             counters: BTreeMap::new(),
             flags: BTreeMap::new(),
             object_lists: BTreeMap::new(),
+            tech_conditions: BTreeMap::new(),
             buildings,
             teams: Vec::new(),
             team_prototypes,

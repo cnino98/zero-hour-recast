@@ -168,6 +168,14 @@ fn rotate_actor(
         actor.active_locomotor(unit).turn_pivot_offset * radius
     };
     let mut basis = actor.object_basis();
+    let mut wheel_angle = 0.0;
+    let wheels = unit.combat_bike.is_some() || unit.name == "GLAVehicleBombTruck";
+    let mut relative = relative;
+    let reported = if wheels {
+        Some(&mut wheel_angle)
+    } else {
+        relative.take()
+    };
     let result = rotate(
         &mut actor.position,
         &mut actor.facing,
@@ -175,8 +183,15 @@ fn rotate_actor(
         goal,
         maximum,
         offset,
-        relative,
+        reported,
     );
+    if wheels {
+        if let Some(relative) = relative {
+            *relative = wheel_angle;
+        }
+        actor.physics_control.wheel_turning =
+            i8::from(wheel_angle > maximum) - i8::from(wheel_angle < -maximum);
+    }
     if offset == 0.0 {
         terrain.orient(actor, unit, actor.facing);
     } else {

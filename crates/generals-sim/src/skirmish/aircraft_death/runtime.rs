@@ -4,6 +4,7 @@ use crate::skirmish::{
     Entity, Skirmish,
     death_lifecycle::{Derived, native::Extension},
     object_sounds::Action,
+    partition::Identity,
 };
 
 const DECK_HEIGHT_OFFSET: u64 = 1 << 29;
@@ -158,16 +159,17 @@ impl Skirmish {
     }
 
     pub(in crate::skirmish) fn physics_collided_with_tree(&self, id: usize) -> bool {
-        self.entities[id]
-            .physics_last_collidee()
-            .is_some_and(|other| {
-                self.entities.get(other).is_some_and(|actor| {
-                    !actor.maintenance.deleted
-                        && self.catalog[actor.type_index]
-                            .kind_of
-                            .iter()
-                            .any(|kind| kind == "SHRUBBERY")
-                })
-            })
+        let kinds = match self.entities[id].physics_last_collidee() {
+            Some(Identity::Actor(other)) => {
+                let actor = &self.entities[other];
+                if actor.maintenance.deleted {
+                    return false;
+                }
+                &self.catalog[actor.type_index].kind_of
+            }
+            Some(Identity::Map(index)) => &self.layout.world_objects[index].kind_of,
+            None => return false,
+        };
+        kinds.iter().any(|kind| kind == "SHRUBBERY")
     }
 }

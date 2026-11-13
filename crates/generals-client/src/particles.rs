@@ -42,10 +42,10 @@ pub use data::load;
 pub use data::load_with_position_effects;
 pub use dependencies::position_sounds;
 pub use dependencies::weapon_sounds as weapon_fx_sounds;
-pub use effects::step;
-pub use fire::update as update_fire;
+pub use effects::{advance, step};
 pub use inspection::{AdditiveQuad, ParticleInspection, SmudgeFan};
-pub use model_states::update as update_model_states;
+pub use model_states::view::{contains as drawable_in_region, region as drawable_region};
+pub use model_states::{DrawFrame, ModuleDraw};
 pub use render::{ParticleVisual, update};
 
 struct Range {
@@ -209,6 +209,9 @@ struct Emitter {
     burst_delay: f32,
     remaining: f32,
     size_bonus: f32,
+    size_multiplier: f32,
+    velocity_multiplier: [f32; 3],
+    burst_multiplier: f32,
     lifetime: Option<f32>,
     personality: u32,
 }
@@ -252,6 +255,7 @@ pub struct Particles {
     generation: u32,
     frame: Option<u64>,
     processed: Option<u64>,
+    advanced: Option<u64>,
     phase: f32,
     scale: f32,
     bindings: Vec<Vec<Option<effects::WeaponEffects>>>,

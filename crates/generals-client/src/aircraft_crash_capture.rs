@@ -1,4 +1,6 @@
 //! Paid anti-air kill, original falling jet/debris and the actual ground-crash FX.
+pub mod pilot;
+pub mod terrain;
 #[cfg(test)]
 mod tests;
 mod views;
@@ -90,6 +92,9 @@ fn focus(
     {
         camera.settings.yaw =
             impact_view_yaw(battle.simulation.object_transform(id).0, impact.position);
+    }
+    if check.hulk.is_some() {
+        camera.distance = camera.settings.min_height;
     }
     if let Some(snapshot) = &check.snapshot {
         camera.settings.yaw =
@@ -346,10 +351,16 @@ impl Check {
             actor.physical_present(),
             "original hulk retired before its after-flash capture",
         )?;
-        // Keep the source flash deadline. The original wreck sinks below terrain
-        // before every dust/debris descendant retires. View from the side away
-        // from the recorded impact; the physical hulk moves after that callback.
-        if particles.actor_flash_finished("FX_JetDeathHitGround", battle.generation)?
+        // The paid source check places the flash retirement near frame 67,
+        // before the hulk starts to sink. Frame 100 is already visibly buried.
+        // Keep the earlier live, partially exposed wreck at the original zoom limit.
+        let impact = self
+            .ground
+            .as_ref()
+            .ok_or("missing original jet ground impact")?;
+        let age = battle.simulation.tick.saturating_sub(impact.frame);
+        if age >= 75
+            && particles.actor_flash_finished("FX_JetDeathHitGround", battle.generation)?
             && framing.physical_pose(battle, id)?
             && framing.visible(battle, id)?
         {
@@ -358,10 +369,11 @@ impl Check {
             self.freeze(battle, view, time, id);
             self.log_view(battle, view, time)?;
             capture.intermediate("aircraft-crash-hulk-view-0.png");
+            let position = battle.simulation.object_position(id);
             println!(
-                "Original Raptor hulk captured away from the impact plume after the native flash (original smoke and debris remain): actor={id} position={:?} basis={:?}; unchanged physical lifetime and exact rendered matrix",
-                battle.simulation.object_position(id),
-                actor.physical_basis()
+                "Original Raptor hulk captured {age} frames after impact: actor={id} position={position:?} terrain={} basis={:?}; unchanged physical lifetime and exact rendered matrix",
+                battle.simulation.ground_height([position[0], position[1]]),
+                actor.physical_basis(),
             );
         }
         Ok(())

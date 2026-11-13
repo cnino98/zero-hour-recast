@@ -11,6 +11,8 @@ use bevy::{
     shader::ShaderRef,
 };
 
+pub mod terrain;
+
 pub struct SourceMaterialPlugin;
 
 impl Plugin for SourceMaterialPlugin {
@@ -18,6 +20,13 @@ impl Plugin for SourceMaterialPlugin {
         embedded_asset!(app, "source_material.wgsl");
         app.add_plugins(MaterialPlugin::<SourceMaterial>::default());
         crate::stealth_view::register(app);
+        terrain::register(app);
+        app.insert_resource(crate::model_animation::draw_visibility::DrawVisibility::new())
+            .add_systems(
+                PostUpdate,
+                crate::model_animation::draw_visibility::record
+                    .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+            );
     }
 }
 
@@ -37,6 +46,8 @@ pub struct Parameters {
     pub opacity: f32,
     pub primary_gradient: u32,
     pub shroud_extent: Vec4,
+    pub uv_transform: Vec4,
+    pub shroud_mode: u32,
 }
 
 // Asset/TypePath/AsBindGroup are Bevy registration requirements; Material requires Clone.
@@ -173,6 +184,8 @@ impl SourceMaterial {
                 opacity: 1.0,
                 primary_gradient: 1,
                 shroud_extent: Vec4::ZERO,
+                uv_transform: Vec4::new(1.0, 1.0, 0.0, 0.0),
+                shroud_mode: 0,
                 alpha_test: if matches!(alpha_mode, AlphaMode::Mask(_)) {
                     96.0 / 255.0
                 } else {

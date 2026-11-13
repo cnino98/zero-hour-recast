@@ -5,6 +5,7 @@ mod garrison;
 pub mod loading;
 mod name_entry;
 pub mod observer;
+pub mod ocl_timer;
 pub mod options;
 mod promotions;
 pub mod results;
@@ -41,6 +42,7 @@ pub struct UiData {
     pub results: results::Results,
     pub units: Vec<UnitUi>,
     pub cancel_construction: Command,
+    pub ocl_timer: ocl_timer::Data,
     pub windows: BTreeMap<String, Rect>,
     pub labels: BTreeMap<String, String>,
     pub factions: [String; 3],
@@ -108,6 +110,7 @@ pub enum CommandAction {
     Stop,
     AttackMove,
     Guard,
+    GuardFlying,
     Rally,
     CashHack,
     HackInternet,
@@ -117,6 +120,11 @@ pub enum CommandAction {
     FireWeapon(usize),
     ClearMines(usize),
     SnipeVehicle(usize),
+    BurtonKnife,
+    BurtonCharge(generals_sim::skirmish::special_ability::BurtonCharge),
+    BurtonDetonate,
+    BombTruckDisguise,
+    BombTruckDetonate,
     CarBomb,
     Hijack,
     HelixBomb,
@@ -269,6 +277,7 @@ pub fn load_for_map(
     let windows = menu_windows(assets)?;
     let units = object_ui(assets, catalog, &labels)?;
     let cancel_construction = cancellation::load(assets, &labels)?;
+    let ocl_timer = ocl_timer::load(assets, catalog, &labels)?;
     let promotions = promotions::load(assets, &labels, options)?;
     for button in promotions.buttons.iter().flatten() {
         if !windows.contains_key(&button.window) {
@@ -285,6 +294,7 @@ pub fn load_for_map(
     let loading = loading::Data::load(assets, &labels)?;
     let veterancy = crate::veterancy_feedback::load(assets)?;
     let money_crates = crate::income::map_crates::load(assets)?;
+    let bomb_icons = crate::sticky_bomb_icons::load(assets)?;
     let textures = textures(
         assets,
         &schemes,
@@ -296,7 +306,12 @@ pub fn load_for_map(
             .chain(options_menu.images())
             .chain(veterancy.images())
             .chain(money_crates.images())
-            .chain(loading.images()),
+            .chain(bomb_icons.images())
+            .chain(loading.images())
+            .chain([
+                ocl_timer.sell.image.as_str(),
+                ocl_timer.rally.image.as_str(),
+            ]),
         &pictures,
         &cancel_construction,
     )?;
@@ -329,6 +344,7 @@ pub fn load_for_map(
         results,
         units,
         cancel_construction,
+        ocl_timer,
         windows,
         labels: labels
             .into_iter()
@@ -444,12 +460,19 @@ fn pilot_weapon_action(
         _ => return Err("unsupported pilot weapon slot".into()),
     };
     if !command_option(button, "NEED_TARGET_ENEMY_OBJECT")
-        || !unit.weapon_in_slot(slot).is_some_and(|weapon| {
+        || !(unit.weapon_in_slot(slot).is_some_and(|weapon| {
             matches!(
                 weapon.damage_type,
                 generals_sim::skirmish::DamageType::KillPilot
             )
-        })
+        }) || unit.combat_bike.is_some()
+            && unit.weapon_set_rules.templates.iter().any(|weapon| {
+                weapon.slot == slot
+                    && matches!(
+                        weapon.rules.damage_type,
+                        generals_sim::skirmish::DamageType::KillPilot
+                    )
+            }))
     {
         return Err("untranslated pilot weapon command".into());
     }
@@ -496,22 +519,7 @@ fn command_action(
                     name => return Err(format!("unsupported command weapon slot {name}").into()),
                 })
             }
-            "FIRE_WEAPON"
-                if unit.maintenance.replacement.is_some()
-                    && button.name == "Command_DetonateFakeBuilding"
-                    && value(&button.lines, 0, "WeaponSlot")? == "PRIMARY" =>
-            {
-                CommandAction::DetonateFake
-            }
-            "FIRE_WEAPON"
-                if unit.location_weapons != 0
-                    || command_option(button, "USES_MINE_CLEARING_WEAPONSET") =>
-            {
-                location_weapon_action(button, unit)?
-            }
-            "FIRE_WEAPON" if unit.name == "GLAInfantryJarmenKell" => {
-                pilot_weapon_action(button, unit)?
-            }
+            "FIRE_WEAPON" => return fire_weapon_action(button, unit),
             "HACK_INTERNET" if behavior.hacking.is_some() => CommandAction::HackInternet,
             "HIJACK_VEHICLE" if unit.hijacker.is_some() => CommandAction::Hijack,
             "CONVERT_TO_CARBOMB" if behavior.car_bomb_converter.is_some() => CommandAction::CarBomb,
@@ -531,6 +539,7 @@ fn command_action(
             }
             "ATTACK_MOVE" => CommandAction::AttackMove,
             "GUARD" => CommandAction::Guard,
+            "GUARD_FLYING_UNITS_ONLY" => CommandAction::GuardFlying,
             "SET_RALLY_POINT"
                 if behavior.production_exit.is_some()
                     || unit
@@ -547,10 +556,59 @@ fn command_action(
     Ok(Some(action))
 }
 
+fn fire_weapon_action(
+    button: &Declaration,
+    unit: &UnitType,
+) -> Result<Option<CommandAction>, Box<dyn Error>> {
+    if unit.maintenance.replacement.is_some()
+        && button.name == "Command_DetonateFakeBuilding"
+        && value(&button.lines, 0, "WeaponSlot")? == "PRIMARY"
+    {
+        return Ok(Some(CommandAction::DetonateFake));
+    }
+    if unit.location_weapons != 0 || command_option(button, "USES_MINE_CLEARING_WEAPONSET") {
+        return location_weapon_action(button, unit).map(Some);
+    }
+    let action = match button.name.as_str() {
+        "Command_ColonelBurtonKnifeAttack" => {
+            if value(&button.lines, 0, "WeaponSlot")? != "SECONDARY"
+                || !command_option(button, "NEED_TARGET_ENEMY_OBJECT")
+                || !command_option(button, "NEED_TARGET_NEUTRAL_OBJECT")
+                || !unit.weapon_in_slot(1).is_some_and(|weapon| {
+                    matches!(
+                        weapon.damage_type,
+                        generals_sim::skirmish::DamageType::Melee
+                    )
+                })
+            {
+                return Err("Burton knife command requires its original object weapon".into());
+            }
+            CommandAction::BurtonKnife
+        }
+        "Command_BombTruckDetonateNow" => {
+            if value(&button.lines, 0, "WeaponSlot")? != "PRIMARY"
+                || unit.weapon.name != "SuicideWeapon"
+            {
+                return Err("Bomb Truck detonation requires its original primary weapon".into());
+            }
+            CommandAction::BombTruckDetonate
+        }
+        _ if unit.name == "GLAInfantryJarmenKell"
+            || unit.combat_bike.is_some()
+                && button.name == "Command_GLAInfantryJarmenKellSnipeVehicleAttack" =>
+        {
+            pilot_weapon_action(button, unit)?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(action))
+}
+
 fn special_power_action(
     button: &Declaration,
     unit: &UnitType,
 ) -> Result<Option<CommandAction>, Box<dyn Error>> {
+    use generals_sim::skirmish::special_ability::BurtonCharge;
     let behavior = &unit.behavior;
     let action = match promotions::special_power(&button.lines)? {
         Some(
@@ -559,6 +617,24 @@ fn special_power_action(
             | "SpecialAbilityRebelCaptureBuilding"
             | "SpecialAbilityBlackLotusCaptureBuilding",
         ) => CommandAction::Capture,
+        Some("SpecialAbilityColonelBurtonTimedCharges") => {
+            CommandAction::BurtonCharge(BurtonCharge::Timed)
+        }
+        Some("SpecialAbilityDisguiseAsVehicle") => {
+            if !["NEED_TARGET_ENEMY_OBJECT", "NEED_TARGET_NEUTRAL_OBJECT", "NEED_TARGET_ALLY_OBJECT"]
+                .iter().all(|option| command_option(button, option))
+            {
+                return Err("Bomb Truck disguise requires its original object target options".into());
+            }
+            CommandAction::BombTruckDisguise
+        }
+        Some("SpecialAbilityColonelBurtonRemoteCharges") => {
+            if command_option(button, "CONTEXTMODE_COMMAND") {
+                CommandAction::BurtonCharge(BurtonCharge::Remote)
+            } else {
+                CommandAction::BurtonDetonate
+            }
+        }
         Some("SpecialAbilityBlackLotusDisableVehicleHack") => CommandAction::Hack(1),
         Some("SpecialAbilityBlackLotusStealCashHack") => CommandAction::Hack(2),
         Some("SpecialAbilityMissileDefenderLaserGuidedMissiles") => CommandAction::LaserLock,
@@ -735,10 +811,15 @@ fn named_commands(
     upgrades: &ContentFile,
 ) -> Result<CommandSets, Box<dyn Error>> {
     let mut named_commands = Vec::new();
-    for name in unit.maintenance.command_sets.iter().flat_map(|upgrade| {
+    let upgrades_sets = unit.maintenance.command_sets.iter().flat_map(|upgrade| {
         std::iter::once(&upgrade.command_set)
             .chain(upgrade.alternate.as_ref().map(|(_, name)| name))
-    }) {
+    });
+    let rider_sets = unit
+        .combat_bike
+        .iter()
+        .flat_map(|bike| bike.riders.iter().map(|rider| &rider.command_set));
+    for name in upgrades_sets.chain(rider_sets) {
         if named_commands.iter().any(|(loaded, _)| loaded == name) {
             continue;
         }

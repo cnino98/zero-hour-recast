@@ -18,6 +18,14 @@ pub struct Rules {
     pub reaction_delay: u32,
 }
 
+impl super::Projectile {
+    /// The current target, which can change in flight after countermeasure diversion.
+    #[must_use]
+    pub const fn target_object(&self) -> Option<usize> {
+        self.target
+    }
+}
+
 pub(super) struct State {
     active: bool,
     available: u32,
@@ -366,10 +374,8 @@ mod tests {
         assert_eq!(game.entities[id].behaviors.countermeasures[0].reload, 0);
     }
 
-    #[test]
-    fn volley_normalizes_forward_with_reciprocal_before_applying_force() {
+    fn flare_template(game: &mut Skirmish) -> usize {
         use crate::skirmish::physical_ocl::{LiveRules, MotionRules};
-        let mut game = crate::skirmish::tests::game();
         let mut flare = crate::skirmish::tests::fixture_type(
             crate::skirmish::Faction::Usa,
             crate::skirmish::Kind::Vehicle,
@@ -403,7 +409,15 @@ mod tests {
             min_fall_speed: 99.0,
             fall_damage_factor: 1.0,
         });
+        let kind = game.catalog.len();
         game.catalog.push(flare);
+        kind
+    }
+
+    #[test]
+    fn volley_normalizes_forward_with_reciprocal_before_applying_force() {
+        let mut game = crate::skirmish::tests::game();
+        flare_template(&mut game);
         let mut volley = rules();
         volley.flare = "Flare".into();
         volley.volley_size = 1;
@@ -422,6 +436,191 @@ mod tests {
         assert_eq!(
             input.acceleration.map(f32::to_bits),
             [0xc11f_ffec, 0xbca3_d704, 0]
+        );
+    }
+
+    fn missile_object(game: &Skirmish, serial: u64) -> usize {
+        game.projectiles[game.projectile_index(serial).unwrap()]
+            .object
+            .unwrap()
+    }
+
+    fn countermeasure_aircraft() -> (Skirmish, usize) {
+        let mut game = crate::skirmish::tests::game();
+        flare_template(&mut game);
+        let mut volley = rules();
+        volley.flare = "Flare".into();
+        volley.evasion_rate = 1.0;
+        volley.reaction_delay = 3;
+        volley.decoy_delay = 6;
+        volley.volley_delay = 30;
+        game.catalog[6].behavior.countermeasures.push(volley);
+        crate::skirmish::tests::register_update(&mut game.catalog[6], "CountermeasuresBehavior");
+        let id = game.spawn(6, 0, [500.0, 300.0], true);
+        game.entities[id].behaviors.countermeasures[0].active = true;
+        game.set_object_position(id, [500.0, 300.0, 100.0]);
+        game.entities[id].set_airborne_target(true);
+        game.tick = 100;
+        (game, id)
+    }
+
+    #[test]
+    fn weapon_launch_keeps_reaction_volley_and_missile_diversion_deadlines_separate() {
+        let (mut game, aircraft) = countermeasure_aircraft();
+        let destination = game.object_position(aircraft);
+        let serial = crate::skirmish::point_defense::tests::missile_targeted(
+            &mut game,
+            [100.0, 300.0, 100.0],
+            1,
+            1.0,
+            Some(aircraft),
+            destination,
+        );
+        let missile = missile_object(&game, serial);
+        let state = &game.entities[aircraft].behaviors.countermeasures[0];
+        assert_eq!(
+            (state.incoming, state.diverted, state.reaction),
+            (1, 1, 103)
+        );
+        assert_eq!(state.active_count, 0);
+        game.tick = 102;
+        game.update_countermeasures(aircraft, 0);
+        assert!(
+            game.entities[aircraft].behaviors.countermeasures[0]
+                .flares
+                .is_empty()
+        );
+        game.tick = 103;
+        game.update_countermeasures(aircraft, 0);
+        let state = &game.entities[aircraft].behaviors.countermeasures[0];
+        assert_eq!(
+            (state.available, state.active_count, state.next_volley),
+            (4, 2, 133)
+        );
+        let flare = game.countermeasure_target(aircraft).unwrap();
+        let registration = game.entities[missile].ai.registration.unwrap();
+        game.tick = 105;
+        game.update_missile_module(missile, registration);
+        assert_eq!(
+            game.projectiles[game.projectile_index(serial).unwrap()].target,
+            Some(aircraft)
+        );
+        game.tick = 106;
+        game.update_missile_module(missile, registration);
+        assert_eq!(
+            game.projectiles[game.projectile_index(serial).unwrap()].target,
+            Some(flare)
+        );
+        for frame in [133, 163] {
+            game.tick = frame;
+            game.update_countermeasures(aircraft, 0);
+        }
+        let state = &game.entities[aircraft].behaviors.countermeasures[0];
+        assert_eq!(
+            (state.available, state.active_count, state.reload),
+            (0, 6, 283)
+        );
+        game.tick = 282;
+        game.update_countermeasures(aircraft, 0);
+        assert_eq!(
+            game.entities[aircraft].behaviors.countermeasures[0].available,
+            0
+        );
+        game.tick = 283;
+        game.update_countermeasures(aircraft, 0);
+        assert_eq!(
+            game.entities[aircraft].behaviors.countermeasures[0].available,
+            6
+        );
+    }
+
+    #[test]
+    fn expired_flares_still_suppress_damage_when_the_diversion_deadline_arrives() {
+        for active in [false, true] {
+            let (mut game, aircraft) = countermeasure_aircraft();
+            game.entities[aircraft].behaviors.countermeasures[0].active = active;
+            let destination = game.object_position(aircraft);
+            let serial = crate::skirmish::point_defense::tests::missile_targeted(
+                &mut game,
+                [100.0, 300.0, 100.0],
+                1,
+                1.0,
+                Some(aircraft),
+                destination,
+            );
+            let missile = missile_object(&game, serial);
+            let weapon_type = game.projectiles[game.projectile_index(serial).unwrap()].weapon_type;
+            game.catalog[weapon_type].weapon.area = Some(crate::skirmish::damage::AreaDamage {
+                at_source: false,
+                primary_radius: 5.0,
+                secondary_radius: 0.0,
+                secondary_damage: 0.0,
+                affects: 2,
+            });
+            game.tick = 103;
+            game.update_countermeasures(aircraft, 0);
+            let flares = game.entities[aircraft].behaviors.countermeasures[0]
+                .flares
+                .clone();
+            assert_eq!(flares.len(), if active { 2 } else { 0 });
+            for flare in flares {
+                game.destroy_maintenance_object(flare);
+            }
+            game.process_update_destruction();
+            assert!(game.countermeasure_target(aircraft).is_none());
+            game.tick = 106;
+            game.update_missile_module(missile, game.entities[missile].ai.registration.unwrap());
+            assert_eq!(
+                game.projectiles[game.projectile_index(serial).unwrap()].target,
+                Some(aircraft)
+            );
+            let crate::skirmish::projectiles::Control::Missile(control) = &game.entities[missile]
+                .projectile_flight
+                .as_ref()
+                .unwrap()
+                .controls[0]
+            else {
+                panic!("MissileAI control")
+            };
+            assert_eq!(control.deals_damage(), !active);
+            // Contact must occur at the target: detonating at the distant launch
+            // position would preserve its health even without damage suppression.
+            game.set_object_position(missile, destination);
+            let health = game.entities[aircraft].health;
+            assert!(game.projectile_contact(missile, Some(aircraft)));
+            assert!(game.presentation.weapon_fx.iter().any(|event| matches!(event,
+                crate::skirmish::WeaponFxEvent::Projectile(event)
+                    if event.projectile == serial && matches!(event.stage, crate::skirmish::ProjectileFxStage::Detonation)
+            )));
+            if active {
+                assert_eq!(game.entities[aircraft].health.to_bits(), health.to_bits());
+            } else {
+                assert!(game.entities[aircraft].health < health);
+            }
+        }
+    }
+
+    #[test]
+    fn diversion_uses_nearest_aircraft_distance_among_newest_surviving_volley() {
+        let (mut game, aircraft) = countermeasure_aircraft();
+        game.launch_countermeasure_volley(aircraft, 0);
+        game.launch_countermeasure_volley(aircraft, 0);
+        let flares = game.entities[aircraft].behaviors.countermeasures[0]
+            .flares
+            .clone();
+        for (&flare, x) in flares.iter().zip([501.0, 504.0, 530.0, 505.0]) {
+            game.set_object_position(flare, [x, 300.0, 100.0]);
+        }
+        assert_eq!(game.countermeasure_target(aircraft), Some(flares[3]));
+        game.destroy_maintenance_object(flares[3]);
+        game.process_update_destruction();
+        // The CRC-off count advances only for surviving objects, so the previous
+        // volley's last surviving flare enters the two-flare search window.
+        assert_eq!(game.countermeasure_target(aircraft), Some(flares[1]));
+        game.update_countermeasures(aircraft, 0);
+        assert_eq!(
+            game.entities[aircraft].behaviors.countermeasures[0].active_count,
+            3
         );
     }
 }

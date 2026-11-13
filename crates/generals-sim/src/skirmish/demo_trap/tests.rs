@@ -86,6 +86,20 @@ fn advance(game: &mut Skirmish) {
 }
 
 #[test]
+fn selling_suppresses_proximity_detonation_before_the_trap_sinks() {
+    let (mut game, trap, victim) = fixture();
+    let health = game.entities[victim].health;
+    game.sell(0, trap).unwrap();
+    for _ in 0..31 {
+        advance(&mut game);
+    }
+    assert!(!game.entities[trap].sold_model());
+    assert!(game.entities[trap].alive());
+    assert_eq!(game.entities[victim].health.to_bits(), health.to_bits());
+    assert!(game.presentation.object_fx_events.is_empty());
+}
+
+#[test]
 fn proximity_warns_then_fires_exactly_once_after_thirty_frames_without_physics() {
     let (mut game, trap, victim) = fixture();
     assert_eq!(game.entities[trap].weapon_slot(), 1);

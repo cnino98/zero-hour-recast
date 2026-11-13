@@ -10,9 +10,12 @@ mod cache_verification;
 #[cfg(test)]
 mod civilian_props_tests;
 mod clock;
+mod combat_bike;
 mod data;
 mod defenses;
 mod detectors;
+#[cfg(test)]
+mod draw_order_tests;
 mod drones;
 mod effects;
 pub mod garrison;
@@ -38,10 +41,15 @@ mod render_objects;
 mod salvage;
 pub mod state_particles;
 mod strategy;
+mod tracks;
 mod tractor;
+pub use tracks::{TerrainTracks, load_tracks, update_tracks};
+pub mod draw_visibility;
+pub mod treads;
 mod turret;
 mod verification;
 use crate::{
+    light_environment::DrawPose,
     model_render,
     playtest::Match,
     playtest_view::{Geometry, UnitVisual},
@@ -98,7 +106,7 @@ impl State {
 pub struct Animations {
     logical_bones: Vec<Vec<generals_sim::skirmish::model_bones::Draw>>,
     draws: Vec<Vec<Draw>>,
-    weapon_contexts: Vec<Vec<(usize, u8)>>,
+    weapon_contexts: Vec<Vec<(usize, u16)>>,
     weapon_clips: Vec<Vec<u32>>,
     animate_when_disabled: Vec<bool>,
     world_draws: BTreeMap<usize, Draw>,
@@ -164,10 +172,10 @@ impl Animations {
         barrel: usize,
         players: &Players,
     ) -> Result<Option<[f32; 3]>, generals_assets::w3d::Error> {
-        let Some(draws) = self.draws.get(unit.type_index) else {
-            return Ok(None);
-        };
-        for (draw, player) in draws.iter().zip(&players.0) {
+        for (module, player) in players.0.iter().enumerate() {
+            let Some(draw) = self.draws[player.draw_type(unit.type_index)].get(module) else {
+                continue;
+            };
             let Some(state) = draw.states.get(player.state) else {
                 continue;
             };
@@ -205,10 +213,10 @@ impl Animations {
         players: &Players,
         bone: &str,
     ) -> Result<Option<[f32; 3]>, generals_assets::w3d::Error> {
-        let Some(draws) = self.draws.get(unit.type_index) else {
-            return Ok(None);
-        };
-        for (draw, player) in draws.iter().zip(&players.0) {
+        for (module, player) in players.0.iter().enumerate() {
+            let Some(draw) = self.draws[player.draw_type(unit.type_index)].get(module) else {
+                continue;
+            };
             let Some(state) = draw.states.get(player.state) else {
                 continue;
             };
@@ -277,12 +285,13 @@ impl Animations {
     }
 
     pub fn decal_model(&self, players: &Players, type_index: usize) -> Option<(usize, [f32; 2])> {
+        let player = players.0.first()?;
         let state = self
             .draws
-            .get(type_index)?
+            .get(player.draw_type(type_index))?
             .first()?
             .states
-            .get(players.0.first()?.state)?;
+            .get(player.state)?;
         let index = state.model?;
         let bounds = &self.models.get(index)?.bounds;
         Some((
@@ -395,6 +404,14 @@ impl Animations {
                 flags.insert(name.into());
             }
         }
+        for (index, name) in generals_sim::skirmish::combat_bike::RIDER_MODELS
+            .into_iter()
+            .enumerate()
+        {
+            if conditions & (1 << (6 + index)) != 0 {
+                flags.insert(name.into());
+            }
+        }
         if let Some(damage) = damage {
             flags.insert(damage.into());
         }
@@ -445,7 +462,7 @@ impl Animations {
         time: &FrameTime,
         paused: bool,
     ) {
-        let draw = &self.draws[unit.type_index][module];
+        let draw = &self.draws[player.draw_type(unit.type_index)][module];
         let desired = draw.select(flags);
         if !paused {
             playback::manual_frame(player, draw, &self.clips, unit.animation_frame());
@@ -487,7 +504,7 @@ impl Animations {
         tick: u64,
         barrel: Option<(usize, usize)>,
     ) -> Option<Vec<MeshPose>> {
-        let draw = &self.draws[unit.type_index][module];
+        let draw = &self.draws[player.draw_type(unit.type_index)][module];
         let state = &draw.states[player.state];
         let Some(model_index) = state.model else {
             player.current_bones.clear();
@@ -518,7 +535,11 @@ impl Animations {
         let projectile_changed =
             draw.recoil.projectile_slots != 0 && player.projectile_clips != projectile_clips;
         player.projectile_clips = projectile_clips;
-        let overrides = unit.sub_object_overrides();
+        let overrides = if player.drawn_disguise.is_some() {
+            &[]
+        } else {
+            unit.sub_object_overrides()
+        };
         let upgrade_changed = player.sub_object_overrides.as_slice() != overrides;
         if upgrade_changed {
             overrides.clone_into(&mut player.sub_object_overrides);
@@ -534,14 +555,16 @@ impl Animations {
                 secondary.map_or(0.0, |turret| turret.pitch),
             ],
         );
+        let wheels_changed = player.truck_wheels.take_change();
         // Playback and recoil have already run, including shared client RNG.
         // A new child set needs its initial posed mesh even if the pose is equal.
         if player.sampled == Some(sample)
             && !recoil_changed
             && !projectile_changed
             && !upgrade_changed
+            && !wheels_changed
             && player.model == state.render_model
-            && player.owner == Some(unit.owner)
+            && player.owner.is_some()
         {
             return None;
         }
@@ -552,6 +575,9 @@ impl Animations {
             unit.ai.secondary_turret.as_ref(),
         );
         player.muzzle.controls(&mut controls);
+        if let Some(rules) = &draw.truck_wheels {
+            player.truck_wheels.controls(rules, model, &mut controls);
+        }
         let clip = state
             .motions
             .get(player.choice)
@@ -583,7 +609,7 @@ impl Animations {
         mut meshes: Option<Vec<MeshPose>>,
     ) -> Frame {
         let unit = &game.entities[actor];
-        let draw = &self.draws[unit.type_index][module];
+        let draw = &self.draws[player.draw_type(unit.type_index)][module];
         let state = &draw.states[player.state];
         let supply = game.supply_index(actor).and_then(|source| {
             let data = draw.supply.get(&state.render_model?)?;
@@ -650,6 +676,7 @@ impl Animations {
 type PoseSample = (usize, Option<usize>, usize, u32, [u32; 4]);
 
 pub struct Player {
+    drawn_disguise: Option<(usize, u32)>,
     owner: Option<usize>,
     state: usize,
     pending: Option<usize>,
@@ -667,6 +694,8 @@ pub struct Player {
     pending_duration: Option<f32>,
     position: [f32; 2],
     muzzle: muzzle::Player,
+    truck_wheels: combat_bike::Wheels,
+    treads: treads::State,
     projectile_clips: [(u32, u32); 3],
     sub_object_overrides: Vec<generals_sim::skirmish::SubObjectOverride>,
     sampled: Option<PoseSample>,
@@ -678,6 +707,12 @@ pub struct Player {
 pub struct Players(pub Vec<Player>);
 
 impl Players {
+    pub(crate) fn draw_type(&self, original: usize) -> usize {
+        self.0
+            .first()
+            .map_or(original, |player| player.draw_type(original))
+    }
+
     pub(crate) fn current_bone(&self, name: &str) -> Option<(&BoneControl, u64)> {
         self.0.iter().find_map(|player| {
             player
@@ -714,6 +749,11 @@ impl WorldPlayer {
 }
 
 impl Player {
+    fn draw_type(&self, original: usize) -> usize {
+        self.drawn_disguise
+            .map_or(original, |(template, _)| template)
+    }
+
     fn sample(&self, state: &State, turret: [f32; 4]) -> PoseSample {
         (
             self.state,
@@ -726,6 +766,7 @@ impl Player {
 
     pub const fn new(position: [f32; 2], tick: u64) -> Self {
         Self {
+            drawn_disguise: None,
             owner: None,
             state: usize::MAX,
             pending: None,
@@ -743,6 +784,8 @@ impl Player {
             pending_duration: None,
             position,
             muzzle: muzzle::Player::new(),
+            truck_wheels: combat_bike::Wheels::new(),
+            treads: treads::State::new(),
             projectile_clips: [(0, 0); 3],
             sub_object_overrides: Vec::new(),
             sampled: None,
@@ -783,7 +826,10 @@ impl Animations {
     ) -> Result<Vec<DrawInspection>, generals_assets::w3d::Error> {
         let mut result = Vec::new();
         for (module, player) in players.0.iter().enumerate() {
-            let Some(state) = self.draws[type_index][module].states.get(player.state) else {
+            let Some(state) = self.draws[player.draw_type(type_index)]
+                .get(module)
+                .and_then(|draw| draw.states.get(player.state))
+            else {
                 continue;
             };
             let Some(model) = state.model else {
@@ -827,6 +873,7 @@ type AnimatedVisual = (
     &'static UnitVisual,
     &'static mut Players,
     Option<&'static Children>,
+    Option<&'static crate::light_environment::DrawPose>,
 );
 
 type AnimatedMesh = (
@@ -839,6 +886,83 @@ type AnimatedMesh = (
     Option<&'static mut crate::light_environment::Bounds>,
 );
 
+type TruckVisual = (
+    &'static UnitVisual,
+    &'static mut Players,
+    Option<&'static Children>,
+    &'static Visibility,
+    &'static mut Transform,
+    &'static mut DrawPose,
+);
+
+pub fn update_truck_chassis(
+    mut commands: Commands,
+    battle: Res<Match>,
+    clock: Res<Clock>,
+    animations: Res<Animations>,
+    mut visuals: Query<TruckVisual>,
+    parts: Query<&AnimatedPart>,
+) {
+    let battle = battle.into_inner();
+    let clock = clock.into_inner();
+    let animations = animations.into_inner();
+    if !battle.started {
+        return;
+    }
+    let game = &battle.simulation;
+    for (visual, mut players, children, visibility, mut transform, mut pose) in &mut visuals {
+        if visual.generation != battle.generation
+            || *visibility == Visibility::Hidden
+            || !matches!(
+                game.visibility_status(0, visual.index),
+                generals_sim::skirmish::visibility::Status::Clear
+                    | generals_sim::skirmish::visibility::Status::Partial
+            )
+        {
+            continue;
+        }
+        let unit = &game.entities[visual.index];
+        if unit.disabled_held() {
+            continue;
+        }
+        let Some(motion) = game.wheel_draw_motion(visual.index) else {
+            continue;
+        };
+        let suspension = animations.draws[unit.type_index]
+            .iter()
+            .find_map(|draw| draw.truck_wheels.as_ref())
+            .expect("original truck suspension");
+        let draw_type = animations.bind_unit_draws(
+            &mut commands,
+            children,
+            &parts,
+            &mut players,
+            unit,
+            game.tick,
+        );
+        let Some((module, rules)) = animations.draws[draw_type]
+            .iter()
+            .enumerate()
+            .find_map(|(module, draw)| draw.truck_wheels.as_ref().map(|rules| (module, rules)))
+        else {
+            continue;
+        };
+        let wheels = &mut players.0[module].truck_wheels;
+        if clock.frame_milliseconds() != 0 && !battle.paused {
+            let geometry = &game.catalog[unit.type_index].geometry;
+            wheels.update_chassis(
+                rules,
+                suspension,
+                &motion,
+                unit.facing,
+                [geometry.major, geometry.minor],
+                clock,
+            );
+        }
+        wheels.apply_chassis(clock.logic_frame_phase(), &mut transform, &mut pose);
+    }
+}
+
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct AnimationResources<'w> {
     animations: ResMut<'w, Animations>,
@@ -848,108 +972,281 @@ pub struct AnimationResources<'w> {
     timings: Option<Res<'w, crate::render_performance::Timings>>,
 }
 
+type DrawCamera = (&'static Transform, &'static Projection, &'static Camera);
+type DrawCameraFilter = (
+    With<crate::playtest_view::WorldCamera>,
+    Without<AnimatedPart>,
+);
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct DrawableResources<'w, 's> {
+    particles: Option<ResMut<'w, crate::particles::Particles>>,
+    terrain: Option<Res<'w, crate::terrain::Terrain>>,
+    visibility: Option<Res<'w, draw_visibility::DrawVisibility>>,
+    camera: Query<'w, 's, DrawCamera, DrawCameraFilter>,
+}
+
 pub fn update(
     mut commands: Commands,
     battle: Res<Match>,
-    resources: AnimationResources,
+    mut resources: AnimationResources,
     mut visuals: Query<AnimatedVisual>,
+    draw_parts: Query<&AnimatedPart>,
     mut parts: Query<AnimatedMesh>,
+    mut draw: DrawableResources,
 ) {
-    let AnimationResources {
-        mut animations,
-        clock,
-        geometry,
-        mut meshes,
-        timings,
-    } = resources;
-    let _span = timings.as_deref().map(|timings| timings.span("animation"));
+    let _span = resources
+        .timings
+        .as_deref()
+        .map(|timings| timings.span("animation"));
     let battle = battle.into_inner();
-    let geometry = geometry.into_inner();
+    let geometry = resources.geometry.into_inner();
     if !battle.started {
         return;
     }
     // SkirmishGameOptionsMenu::startGame and QuitMenu restart reseed both
     // logic and client streams through InitRandom(the selected game seed).
-    animations.reset_random(battle.generation);
+    resources.animations.reset_random(battle.generation);
     let mut poses = BTreeMap::new();
-    for (entity, visual, mut players, children) in &mut visuals {
-        if visual.generation != battle.generation {
+    let mut frame = draw.particles.as_deref_mut().and_then(|particles| {
+        particle_frame(
+            particles,
+            battle,
+            draw.visibility.as_deref(),
+            &draw.camera,
+            draw.terrain.as_deref(),
+            !battle.paused && resources.clock.frame_milliseconds() != 0,
+        )
+    });
+    for (id, entity) in draw_order(battle, &visuals, frame.as_ref()) {
+        let Some(entity) = entity else {
+            if let (Some(frame), Some(particles)) = (&frame, draw.particles.as_deref_mut()) {
+                frame.fire(particles, &mut resources.animations, id);
+            }
             continue;
-        }
-        if !matches!(
-            battle.simulation.visibility_status(0, visual.index),
-            generals_sim::skirmish::visibility::Status::Clear
-                | generals_sim::skirmish::visibility::Status::Partial
-        ) {
-            continue;
-        }
+        };
+        let (entity, visual, mut players, children, draw_pose) =
+            visuals.get_mut(entity).expect("ordered drawable");
         let unit = &battle.simulation.entities[visual.index];
         if !crate::playtest_view::drawable_present(&battle.simulation, visual.index) {
             continue;
         }
-        let color = battle
-            .simulation
-            .player_colors
-            .get(unit.owner)
-            .copied()
-            .flatten();
-        let flags = object_conditions(battle, unit, animations.damage_thresholds);
-        if players.0.is_empty() {
-            players.0 = (0..animations.draws[unit.type_index].len())
-                .map(|_| Player::new(unit.position, battle.simulation.tick))
-                .collect();
-        }
-        for (module, player) in players.0.iter_mut().enumerate() {
-            animations.advance(
-                player,
-                unit,
-                module,
-                &flags,
-                &clock.time(battle.simulation.tick),
-                battle.paused,
-            );
-            let barrel = battle
-                .simulation
-                .presentation
-                .shots
-                .iter()
-                .find(|shot| shot.source == visual.index)
-                .map(|shot| (shot.weapon_slot, shot.barrel));
-            let pose = animations.pose(player, unit, module, battle.simulation.tick, barrel);
-            let frame =
-                animations.draw_frame(player, &battle.simulation, visual.index, module, pose);
-            let state = &animations.draws[unit.type_index][module].states[player.state];
-            if player.model != state.render_model || player.owner != Some(unit.owner) {
-                if let Some(children) = children {
-                    for child in children {
-                        if parts
-                            .get(*child)
-                            .is_ok_and(|(part, ..)| Some(part.model) == player.model)
-                        {
-                            commands.entity(*child).despawn();
-                        }
+        let can_draw = !draw_visibility::hidden(draw.visibility.as_deref(), battle, id)
+            && frame.as_ref().is_none_or(|frame| frame.in_view(id));
+        let draw_type = resources.animations.bind_unit_draws(
+            &mut commands,
+            children,
+            &draw_parts,
+            &mut players,
+            unit,
+            battle.simulation.tick,
+        );
+        let (draw_owner, color) = draw_owner(battle, visual.index);
+        let flags = object_conditions(battle, unit, resources.animations.damage_thresholds);
+        for module in 0..players.0.len() {
+            if can_draw {
+                let player = &mut players.0[module];
+                let frame = resources.animations.animate_module(
+                    player,
+                    battle,
+                    (id, module),
+                    draw_owner,
+                    &flags,
+                    &resources.clock.time(battle.simulation.tick),
+                );
+                let state = &resources.animations.draws[draw_type][module].states[player.state];
+                if replace_draw_model(
+                    player,
+                    state,
+                    draw_owner,
+                    &mut commands,
+                    children,
+                    &draw_parts,
+                ) {
+                    if let Some(model) = state.render_model {
+                        geometry.spawn_unit_parts(
+                            &mut commands,
+                            entity,
+                            model,
+                            color,
+                            &mut resources.meshes,
+                            &frame,
+                        );
                     }
+                    // Deferred old children keep their old model key, so they cannot
+                    // receive another draw module's new pose in this frame.
+                } else if let Some(model) = state.render_model {
+                    poses.insert((entity, model), frame);
                 }
-                player.model = state.render_model;
-                player.owner = Some(unit.owner);
-                if let Some(model) = state.render_model {
-                    geometry.spawn_unit_parts(
-                        &mut commands,
-                        entity,
-                        model,
-                        color,
-                        &mut meshes,
-                        &frame,
-                    );
-                }
-                // Deferred old children keep their old model key, so they cannot
-                // receive another draw module's new pose in this frame.
-            } else if let Some(model) = state.render_model {
-                poses.insert((entity, model), frame);
+            }
+            if let (Some(frame), Some(particles)) = (&mut frame, draw.particles.as_deref_mut()) {
+                frame.module(
+                    particles,
+                    &mut resources.animations,
+                    &crate::particles::ModuleDraw {
+                        key: (id, module),
+                        players: &players,
+                        pose: draw_pose,
+                    },
+                );
             }
         }
+        if let (Some(frame), Some(particles)) = (&frame, draw.particles.as_deref_mut()) {
+            frame.fire(particles, &mut resources.animations, id);
+        }
     }
-    apply_poses(&mut meshes, &mut parts, &poses);
+    if let (Some(frame), Some(particles)) = (frame, draw.particles.as_deref_mut()) {
+        frame.finish(particles);
+    }
+    apply_poses(&mut resources.meshes, &mut parts, &poses);
+}
+
+fn draw_owner(battle: &Match, id: usize) -> (usize, Option<usize>) {
+    let owner = battle
+        .simulation
+        .apparent_disguise_owner(id, battle.observer_player.unwrap_or(0));
+    (
+        owner,
+        battle
+            .simulation
+            .player_colors
+            .get(owner)
+            .copied()
+            .flatten(),
+    )
+}
+
+fn replace_draw_model(
+    player: &mut Player,
+    state: &State,
+    owner: usize,
+    commands: &mut Commands,
+    children: Option<&Children>,
+    parts: &Query<&AnimatedPart>,
+) -> bool {
+    if player.model == state.render_model && player.owner == Some(owner) {
+        return false;
+    }
+    if let Some(model) = player.model {
+        despawn_draw_parts(commands, children, parts, Some(model));
+    }
+    player.model = state.render_model;
+    player.owner = Some(owner);
+    true
+}
+
+fn particle_frame<'a>(
+    particles: &mut crate::particles::Particles,
+    battle: &'a Match,
+    visibility: Option<&'a draw_visibility::DrawVisibility>,
+    camera: &Query<DrawCamera, DrawCameraFilter>,
+    terrain: Option<&crate::terrain::Terrain>,
+    committed: bool,
+) -> Option<crate::particles::DrawFrame<'a>> {
+    let (transform, projection, camera) = camera.single().ok()?;
+    let region =
+        crate::particles::drawable_region(transform, projection, camera, terrain?.draw_region());
+    Some(crate::particles::DrawFrame::new(
+        particles, battle, visibility, region, committed,
+    ))
+}
+
+fn draw_order(
+    battle: &Match,
+    visuals: &Query<AnimatedVisual>,
+    frame: Option<&crate::particles::DrawFrame<'_>>,
+) -> Vec<(usize, Option<Entity>)> {
+    let mut objects: BTreeMap<_, _> = visuals
+        .iter()
+        .filter(|(_, visual, _, _, _)| visual.generation == battle.generation)
+        .map(|(entity, visual, _, _, _)| (visual.index, Some(entity)))
+        .collect();
+    if let Some(frame) = frame {
+        for id in frame.extra_objects() {
+            objects.entry(id).or_insert(None);
+        }
+    }
+    let mut order: Vec<_> = objects.into_iter().collect();
+    order.sort_unstable_by_key(|&(id, _)| {
+        std::cmp::Reverse(battle.simulation.entities[id].drawable_birth())
+    });
+    order
+}
+
+fn despawn_draw_parts(
+    commands: &mut Commands,
+    children: Option<&Children>,
+    parts: &Query<&AnimatedPart>,
+    model: Option<usize>,
+) {
+    for &child in children.into_iter().flatten() {
+        if parts
+            .get(child)
+            .is_ok_and(|part| model.is_none_or(|model| part.model == model))
+        {
+            commands.entity(child).despawn();
+        }
+    }
+}
+
+impl Animations {
+    fn animate_module(
+        &mut self,
+        player: &mut Player,
+        battle: &Match,
+        key: (usize, usize),
+        draw_owner: usize,
+        flags: &BTreeSet<String>,
+        time: &clock::FrameTime,
+    ) -> Frame {
+        if player.owner != Some(draw_owner) {
+            player.sampled = None;
+        }
+        let (id, module) = key;
+        let unit = &battle.simulation.entities[id];
+        self.advance(player, unit, module, flags, time, battle.paused);
+        let barrel = battle
+            .simulation
+            .presentation
+            .shots
+            .iter()
+            .find(|shot| shot.source == id)
+            .map(|shot| (shot.weapon_slot, shot.barrel));
+        let pose = self.pose(player, unit, module, battle.simulation.tick, barrel);
+        self.draw_frame(player, &battle.simulation, id, module, pose)
+    }
+
+    fn bind_unit_draws(
+        &self,
+        commands: &mut Commands,
+        children: Option<&Children>,
+        parts: &Query<&AnimatedPart>,
+        players: &mut Players,
+        unit: &generals_sim::skirmish::Entity,
+        tick: u64,
+    ) -> usize {
+        let appearance = unit.disguised_appearance();
+        let draw_type = appearance.map_or(unit.type_index, |appearance| appearance.type_index);
+        let disguise = appearance.map(|_| (draw_type, unit.disguise_drawable_revision()));
+        if players
+            .0
+            .first()
+            .is_some_and(|player| player.drawn_disguise != disguise)
+        {
+            despawn_draw_parts(commands, children, parts, None);
+            players.0.clear();
+        }
+        if players.0.is_empty() {
+            players.0 = (0..self.draws[draw_type].len())
+                .map(|_| {
+                    let mut player = Player::new(unit.position, tick);
+                    player.drawn_disguise = disguise;
+                    player
+                })
+                .collect();
+        }
+        draw_type
+    }
 }
 
 fn object_conditions(
@@ -957,7 +1254,11 @@ fn object_conditions(
     unit: &generals_sim::skirmish::Entity,
     thresholds: [f32; 2],
 ) -> BTreeSet<String> {
-    battle.simulation.model_flags(unit, thresholds)
+    let mut flags = battle.simulation.model_flags(unit, thresholds);
+    if unit.disguised_appearance().is_some() {
+        flags.insert("DISGUISED".into());
+    }
+    flags
 }
 
 fn construction_height(

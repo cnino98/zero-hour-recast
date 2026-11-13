@@ -29,7 +29,8 @@ struct Record {
 }
 
 struct Contact {
-    pair: [usize; 2],
+    actor: usize,
+    other: Identity,
     next_hash: Option<usize>,
 }
 
@@ -46,24 +47,30 @@ impl ContactList {
         }
     }
 
-    fn add(&mut self, id: usize, other: usize) {
-        if id == other {
+    fn add(&mut self, id: usize, other: Identity) {
+        if other == Identity::Actor(id) {
             return;
         }
         // PartitionContactList::hash2ints is symmetric and uses 32-bit IDs.
         // Hash membership never determines the separate callback-list order.
-        let hash = id.min(other).wrapping_shl(16).wrapping_add(id.max(other)) & 0xffff_ffff;
+        let index = match other {
+            Identity::Actor(index) | Identity::Map(index) => index,
+        };
+        let hash = id.min(index).wrapping_shl(16).wrapping_add(id.max(index)) & 0xffff_ffff;
         let socket = hash % self.heads.len();
         let mut current = self.heads[socket];
         while let Some(index) = current {
             let contact = &self.contacts[index];
-            if contact.pair == [id, other] || contact.pair == [other, id] {
+            if (contact.actor == id && contact.other == other)
+                || (other == Identity::Actor(contact.actor) && contact.other == Identity::Actor(id))
+            {
                 return;
             }
             current = contact.next_hash;
         }
         self.contacts.push(Contact {
-            pair: [id, other],
+            actor: id,
+            other,
             next_hash: self.heads[socket],
         });
         self.heads[socket] = Some(self.contacts.len() - 1);
@@ -246,12 +253,9 @@ impl Partition {
             .expect("registered partition object");
         for &cell in &record.cells {
             for &identity in &self.cells[cell] {
-                let Identity::Actor(other) = identity else {
-                    continue;
-                };
                 // Native unordered-pair dedup preserves the first pair's
                 // callback orientation and prepends each newly found pair.
-                contacts.add(id, other);
+                contacts.add(id, identity);
             }
         }
     }
@@ -384,7 +388,17 @@ impl Skirmish {
             }
         }
         for contact in contacts.contacts.into_iter().rev() {
-            let [id, other] = contact.pair;
+            let id = contact.actor;
+            let Identity::Actor(other) = contact.other else {
+                let Identity::Map(index) = contact.other else {
+                    unreachable!()
+                };
+                if self.map_contact_intersects(id, index) {
+                    self.physical_map_contact(id, index);
+                    self.redirty_contact(id);
+                }
+                continue;
+            };
             if !self.ground_contact_intersects(id, other) {
                 continue;
             }
@@ -400,6 +414,32 @@ impl Skirmish {
             self.redirty_contact(id);
             self.redirty_contact(other);
         }
+    }
+
+    fn map_contact_intersects(&self, id: usize, index: usize) -> bool {
+        let actor = &self.entities[id];
+        let unit = &self.catalog[actor.type_index];
+        let object = &self.layout.world_objects[index];
+        if !self.collision_present(id)
+            || self.body_no_collisions(id)
+            || !object.kind_of.iter().any(|kind| kind == "IMMOBILE")
+            || object.kind_of.iter().any(|kind| kind == "NO_COLLIDE")
+        {
+            return false;
+        }
+        !unit.immobile()
+            && intersects(
+                &Body {
+                    geometry: self.body_geometry(id),
+                    position: self.object_position(id),
+                    angle: actor.facing,
+                },
+                &Body {
+                    geometry: &object.geometry,
+                    position: object.position,
+                    angle: object.angle,
+                },
+            )
     }
 
     fn ground_contact_intersects(&self, id: usize, other: usize) -> bool {

@@ -11,7 +11,8 @@ use crate::{
 };
 use bevy::{ecs::system::SystemParam, prelude::*};
 use generals_assets::{content, virtual_assets::VirtualAssets};
-use generals_sim::skirmish::{Faction, Kind, Order, Skirmish, sabotage::Effect};
+use generals_sim::skirmish::{DeathType, Faction, Kind, Order, Skirmish, sabotage::Effect};
+use generals_sim::terrain::TerrainMap;
 use std::{error::Error, path::Path};
 
 mod cliff;
@@ -64,6 +65,70 @@ pub fn run(root: &Path) -> Result<(), Box<dyn Error>> {
     cliff::verify(root, &mut game, setup.reserve)?;
     println!(
         "Installed Saboteur: paid Arms Dealer prerequisite and three units, innate concealment, explicit physical supply theft, consumed actors without death losses, original factory shutdown/paused production/exact expiry passed"
+    );
+    verify_fake_building(&mut game)
+}
+
+fn verify_fake_building(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
+    let mut slots = game.slots.clone();
+    for (owner, slot) in slots.iter_mut().enumerate() {
+        slot.faction = Some(Faction::Gla);
+        slot.occupied = owner < 2;
+        slot.difficulty = None;
+        slot.team = None;
+    }
+    game.reset_slots(slots)?;
+    let worker = friendly_entity(game, Kind::Builder, 0)?;
+    construct(game, worker, Kind::SupplyCenter, 0)?;
+    let barracks = construct(game, worker, Kind::Barracks, 0)?;
+    construct(game, worker, Kind::Factory, 0)?;
+    let saboteur = template(game, "GLAInfantrySaboteur")?;
+    let actor = produce_type(game, barracks, saboteur, 0)?;
+
+    let enemy_worker = friendly_entity(game, Kind::Builder, 1)?;
+    crate::fake_building_verification::switch(game, enemy_worker, true)?;
+    let fake = template(game, "FakeGLABarracks")?;
+    let target = crate::fake_building_verification::isolated_fake(game, enemy_worker, fake)?;
+    approach(game, actor, target, 65.0)?;
+    require(
+        game.catalog[fake].fake_building()
+            && game.can_sabotage(actor, target)
+            && game.entities[target].health.to_bits() == game.entities[target].max_health.to_bits(),
+        "Saboteur lacks an eligible full-health paid fake target",
+    )?;
+    let destroyed = game.players[0].statistics.buildings_destroyed;
+    let lost = game.players[1].statistics.buildings_lost;
+    let saboteur_losses = game.players[0].statistics.units_lost;
+    let enemy_kills = game.players[1].statistics.units_destroyed;
+    game.enter(actor, target)?;
+    let (frame, cash, module) = contact(game, actor, target)?;
+    require(
+        cash == 0
+            && matches!(
+                game.catalog[saboteur].behavior.sabotage[module].effect,
+                Effect::FakeBuilding
+            ),
+        "Paid fake used the wrong Saboteur crate",
+    )?;
+    require(
+        !game.entities[target].alive()
+            && matches!(game.entities[target].death_type(), DeathType::Detonated)
+            && game.entities[target].last_attacker() == Some(actor),
+        "Fake did not take lethal DETONATED damage attributed to the paid Saboteur",
+    )?;
+    advance_until(game, 30, "sabotaged fake final destruction", |game| {
+        !game.entities[target].exists()
+    })?;
+    // ScoreKeeper requires SCORE or SCORE_DESTROY. FakeGLABarracks has SCORE_CREATE.
+    require(
+        game.players[0].statistics.buildings_destroyed == destroyed
+            && game.players[1].statistics.buildings_lost == lost
+            && game.players[0].statistics.units_lost == saboteur_losses
+            && game.players[1].statistics.units_destroyed == enemy_kills,
+        "Fake sabotage incorrectly scored the fake or consumed Saboteur",
+    )?;
+    println!(
+        "SABOTAGE_FAKE frame={frame} actor={actor} target={target} detonated=true destroyed=true"
     );
     Ok(())
 }
@@ -278,6 +343,7 @@ fn verify_disabled(game: &Skirmish, setup: &Setup) -> Result<u32, Box<dyn Error>
 #[derive(Resource)]
 struct Check {
     setup: Setup,
+    cliff: CliffCapture,
     stage: u8,
     began: Option<f64>,
     command: Option<u64>,
@@ -286,6 +352,23 @@ struct Check {
     shutdown_sound: String,
     heard: bool,
     diagnostic_saved: bool,
+}
+
+#[derive(Debug)]
+enum CliffStage {
+    Ready,
+    Ascending,
+    OnCliff,
+    Saving,
+    Finishing,
+    Done,
+}
+
+struct CliffCapture {
+    actor: usize,
+    terrain: TerrainMap,
+    foot: f32,
+    stage: CliffStage,
 }
 
 pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> {
@@ -306,8 +389,14 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         "retire preflight theft feedback",
         |game| game.presentation.sabotage_events.is_empty(),
     )?;
-    battle.select_objects(&[setup.actor], true);
     let root = generals_assets::game_root()?;
+    let terrain = cliff::terrain(&root)?;
+    let barracks = friendly_entity(&battle.simulation, Kind::Barracks, 0)?;
+    let saboteur = battle.simulation.entities[setup.reserve].type_index;
+    let climber = produce_type(&mut battle.simulation, barracks, saboteur, 0)?;
+    cliff::reach_foot(&mut battle.simulation, climber, &terrain)?;
+    let foot = battle.simulation.object_position(climber)[2];
+    battle.select_objects(&[climber], true);
     let assets = VirtualAssets::for_zero_hour(
         root.join("GameData/Command and Conquer Generals"),
         root.join("GameData/Command and Conquer Generals Zero Hour"),
@@ -319,6 +408,12 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
     let shutdown_sound = crate::skirmish_data::scalar(field)?.to_owned();
     app.insert_resource(Check {
         setup,
+        cliff: CliffCapture {
+            actor: climber,
+            terrain,
+            foot,
+            stage: CliffStage::Ready,
+        },
         stage: 0,
         began: None,
         command: None,
@@ -333,13 +428,10 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
 }
 
 pub fn register(app: &mut App) {
-    let check = app.world().resource::<Check>();
     let battle = app.world().resource::<Match>();
-    let actor = Vec2::from_array(battle.simulation.entities[check.setup.actor].position);
-    let target = Vec2::from_array(battle.simulation.entities[check.setup.factory].position);
     let generation = battle.generation;
     let mut rig = app.world_mut().resource_mut::<CameraRig>();
-    rig.focus = (actor + target) * 0.05;
+    rig.focus = (Vec2::from_array(cliff::LOW) + Vec2::from_array(cliff::HIGH)) * 0.05;
     rig.generation = generation;
     app.add_systems(FixedUpdate, observe.after(crate::particles::step));
     app.add_systems(
@@ -357,6 +449,18 @@ fn observe(
     mut exit: MessageWriter<AppExit>,
 ) {
     let battle = battle.into_inner();
+    if matches!(check.cliff.stage, CliffStage::Ascending) {
+        let game = &battle.simulation;
+        let id = check.cliff.actor;
+        let actor = &game.entities[id];
+        if actor.moving()
+            && cliff::on_cliff(&check.cliff.terrain, actor.position)
+            && game.object_position(id)[2] > check.cliff.foot + 5.0
+        {
+            time.pause();
+            check.cliff.stage = CliffStage::OnCliff;
+        }
+    }
     if check.stage != 2 {
         return;
     }
@@ -394,6 +498,7 @@ fn observe(
 #[derive(SystemParam)]
 struct View<'w, 's> {
     clock: Res<'w, Time<Real>>,
+    rig: ResMut<'w, CameraRig>,
     visuals: Query<'w, 's, (&'static UnitVisual, &'static Children)>,
     meshes: Query<'w, 's, (&'static AnimatedPart, &'static ViewVisibility)>,
     audio: crate::source_audio::FiringAudioInspection<'w, 's>,
@@ -416,6 +521,57 @@ struct View<'w, 's> {
     >,
     messages: Query<'w, 's, (&'static Text, &'static Node), With<crate::notifications::Row>>,
     ui: Res<'w, crate::control_bar::UiData>,
+}
+
+fn inspect_cliff(
+    check: &mut Check,
+    battle: &mut Match,
+    time: &mut Time<Virtual>,
+    capture: &mut Capture,
+    view: &mut View,
+) -> Result<(), Box<dyn Error>> {
+    let id = check.cliff.actor;
+    require(
+        battle.simulation.entities[id].alive(),
+        "paid Saboteur died during native cliff traversal",
+    )?;
+    match check.cliff.stage {
+        CliffStage::Ready if capture.ready_for_scenario() && visible(view, battle, id) => {
+            battle.simulation.move_to(id, cliff::HIGH)?;
+            time.unpause();
+            check.cliff.stage = CliffStage::Ascending;
+        }
+        CliffStage::OnCliff if capture.ready_for_scenario() && visible(view, battle, id) => {
+            let position = battle.simulation.object_position(id);
+            capture.intermediate("sabotage-cliff.png");
+            check.cliff.stage = CliffStage::Saving;
+            println!(
+                "SABOTAGE_CLIFF_RENDERED actor={id} position={position:?} gained_height={} authored_cliff=true original_mesh_visible=true",
+                position[2] - check.cliff.foot
+            );
+        }
+        CliffStage::Saving if capture.ready_for_scenario() => {
+            check.cliff.stage = CliffStage::Finishing;
+            time.unpause();
+        }
+        CliffStage::Finishing
+            if cliff::arrived(&battle.simulation, id, cliff::HIGH, &check.cliff.terrain) =>
+        {
+            time.pause();
+            require(
+                battle.simulation.object_position(id)[2] - check.cliff.foot > 10.0,
+                "native Saboteur stopped before gaining the original cliff elevation",
+            )?;
+            let actor = Vec2::from_array(battle.simulation.entities[check.setup.actor].position);
+            let target = Vec2::from_array(battle.simulation.entities[check.setup.factory].position);
+            view.rig.focus = (actor + target) * 0.05;
+            battle.select_objects(&[check.setup.actor], true);
+            check.cliff.stage = CliffStage::Done;
+            check.began = None;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn visible(view: &View, battle: &Match, actor: usize) -> bool {
@@ -515,7 +671,7 @@ fn inspect(
     mut mouse: ResMut<Mouse>,
     mut time: ResMut<Time<Virtual>>,
     mut capture: ResMut<Capture>,
-    view: View,
+    mut view: View,
     mut exit: MessageWriter<AppExit>,
 ) {
     if check.stage == 3 {
@@ -526,11 +682,21 @@ fn inspect(
     if now - began >= 60.0 {
         diagnose(&view, &check, &battle, &capture);
         error!(
-            "Saboteur native acceptance timed out at stage {} frame {} contact {:?}",
-            check.stage, battle.simulation.tick, check.contact
+            "Saboteur native acceptance timed out at cliff stage {:?}, factory stage {}, frame {}, contact {:?}",
+            check.cliff.stage, check.stage, battle.simulation.tick, check.contact
         );
         check.stage = 3;
         exit.write(AppExit::error());
+        return;
+    }
+    if !matches!(check.cliff.stage, CliffStage::Done) {
+        if let Err(error) =
+            inspect_cliff(&mut check, &mut battle, &mut time, &mut capture, &mut view)
+        {
+            error!("Saboteur native cliff: {error}");
+            check.stage = 3;
+            exit.write(AppExit::error());
+        }
         return;
     }
     let actor_visible = visible(&view, &battle, check.setup.actor);
@@ -612,5 +778,13 @@ mod tests {
     fn installed_paid_saboteur_contacts_preserve_theft_and_factory_duration() {
         let root = &generals_assets::game_root().unwrap();
         super::run(root).unwrap();
+    }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn installed_paid_saboteur_detonates_fake_with_source_attribution() {
+        let root = &generals_assets::game_root().unwrap();
+        let mut game = crate::opponent_verification::load_game(root, super::MAP_NAME).unwrap();
+        super::verify_fake_building(&mut game).unwrap();
     }
 }

@@ -1,5 +1,5 @@
 use super::HealRules;
-use crate::skirmish::{Kind, Order, containment::tests::setup};
+use crate::skirmish::{Kind, Order, UnitAiUpdate, containment::tests::setup};
 
 fn hospital() -> (crate::skirmish::Skirmish, usize) {
     let (mut game, carrier) = setup(0.0, 0.0);
@@ -8,6 +8,14 @@ fn hospital() -> (crate::skirmish::Skirmish, usize) {
     game.process_update_destruction();
     game.catalog[index].kind = Kind::Barracks;
     game.catalog[index].kind_of = vec!["STRUCTURE".into(), "FS_BARRACKS".into()];
+    // The stock Barracks has HealContain but no AIUpdateInterface to idle its riders.
+    game.catalog[index].ai.update = UnitAiUpdate::Absent;
+    game.catalog[index]
+        .behavior_modules
+        .retain(|module| module.family != "AIUpdateInterface");
+    game.catalog[index].update_modules.retain(|module| {
+        !matches!(module, crate::skirmish::module_updates::ModuleRegistration::Behavior { family, .. } if family == "AIUpdateInterface")
+    });
     let rules = game.catalog[index].contain.as_mut().unwrap();
     rules.heal = Some(HealRules {
         full_heal_frames: 60,

@@ -136,7 +136,8 @@ pub(super) fn update(game: &mut Skirmish, rules: &OpponentRules, state: &mut Sta
         let Some(type_index) = game.catalog.iter().position(|unit| unit.name == entry.name) else {
             return;
         };
-        let Some(worker) = find_builder(game, state.owner, entry.position) else {
+        let Some(worker) = find_builder(game, state.owner, entry.position, state.repair.worker)
+        else {
             return;
         };
         if let Some(position) =
@@ -170,19 +171,28 @@ fn maintain(game: &mut Skirmish, state: &mut State) {
                     .entities
                     .iter()
                     .any(|entity| entity.alive() && entity.build_task_target() == Some(id));
-                if !working && let Some(worker) = find_builder(game, state.owner, entry.position) {
+                if !working
+                    && let Some(worker) =
+                        find_builder(game, state.owner, entry.position, state.repair.worker)
+                {
                     let _ = game.resume_build(worker, id);
                 }
             }
         }
     }
 }
-fn find_builder(game: &Skirmish, owner: usize, position: [f32; 2]) -> Option<usize> {
+fn find_builder(
+    game: &Skirmish,
+    owner: usize,
+    position: [f32; 2],
+    repair_worker: Option<usize>,
+) -> Option<usize> {
     game.entities
         .iter()
         .enumerate()
-        .filter(|(_, e)| {
-            e.owner == owner
+        .filter(|(id, e)| {
+            Some(*id) != repair_worker
+                && e.owner == owner
                 && e.complete()
                 && game.catalog[e.type_index].kind == Kind::Builder
                 && e.build_task_target().is_none()

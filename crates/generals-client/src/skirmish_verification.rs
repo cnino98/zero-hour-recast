@@ -443,7 +443,11 @@ pub fn produce(
     produce_type(game, producer, type_index, owner)
 }
 
-fn producer_unit(game: &Skirmish, producer: usize, kind: Kind) -> Result<usize, Box<dyn Error>> {
+pub fn producer_unit(
+    game: &Skirmish,
+    producer: usize,
+    kind: Kind,
+) -> Result<usize, Box<dyn Error>> {
     let actor = game.entities.get(producer).ok_or("missing producer")?;
     let unit = &game.catalog[actor.type_index];
     unit.buildable_objects

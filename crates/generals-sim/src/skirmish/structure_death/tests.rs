@@ -4,10 +4,9 @@ fn collapse_game() -> (Skirmish, usize) {
     let mut game = super::super::tests::game();
     game.catalog[0].geometry.height = 1.0;
     game.catalog[0].geometry.shape = crate::collision_geometry::Shape::Box;
+    game.catalog[0].body_damage_thresholds = [0.5, 0.1];
     game.catalog[0].structure_death = Some(Rules {
         conditions: crate::skirmish::tests::death_conditions(),
-        transitions: Vec::new(),
-        damage_thresholds: [0.5, 0.1],
         module: Module::Collapse(CollapseRules {
             delay: [1, 1],
             burst_delay: [1, 1],
@@ -80,12 +79,15 @@ fn fixed_collapse_delays_leave_logic_rng_untouched_until_big_burst_choice() {
 #[test]
 fn transition_healing_and_filtered_damage_retire_previous_module_emitters() {
     let (mut game, id) = collapse_game();
-    let rules = game.catalog[0].structure_death.as_mut().unwrap();
-    rules.transitions = vec![TransitionRules {
+    game.catalog[0].behavior.damage_transitions = vec![TransitionRules {
         suppress_water: true,
+        suppress_water_fx: false,
+        effects: std::array::from_fn(|_| Vec::new()),
         particles: std::array::from_fn(|state| {
             if state == 2 {
                 vec![TransitionParticle {
+                    slot: 1,
+                    random_bone: false,
                     bone: "Fire02".into(),
                     template: "OriginalSmoke".into(),
                     position: [1.0, 2.0, 3.0],
@@ -120,18 +122,89 @@ fn transition_healing_and_filtered_damage_retire_previous_module_emitters() {
 }
 
 #[test]
+fn transition_fx_precedes_numbered_smoke_without_consuming_logic_random() {
+    use crate::skirmish::model_bones::{Draw, State};
+    use std::collections::BTreeSet;
+    let (mut game, id) = collapse_game();
+    game.catalog[0].pristine_draws.push(Draw {
+        ignored: BTreeSet::new(),
+        states: vec![State {
+            conditions: vec![BTreeSet::new()],
+            transforms: [(
+                "smoke01".into(),
+                [
+                    [1.0, 0.0, 0.0, 2.0],
+                    [0.0, 1.0, 0.0, 3.0],
+                    [0.0, 0.0, 1.0, 4.0],
+                ],
+            )]
+            .into(),
+        }],
+    });
+    let mut transition = TransitionRules {
+        suppress_water: false,
+        suppress_water_fx: false,
+        effects: std::array::from_fn(|_| Vec::new()),
+        particles: std::array::from_fn(|_| Vec::new()),
+    };
+    transition.effects[2].push(TransitionEffect {
+        slot: 1,
+        template: "OriginalDamageFx".into(),
+        local: [2.0, -3.0, 4.0],
+    });
+    transition.particles[2].push(TransitionParticle {
+        slot: 1,
+        bone: "Smoke".into(),
+        random_bone: true,
+        template: "OriginalSmoke".into(),
+        position: [0.0; 3],
+    });
+    game.catalog[0].behavior.damage_transitions.push(transition);
+    let basis = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+    game.set_object_transform(id, [100.0, 200.0, 30.0], basis);
+    let maximum = game.entities[id].max_health;
+    game.entities[id].health = maximum * 0.1;
+    let expected_random = game.random;
+    game.structure_damage_transition(id, maximum);
+    assert_eq!(game.random, expected_random);
+    let events = &game.presentation.structure_events;
+    assert!(matches!(
+        events[0].action,
+        VisualAction::TransitionClear { .. }
+    ));
+    assert!(matches!(events[1].action, VisualAction::PositionFx));
+    assert_eq!(
+        events[1]
+            .effect
+            .as_ref()
+            .unwrap()
+            .position
+            .map(f32::to_bits),
+        [103.0_f32, 202.0, 34.0].map(f32::to_bits)
+    );
+    let VisualAction::TransitionParticle { ref positions, .. } = events[2].action else {
+        panic!("transition smoke did not follow the positional FX");
+    };
+    assert_eq!(positions.len(), 1);
+    assert_eq!(
+        positions[0].map(f32::to_bits),
+        [2.0_f32, 3.0, 4.0].map(f32::to_bits)
+    );
+}
+
+#[test]
 fn transition_mask_uses_retained_body_damage_not_the_incoming_anonymous_water_hit() {
     let (mut game, id) = collapse_game();
-    game.catalog[0]
-        .structure_death
-        .as_mut()
-        .unwrap()
-        .transitions = vec![TransitionRules {
+    game.catalog[0].behavior.damage_transitions = vec![TransitionRules {
         suppress_water: true,
+        suppress_water_fx: false,
+        effects: std::array::from_fn(|_| Vec::new()),
         particles: std::array::from_fn(|state| {
             if state == 2 {
                 vec![TransitionParticle {
+                    slot: 1,
                     bone: "None".into(),
+                    random_bone: false,
                     template: "StructureTransitionMediumSmoke".into(),
                     position: [0.0; 3],
                 }]

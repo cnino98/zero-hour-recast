@@ -30,6 +30,8 @@ pub(super) fn descriptor(family: &str) -> Option<Descriptor> {
         | "ParachuteContain"
         | "HealContain"
         | "TransportContain"
+        | "RiderChangeContain"
+        | "AnimationSteeringUpdate"
         | "GarrisonContain"
         | "HelixContain"
         | "OverlordContain"
@@ -189,7 +191,10 @@ fn validate_update_data(
             ));
         }
         "OCLUpdate"
-            if unit.name != "TechReinforcementPad" || unit.behavior.ocl_update.is_none() =>
+            if !matches!(
+                unit.name.as_str(),
+                "TechReinforcementPad" | "AmericaSupplyDropZone"
+            ) || unit.behavior.ocl_update.is_none() =>
         {
             return Err(format!(
                 "{}: OCLUpdate lacks an actual supported timed delivery consumer",
@@ -201,6 +206,9 @@ fn validate_update_data(
                 "{}: DeliverPayloadAIUpdate lacks concrete transport data",
                 unit.name
             ));
+        }
+        "RiderChangeContain" | "AnimationSteeringUpdate" if unit.combat_bike.is_none() => {
+            return Err(format!("{}: {family} lacks Combat Bike data", unit.name));
         }
         "PhysicsBehavior" if unit.physical.is_none() && unit.live_physics.is_none() => {
             return Err(format!(
@@ -586,6 +594,8 @@ impl Skirmish {
             "HealContain" => self.update_heal_container(owner),
             "GarrisonContain" => self.update_garrison(owner),
             "HelixContain" => self.update_helix_contain(owner),
+            "RiderChangeContain" => self.update_combat_bike(owner),
+            "AnimationSteeringUpdate" => self.update_bike_steering(owner),
             "TransportContain" | "InternetHackContain" | "OverlordContain" => {
                 self.update_transport_contain(owner)
             }
@@ -860,10 +870,11 @@ impl Skirmish {
             "RebuildHoleBehavior" => self.construct_rebuild_hole(owner, ordinal),
             "GenerateMinefieldBehavior" => self.construct_mine_generator(owner, ordinal),
             "MinefieldBehavior" => self.construct_land_mine(owner, ordinal),
-            // TechBuildingBehavior has no instance fields; its constructor only sets wake 1.
-            "TransportContain" | "InternetHackContain" | "HelixContain" | "OverlordContain" => {
-                self.construct_transport_contain(owner);
-            }
+            "TransportContain"
+            | "InternetHackContain"
+            | "HelixContain"
+            | "OverlordContain"
+            | "RiderChangeContain" => self.construct_transport_contain(owner),
             "DumbProjectileBehavior" | "MissileAIUpdate" => {
                 self.construct_projectile_module(owner, registration);
             }
@@ -883,8 +894,7 @@ impl Skirmish {
             | "JetSlowDeathBehavior"
             | "HelicopterSlowDeathBehavior"
             | "BattleBusSlowDeathBehavior" => {
-                let index = self.slow_death_index(owner, family, ordinal);
-                self.construct_slow_death(owner, index);
+                self.construct_slow_death(owner, self.slow_death_index(owner, family, ordinal));
             }
             "DemoTrapUpdate" => self.construct_demo_trap(owner, ordinal),
             "SpectreGunshipUpdate" => self.construct_spectre(owner),
@@ -929,10 +939,11 @@ impl Skirmish {
             | "QueueProductionExitUpdate"
             | "PropagandaTowerBehavior"
             | "BattlePlanUpdate"
+            | "AnimationSteeringUpdate"
             | "NeutronBlastBehavior"
             | "FireSpreadUpdate"
             | "TechBuildingBehavior" => {}
-            _ => unreachable!("unbound update constructor passed admission"),
+            _ => unreachable!("unbound update constructor {family} passed admission"),
         }
     }
 }

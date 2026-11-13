@@ -54,6 +54,9 @@ impl Particles {
             burst_delay: 0.0,
             remaining: rules.system_lifetime,
             size_bonus: 0.0,
+            size_multiplier: 1.0,
+            velocity_multiplier: [1.0; 3],
+            burst_multiplier: 1.0,
             lifetime: None,
             personality: 0,
         };
@@ -86,6 +89,7 @@ impl Particles {
             self.generation = generation;
             self.frame = None;
             self.processed = None;
+            self.advanced = None;
             self.phase = 0.0;
         }
         if self.frame != Some(frame) {
@@ -107,10 +111,10 @@ impl Particles {
             // system. Appended children are visited only if that iterator had
             // not already reached the end of the list.
             let had_successor = index + 1 < self.emitters.len();
-            if self.emitters[index].drawable_attachment.is_none()
-                && self.emitters[index].fire_attachment.is_none()
-            {
-                self.update_emitter(index, frame, random, ground);
+            self.update_emitter(index, frame, random, ground);
+            let emitter = &mut self.emitters[index];
+            if emitter.drawable_attachment.is_some() && emitter.previous.is_some() {
+                emitter.previous = Some(emitter.transform.position);
             }
             if !had_successor {
                 break;
@@ -139,6 +143,18 @@ impl Particles {
         }
     }
 
+    pub(super) fn advance_frame(
+        &mut self,
+        frame: u64,
+        random: &mut impl FnMut(f32, f32) -> f32,
+        ground: &impl Fn([f32; 2]) -> f32,
+    ) {
+        if self.advanced != Some(frame) {
+            self.advanced = Some(frame);
+            self.logic(frame, random, ground);
+        }
+    }
+
     pub(super) fn update_emitter(
         &mut self,
         index: usize,
@@ -164,7 +180,8 @@ impl Particles {
             && (rules.system_lifetime == 0.0 || emitter.remaining > 0.0)
         {
             if emitter.burst_delay == 0.0 {
-                let sampled = rules.burst_count.sample(random).trunc();
+                let sampled =
+                    (rules.burst_count.sample(random).trunc() * emitter.burst_multiplier).trunc();
                 let count = (0..=4096u16)
                     .find(|&count| f32::from(count) >= sampled)
                     .expect("validated particle burst range");

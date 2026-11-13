@@ -221,3 +221,75 @@ fn installed_death_valley_gla_delivery_retirement() {
         &Retirement::Deflected,
     );
 }
+
+#[ignore = "requires original game installation"]
+#[test]
+fn installed_paid_supply_drop_zone_delivers_six_physical_crates_and_retires() {
+    use crate::strategy_verification::template;
+
+    let (mut game, _) = original_game("Maps\\Cairo Commandos\\Cairo Commandos.map");
+    let zone = crate::reinforcement_pad_capture::build_paid_zone(&mut game).unwrap();
+    let first = game.entities.len();
+    let completion = game.tick;
+    let plane_type = template(&game, "AmericaJetCargoPlane").unwrap();
+    let chute_type = template(&game, "AmericaCrateParachute").unwrap();
+    let crate_type = template(&game, "SupplyDropZoneCrate").unwrap();
+    advance_until(&mut game, 3602, "full Drop Zone timer", |game| {
+        game.entities[first..]
+            .iter()
+            .any(|actor| actor.type_index == plane_type)
+    })
+    .unwrap();
+    assert!(game.tick >= completion + 3599);
+    let plane = (first..game.entities.len())
+        .find(|&id| game.entities[id].type_index == plane_type)
+        .unwrap();
+    assert_eq!(game.entities[plane].producer(), Some(zone));
+    let chutes = game.passengers(plane).to_vec();
+    assert_eq!(chutes.len(), 6);
+    let crates: Vec<_> = chutes
+        .iter()
+        .map(|&id| {
+            assert_eq!(game.entities[id].type_index, chute_type);
+            let [payload] = game.passengers(id) else {
+                panic!("each original parachute contains one money crate");
+            };
+            assert_eq!(game.entities[*payload].type_index, crate_type);
+            assert_eq!(game.entities[*payload].owner, 0);
+            *payload
+        })
+        .collect();
+    let mut pickups = Vec::new();
+    advance_until(
+        &mut game,
+        3600,
+        "six actual MoneyCrateCollide rewards and plane retirement",
+        |game| {
+            pickups.extend(std::mem::take(&mut game.presentation.money_crate_events));
+            pickups.len() == 6 && !game.entities[plane].exists()
+        },
+    )
+    .unwrap();
+    let mut received = Vec::new();
+    for event in pickups {
+        received.push(event.item);
+        assert_eq!(game.entities[event.collector].owner, 0);
+        assert_eq!(event.amount, 250);
+    }
+    let mut expected = crates.clone();
+    expected.sort_unstable();
+    received.sort_unstable();
+    assert_eq!(received, expected);
+    assert!(crates.into_iter().all(|item| !game.entities[item].exists()));
+    assert!(game.sell(0, zone).is_ok());
+    let next = game.entities.len();
+    for _ in 0..3600 {
+        game.step();
+    }
+    assert!(!game.entities[zone].exists());
+    assert!(
+        !game.entities[next..]
+            .iter()
+            .any(|actor| actor.type_index == plane_type)
+    );
+}

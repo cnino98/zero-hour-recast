@@ -378,6 +378,20 @@ pub(super) fn has_building_or_enemy(battle: &Match) -> bool {
 }
 
 impl Match {
+    pub(crate) fn apply_bike_selections(&mut self) {
+        for event in std::mem::take(&mut self.simulation.presentation.bike_selection_events) {
+            if !self.selected.contains(&event.from) || self.simulation.entities[event.to].owner != 0
+            {
+                continue;
+            }
+            if event.dismount || !self.selected.contains(&event.to) {
+                self.select_objects(&[event.to], false);
+            }
+            self.selected.retain(|&id| id != event.from);
+            self.selection_remove(&[event.from]);
+        }
+    }
+
     /// `MSG_CREATE_SELECTED_GROUP[_NO_SOUND]`. Preserve every ordered argument,
     /// including repeats, independently of the GUI's drawable list.
     pub(crate) fn selection_create(&mut self, added: &[usize], replace: bool) {
@@ -525,7 +539,9 @@ mod tests {
         .unwrap();
         mouse.groups[3] = vec![old];
         let next = crate::fake_building_verification::convert(&mut battle.simulation, old).unwrap();
+        assert!(battle.simulation.deselected_objects.contains(&old));
         mouse.apply_replacements(&mut battle);
+        crate::input::apply_spectre_selections(&mut battle);
         assert_eq!(battle.selected, [next]);
         assert_eq!(battle.logic_selection, [next]);
         assert_eq!(mouse.groups[3], [next]);

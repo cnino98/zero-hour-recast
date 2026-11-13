@@ -272,3 +272,89 @@ fn missing_pristine_blade_bone_transforms_cached_position_as_source_inout_parame
         [600.0_f32, 600.0, 1000.0].map(f32::to_bits)
     );
 }
+
+#[test]
+fn helicopter_crash_uses_highest_bridge_layer_even_when_already_below_deck() {
+    for height in [80.5, 40.0] {
+        let (mut game, helicopter) = fixture();
+        let layer = game
+            .movement_terrain
+            .add_bridge(
+                crate::terrain::BridgeGeometry {
+                    from: [250.0, 300.0, 80.0],
+                    to: [350.0, 300.0, 80.0],
+                    corners: [
+                        [250.0, 325.0, 80.0],
+                        [250.0, 275.0, 80.0],
+                        [350.0, 325.0, 80.0],
+                        [350.0, 275.0, 80.0],
+                    ],
+                },
+                |_| 0.0,
+            )
+            .unwrap();
+        game.set_object_position(helicopter, [300.0, 300.0, 100.0]);
+        game.apply_typed_hit(helicopter, helicopter, 999_999.0, DeathType::Normal);
+        game.set_object_position(helicopter, [300.0, 300.0, height]);
+        game.update_helicopter_slow_death(helicopter, 0);
+        assert_eq!(game.entities[helicopter].layer, layer);
+        assert!(game.entities[helicopter].helicopter_hit_ground());
+        assert!(
+            game.presentation
+                .object_fx_events
+                .iter()
+                .any(|event| event.effect == "HelicopterPhase1")
+        );
+        assert!(game.entities[helicopter].disabled_status & (1 << 3) != 0);
+    }
+}
+
+#[test]
+fn dying_helicopter_hits_logical_map_shrubbery_and_retires_at_impact() {
+    use crate::{
+        collision_geometry::{Geometry, Shape},
+        skirmish::MapWorldObject,
+    };
+
+    let (mut game, helicopter) = fixture();
+    game.layout.world_objects.push(MapWorldObject {
+        template: "MapShrubbery".into(),
+        kind_of: vec!["IMMOBILE".into(), "SHRUBBERY".into()],
+        position: [300.0, 300.0, 0.0],
+        angle: 0.0,
+        geometry: Geometry {
+            shape: Shape::Cylinder,
+            is_small: true,
+            major: 4.0,
+            minor: 4.0,
+            height: 15.0,
+        },
+        original_team: "teamCivilian".into(),
+    });
+    game.observe_map_partition(0);
+    game.update_ground_contacts();
+    game.set_object_position(helicopter, [300.0, 300.0, 100.0]);
+    game.apply_typed_hit(helicopter, helicopter, 999_999.0, DeathType::Normal);
+    game.set_object_position(helicopter, [300.0, 300.0, 10.0]);
+    game.update_ground_contacts();
+    game.tick += 1;
+    game.update_helicopter_slow_death(helicopter, 0);
+    assert!(game.entities[helicopter].helicopter_hit_ground());
+    assert!(game.entities[helicopter].disabled_held());
+    let impact_height = game.object_position(helicopter)[2];
+    assert!(impact_height > game.ground_height([300.0, 300.0]));
+
+    game.tick += 1;
+    game.update_helicopter_slow_death(helicopter, 0);
+    game.process_update_destruction();
+    assert!(!game.entities[helicopter].exists());
+    let hull = game.entities.len() - 1;
+    assert_eq!(
+        game.catalog[game.entities[hull].type_index].name,
+        "HelixRubbleHull"
+    );
+    assert_eq!(
+        game.object_position(hull)[2].to_bits(),
+        impact_height.to_bits()
+    );
+}

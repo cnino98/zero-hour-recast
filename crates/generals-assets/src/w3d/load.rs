@@ -1,10 +1,25 @@
 //! Native on-demand prototype lookup for HLOD bounds, with verified absence.
 use super::{Chunks, Error, Model, read_name};
-use crate::{AssetError, virtual_assets::VirtualAssets};
+use crate::{
+    AssetError,
+    virtual_assets::{Asset, VirtualAssets},
+};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     error::Error as StdError,
 };
+
+/// Read a model, hierarchy or clip with the installed English profile's
+/// `GameFileClass::Set_Name` search order.
+///
+/// # Errors
+/// Returns invalid, missing or unreadable asset errors.
+pub fn read_asset(assets: &VirtualAssets, name: &str) -> Result<Asset, AssetError> {
+    match assets.read(&format!("data/english/art/w3d/{name}.w3d")) {
+        Err(AssetError::Missing(_)) => assets.read(&format!("art/w3d/{name}.w3d")),
+        result => result,
+    }
+}
 
 impl Model {
     /// Load original geometry and its hierarchy through actual asset precedence.
@@ -17,9 +32,9 @@ impl Model {
         if name.eq_ignore_ascii_case("NULL") {
             return Ok(Self::null());
         }
-        let bytes = assets.read(&format!("art/w3d/{name}.w3d"))?.bytes;
+        let bytes = read_asset(assets, name)?.bytes;
         let hierarchy = Self::hierarchy_name(&bytes)?
-            .map(|name| assets.read(&format!("art/w3d/{name}.w3d")))
+            .map(|name| read_asset(assets, &name))
             .transpose()?;
         let parsed = Self::parse_with_hierarchy(
             &bytes,
@@ -57,7 +72,7 @@ impl Model {
                         match on_demand_file(assets, &filename) {
                             Ok(Some(file)) => {
                                 let hierarchy = Self::hierarchy_name(&file.bytes)?
-                                    .map(|name| assets.read(&format!("art/w3d/{name}.w3d")))
+                                    .map(|name| read_asset(assets, &name))
                                     .transpose()?;
                                 Self::parse_with_hierarchy(
                                     &file.bytes,
@@ -92,7 +107,7 @@ fn on_demand_file(
     assets: &VirtualAssets,
     filename: &str,
 ) -> Result<Option<crate::virtual_assets::Asset>, AssetError> {
-    match assets.read(&format!("art/w3d/{filename}.w3d")) {
+    match read_asset(assets, filename) {
         Ok(file) => Ok(Some(file)),
         Err(AssetError::Missing(_)) => match assets.read(&format!("art/{filename}.w3d")) {
             Ok(file) => Ok(Some(file)),
@@ -189,15 +204,22 @@ mod tests {
     }
 
     #[test]
-    fn on_demand_lookup_prefers_w3d_then_falls_back_to_parent_art_and_reports_absence() {
+    fn on_demand_lookup_prefers_localized_then_w3d_then_parent_art_and_reports_absence() {
         let fixture = std::env::temp_dir().join(format!("w3d-on-demand-{}", std::process::id()));
         fs::create_dir_all(fixture.join("art/w3d")).unwrap();
+        fs::create_dir_all(fixture.join("data/english/art/w3d")).unwrap();
+        let localized = fixture.join("data/english/art/w3d/child.w3d");
         let native = fixture.join("art/w3d/child.w3d");
         let fallback = fixture.join("art/child.w3d");
+        fs::write(&localized, b"localized").unwrap();
         fs::write(&native, b"native").unwrap();
         fs::write(&fallback, b"parent").unwrap();
         let assets =
             VirtualAssets::from_layers(vec![crate::virtual_assets::Layer::Loose(fixture.clone())]);
+
+        let found = on_demand_file(&assets, "child").unwrap().unwrap();
+        assert_eq!(found.bytes, b"localized");
+        fs::remove_file(localized).unwrap();
 
         let found = on_demand_file(&assets, "child").unwrap().unwrap();
         assert_eq!(found.bytes, b"native");

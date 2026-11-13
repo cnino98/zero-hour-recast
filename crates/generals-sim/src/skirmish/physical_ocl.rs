@@ -1,6 +1,6 @@
 //! Physical `GenericObjectCreationNugget` objects and their original body modules.
 //! SH 2bfaea60: ObjectCreationList.cpp, PhysicsUpdate.cpp and SlowDeathBehavior.cpp.
-use super::{Entity, Skirmish, startup};
+use super::{Entity, Skirmish, partition::Identity, startup};
 use num_traits::ToPrimitive;
 
 mod collision;
@@ -191,7 +191,7 @@ pub(super) struct State {
     draw: Option<DebrisDraw>,
     physics_frame: Option<u64>,
     normal_frame: Option<u64>,
-    last_collidee: Option<usize>,
+    last_collidee: Option<Identity>,
     ignore_collisions_with: Option<usize>,
     current_overlap: Option<usize>,
     previous_overlap: Option<usize>,

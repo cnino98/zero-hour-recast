@@ -40,6 +40,7 @@ fn setup(command: Command, power: Option<Power>) -> (Skirmish, usize, usize) {
             command,
             weapon_slot: 1,
             power,
+            upgrade: None,
             needs_object: true,
         }],
         sets: BTreeMap::from([("HuntCommands".into(), slots)]),
@@ -272,12 +273,75 @@ fn center_range_is_strict_but_priority_uses_bounding_circle_distance() {
     assert_eq!(game.scan_command_button_target(actor, 0, 0), Some(near));
 }
 
-fn add_power(unit: &mut crate::skirmish::UnitType, power: &Power) {
+#[test]
+fn scripted_capture_chooses_a_neutral_provider_and_preserves_other_team_members() {
+    use crate::skirmish::special_ability::PowerType;
+    let (mut game, actor, _) = setup(
+        Command::SpecialPower,
+        Some(Power {
+            name: "HuntPower".into(),
+            kind: PowerType::SpecialInfantryCaptureBuilding,
+        }),
+    );
+    let kind = game.type_for(0, Kind::Barracks).unwrap();
+    game.catalog[kind].name = "Provider".into();
+    game.catalog[kind]
+        .kind_of
+        .extend(["STRUCTURE".into(), "CAPTURABLE".into()]);
+    let neutral = game.neutral_owner();
+    let target = game.spawn(kind, neutral, [380.0, 200.0], true);
+    let friendly = game.spawn(kind, 1, [330.0, 200.0], true);
+    let other = game.spawn(game.entities[actor].type_index, 1, [300.0, 250.0], true);
+    game.update_ground_contacts();
+    assert!(
+        game.team_power_on_nearest_type(&[actor], "HuntButton", &["Provider".into()])
+            .is_some()
+    );
+    assert!(game.native_ability_active(actor, 0));
+    assert!(!game.capture_in_use(other));
+    for _ in 0..300 {
+        if game.entities[target].owner == 1 {
+            break;
+        }
+        game.step();
+    }
+    assert_eq!(game.entities[target].owner, 1);
+    assert_eq!(game.entities[friendly].owner, 1);
+}
+
+#[test]
+fn scripted_capture_without_a_valid_list_target_leaves_current_orders_intact() {
+    use crate::skirmish::special_ability::PowerType;
+    let (mut game, actor, _) = setup(
+        Command::SpecialPower,
+        Some(Power {
+            name: "HuntPower".into(),
+            kind: PowerType::SpecialInfantryCaptureBuilding,
+        }),
+    );
+    game.move_to(actor, [600.0, 200.0]).unwrap();
+    assert!(
+        game.team_power_on_nearest_type(&[actor], "HuntButton", &["AbsentProvider".into()])
+            .is_some()
+    );
+    assert!(matches!(game.entities[actor].ai.order, Order::Move(_)));
+    assert!(!game.capture_in_use(actor));
+}
+
+pub(in crate::skirmish) fn add_power(unit: &mut crate::skirmish::UnitType, power: &Power) {
     use crate::skirmish::{special_ability as ability, special_power};
     unit.special_powers.push(special_power::Rules {
         tag: "HuntPower".into(),
         name: power.name.clone(),
-        power_type: "SPECIAL_HACKER_DISABLE_BUILDING".into(),
+        power_type: match power.kind {
+            ability::PowerType::SpecialInfantryCaptureBuilding => {
+                "SPECIAL_INFANTRY_CAPTURE_BUILDING"
+            }
+            ability::PowerType::SpecialHackerDisableBuilding => "SPECIAL_HACKER_DISABLE_BUILDING",
+            ability::PowerType::SpecialDisguiseAsVehicle => "SPECIAL_DISGUISE_AS_VEHICLE",
+            _ => unreachable!("fixture power"),
+        }
+        .into(),
         required_science: String::new(),
         timer: special_power::Timer {
             reload_frames: 0,

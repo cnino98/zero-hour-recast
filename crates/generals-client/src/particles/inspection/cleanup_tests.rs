@@ -57,7 +57,13 @@ fn cleanup_app() -> (App, cleanup_verification::Setup) {
         // acceptance separately exercises the complete WeaponFx dispatcher.
         .add_systems(
             Update,
-            (record_bone_events, particles::step, particles::update).chain(),
+            (
+                record_bone_events,
+                particles::step,
+                particles::advance,
+                particles::update,
+            )
+                .chain(),
         );
     app.world_mut()
         .spawn((crate::playtest_view::WorldCamera, Transform::IDENTITY));

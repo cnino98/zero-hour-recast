@@ -116,6 +116,7 @@ mod tests {
 
     fn tree() -> WorldObject {
         WorldObject {
+            terrain_bridge: false,
             animation: None,
             model_index: 0,
             position: [100.0, 200.0, 30.0],

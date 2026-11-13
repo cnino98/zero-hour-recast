@@ -1,7 +1,7 @@
 //! `AIPlayer::newMap` authored NPC initial structures; `AISkirmishPlayer` replaces
 //! playable-side lists with its source `AIData` layout before building.
 use super::BuildEntry;
-use crate::skirmish::Skirmish;
+use crate::skirmish::{Skirmish, ai_repair};
 
 mod collectors;
 mod instant;
@@ -20,7 +20,7 @@ pub(super) struct State {
     ready: bool,
     work: Vec<work::WorkOrder>,
     team_delay: i32,
-    repair: repair::State,
+    repair: ai_repair::State,
     center: Option<[f32; 2]>,
 }
 
@@ -93,7 +93,7 @@ impl Skirmish {
             ready: false,
             work: Vec::new(),
             team_delay: 0,
-            repair: repair::State::new(),
+            repair: ai_repair::State::new(),
             center,
         });
         for entry in authored..self.map_scripts.npc_builds[index].entries.len() {

@@ -50,6 +50,30 @@ fn install_spawn(
 }
 
 #[test]
+fn selling_stops_spawn_replacements_before_the_building_sinks() {
+    let (mut game, host) = setup(0.0, 0.0);
+    let spawn_rules = Rules {
+        conditions: crate::skirmish::tests::death_conditions(),
+        templates: vec![game.catalog[5].name.clone()],
+        count: 2,
+        replace_frames: 0,
+        flags: Rules::FREE_WILL,
+        initial_burst: 0,
+    };
+    let host = install_spawn(&mut game, host, spawn_rules, None);
+    let kind = game.entities[host].type_index;
+    game.catalog[kind].kind = crate::skirmish::Kind::Defense;
+    let owner = game.entities[host].owner;
+    game.sell(owner, host).unwrap();
+    for frame in 1..=30 {
+        game.tick = frame;
+        game.run_object_updates();
+    }
+    assert!(!game.entities[host].sold_model());
+    assert!(game.spawned_children(host).is_empty());
+}
+
+#[test]
 fn construction_keeps_scan_cadence_then_grants_original_exits_once() {
     let (mut game, host) = setup(0.0, 0.0);
     game.catalog[5].name = "SpawnedDefender".into();

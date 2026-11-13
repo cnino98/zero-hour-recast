@@ -246,6 +246,21 @@ impl TerrainMap {
         (2_u8..=15).take(self.bridges.len())
     }
 
+    pub(crate) fn destroyed_bridge_connections(
+        &self,
+    ) -> impl Iterator<Item = (u8, impl Iterator<Item = Cell> + '_)> + '_ {
+        self.bridge_layers()
+            .zip(&self.bridges)
+            .filter(|(_, bridge)| bridge.destroyed)
+            .map(|(layer, bridge)| {
+                let ground = bridge
+                    .cells
+                    .iter()
+                    .filter_map(|(&cell, info)| info.connect_ground.then_some(cell));
+                (layer, ground)
+            })
+    }
+
     pub(crate) fn path_layers(&self) -> impl Iterator<Item = u8> + '_ {
         self.bridge_layers()
             .chain((self.bridges.len() < 14 && self.walls.bounds.is_some()).then_some(15))

@@ -52,10 +52,22 @@ impl Skirmish {
         target: usize,
         source: i32,
     ) -> bool {
-        if !self.native_has_power_type(id, kind)
+        self.special_power_object_admission(id, name, kind, target, source, true)
+    }
+
+    pub(in crate::skirmish) fn special_power_object_admission(
+        &mut self,
+        id: usize,
+        name: &str,
+        kind: PowerType,
+        target: usize,
+        source: i32,
+        check_source: bool,
+    ) -> bool {
+        if (check_source && !self.native_has_power_type(id, kind))
             || self.entities[target].is_effectively_dead()
             || self.special_power_ordinal(id, name).is_none()
-            || self.special_power_percent(id, name) < 1.0
+            || (check_source && self.special_power_percent(id, name) < 1.0)
             || self.action_target_shrouded(id, target, source)
         {
             return false;
@@ -145,7 +157,7 @@ impl Skirmish {
         let relation = self.object_relationship(id, target);
         if !self.attack_kind(target, "STRUCTURE")
             || victim.under_construction()
-            || victim.sold_model()
+            || victim.selling()
             || !(relation == 0 || self.attack_kind(target, "CAPTURABLE") && relation != 2)
             || self.action_undetected(target)
         {

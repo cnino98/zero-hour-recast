@@ -16,7 +16,7 @@ pub fn normal_set(lines: &[ContentLine]) -> Result<Vec<&str>, Box<dyn Error>> {
     named_set(lines, "SET_NORMAL")
 }
 
-pub(super) fn named_set<'a>(
+pub fn named_set<'a>(
     lines: &'a [ContentLine],
     set_name: &str,
 ) -> Result<Vec<&'a str>, Box<dyn Error>> {
@@ -128,7 +128,7 @@ fn ground_rules(
         "TWO_LEGS" => GroundAppearance::Legs,
         "CLIMBER" => GroundAppearance::Climber,
         "TREADS" => GroundAppearance::Treads,
-        "FOUR_WHEELS" => GroundAppearance::Wheels {
+        "FOUR_WHEELS" | "MOTORCYCLE" => GroundAppearance::Wheels {
             min_turn_speed: per_frame(lines, 0, "MinTurnSpeed", 99_999.0, FRAME_SECONDS)?,
             can_move_backwards: boolean(lines, "CanMoveBackwards")?,
         },

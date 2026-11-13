@@ -1,4 +1,6 @@
 //! Native paid Hijacker input, original meshes and the live hidden-driver conversion.
+pub mod airborne;
+
 use crate::{
     capture_framing::AircraftFrame,
     hijacker_verification::{self, Setup},

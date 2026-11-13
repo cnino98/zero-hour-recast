@@ -117,6 +117,23 @@ impl State {
 }
 
 impl Skirmish {
+    /// Remaining whole seconds and percentage for the native OCL context.
+    #[must_use]
+    pub fn delivery_countdown(&self, id: usize) -> Option<(u32, u8)> {
+        let actor = self.entities.get(id)?;
+        let timer = actor.behaviors.reinforcement_timers.first()?;
+        let duration = timer.next_creation.wrapping_sub(timer.timer_started);
+        if duration == 0 {
+            return Some((0, 0));
+        }
+        let remaining = timer.next_creation.wrapping_sub(self.update_frame());
+        let fraction = super::progression::integer_real(remaining)
+            / super::progression::integer_real(duration);
+        let percent =
+            super::progression::real_unsigned(((1.0 - fraction) * 100.0).clamp(0.0, 100.0));
+        Some((remaining / 30, u8::try_from(percent).ok()?))
+    }
+
     pub(in crate::skirmish) fn construct_reinforcement_timer(&mut self, id: usize, ordinal: usize) {
         assert_eq!(
             ordinal,

@@ -13,6 +13,7 @@ use crate::{
 };
 use bevy::{camera::visibility::RenderLayers, prelude::*};
 pub use data::load;
+pub use rope::RopeSegment;
 pub use rope::update as update_ropes;
 pub use tracer::TracerVisual;
 

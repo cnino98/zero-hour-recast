@@ -444,6 +444,9 @@ fn named_state(assets: &VirtualAssets, models: &mut Vec<Model>, fields: &[&[&str
 
 fn empty_draw() -> Draw {
     Draw {
+        truck_wheels: None,
+        treads: None,
+        track: None,
         supply: std::collections::BTreeMap::new(),
         upgrade_show: Vec::new(),
         states: Vec::new(),

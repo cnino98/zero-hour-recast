@@ -471,6 +471,7 @@ fn capture_rejects_occupants_but_ejects_late_entries_without_claiming_building()
         black_market_frames: 0,
         friendly_opacity: [0.5, 1.0],
         pulse_frames: 30,
+        disguise: None,
     });
     crate::skirmish::tests::register_update(&mut late, "StealthUpdate");
     // This isolated actor must finish its authored stealth delay before exposure.
@@ -625,6 +626,7 @@ fn fresh_forced_garrison_attack_validates_incoming_mode_before_rider_command_cop
         black_market_frames: 0,
         friendly_opacity: [0.5, 1.0],
         pulse_frames: 30,
+        disguise: None,
     });
     let target = game.spawn(6, 0, [415.0, 255.0], true);
     game.grant_stealth(target);

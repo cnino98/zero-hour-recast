@@ -1,8 +1,11 @@
 use super::*;
-use crate::skirmish::{Kind, Order, tests::game};
+use crate::skirmish::{DeathType, Kind, Order, tests::game};
 
 fn fixture(stored: bool) -> (Skirmish, usize, usize) {
-    let mut game = game();
+    fixture_in_game(game(), stored)
+}
+
+fn fixture_in_game(mut game: Skirmish, stored: bool) -> (Skirmish, usize, usize) {
     for unit in &mut game.catalog {
         unit.ai.acquisition = 0;
     }
@@ -169,6 +172,83 @@ fn regular_host_module_presence_retains_driver_until_final_destruction() {
     assert!(!game.entities[actor].masked());
     assert_eq!(game.entities[actor].driving_vehicle(), None);
     assert!(matches!(game.entities[actor].ai.order, Order::Idle));
+}
+
+#[test]
+fn splatted_airborne_host_releases_driver_through_an_opening_and_landing_parachute() {
+    let (mut game, chute_type) = crate::skirmish::parachute::tests::fixture_catalog();
+    game.catalog[chute_type].name = "AmericaParachute".into();
+    // Original AmericaParachute has no SCORE or SCORE_DESTROY flag.
+    game.catalog[chute_type].scoring.destroy = false;
+    let (mut game, actor, host) = fixture_in_game(game, true);
+    let vehicle = game.entities[host].type_index;
+    let mut destroy = crate::skirmish::tests::death_conditions();
+    destroy.death_mask = 1 << DeathType::Splatted as u32;
+    game.catalog[vehicle].behavior.destroy_die.push(destroy);
+    crate::skirmish::tests::register_behavior(&mut game.catalog[vehicle], "DestroyDie", 2);
+
+    game.hijack(actor, host).unwrap();
+    assert!(game.hijacker_contact(actor, host));
+    let airborne = [425.0_f32, 355.0, 120.0];
+    game.set_object_position(host, airborne);
+    game.step();
+    assert_eq!(
+        game.object_position(actor).map(f32::to_bits),
+        airborne.map(f32::to_bits)
+    );
+    assert!(game.entities[actor].masked());
+    let start = game.entities.len();
+    let losses = game.players[0].statistics.units_lost;
+    game.kill_object(host, DeathType::Splatted);
+    assert!(game.entities[host].exists());
+    assert!(!game.entities[host].alive());
+    game.step();
+    assert!(!game.entities[host].exists());
+    assert_eq!(game.entities[actor].driving_vehicle(), Some(host));
+    game.step();
+
+    let chute = game.entities[actor]
+        .contained_by()
+        .expect("airborne release chute");
+    assert!(chute >= start);
+    assert_eq!(game.entities[chute].type_index, chute_type);
+    assert_eq!(game.entities[chute].owner, game.entities[actor].owner);
+    assert_eq!(
+        game.team_membership.team_of(chute),
+        game.team_membership.team_of(actor)
+    );
+    assert_eq!(
+        game.object_position(chute).map(f32::to_bits),
+        airborne.map(f32::to_bits)
+    );
+    assert!(!game.entities[chute].parachute_opened());
+    assert!(!game.entities[actor].drawable_effectively_hidden());
+    assert_eq!(game.passengers(chute), &[actor]);
+    assert_eq!(game.entities[actor].driving_vehicle(), None);
+
+    let mut opened = false;
+    for _ in 0..600 {
+        game.step();
+        opened |= game.entities[chute].parachute_opened();
+        if game.entities[actor].contained_by().is_none() {
+            break;
+        }
+    }
+    assert!(opened);
+    assert_eq!(game.entities[actor].contained_by(), None);
+    assert!(game.entities[actor].alive());
+    assert!(!game.entities[actor].parachute_rider());
+    assert!(game.entities[actor].selectable(&game.catalog[5]));
+    assert_eq!(game.height_above_ground(actor).to_bits(), 0.0_f32.to_bits());
+    assert_eq!(game.players[0].statistics.units_lost, losses + 1);
+    assert!(!game.entities[chute].alive());
+    assert_eq!(
+        game.entities[start..]
+            .iter()
+            .filter(|entity| entity.type_index == chute_type)
+            .count(),
+        1
+    );
 }
 
 #[test]

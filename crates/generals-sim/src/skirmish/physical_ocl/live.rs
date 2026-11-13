@@ -1,6 +1,6 @@
 //! Live `PhysicsBehavior` shock, spin and landing, SH 2bfaea60.
 use super::{CollisionRules, Motion, MotionRules, Skirmish, physics, transform};
-use crate::skirmish::{DamageType, DeathType, Entity, UnitType, startup};
+use crate::skirmish::{DamageType, DeathType, Entity, UnitType, partition::Identity, startup};
 
 pub struct LiveRules {
     pub motion: MotionRules,
@@ -22,7 +22,7 @@ const UPDATE_EVER_RUN: u8 = 32;
 
 pub(in crate::skirmish) struct LiveState {
     pub(in crate::skirmish) motion: Motion,
-    pub(in crate::skirmish) last_collidee: Option<usize>,
+    pub(in crate::skirmish) last_collidee: Option<Identity>,
     ignore_collisions_with: Option<usize>,
     flags: u8,
     frame: Option<u64>,
@@ -196,7 +196,7 @@ impl Entity {
         }
     }
 
-    pub(in crate::skirmish) fn physics_last_collidee(&self) -> Option<usize> {
+    pub(in crate::skirmish) fn physics_last_collidee(&self) -> Option<Identity> {
         self.physical.as_ref().map_or_else(
             || {
                 self.live_physics
@@ -436,6 +436,7 @@ impl Skirmish {
         let actor = &mut self.entities[id];
         actor.ai.motion.reset_dynamic_physics();
         actor.physics_control.turning = false;
+        actor.physics_control.wheel_turning = 0;
         actor.physics_control.force_wake = false;
         actor.reset_flight_dynamic_physics();
         actor.reset_death_dynamic_physics();
@@ -653,6 +654,10 @@ impl Skirmish {
         } else {
             state.synchronize(actor, unit, self.tick)
         };
+        if unit.combat_bike.is_some() || unit.name == "GLAVehicleBombTruck" {
+            actor.physics_control.wheel_acceleration =
+                [state.motion.acceleration[0], state.motion.acceleration[1]];
+        }
         let matrix_position = actor
             .transform
             .as_ref()

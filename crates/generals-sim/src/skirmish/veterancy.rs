@@ -125,7 +125,11 @@ impl Skirmish {
         }
         let entity = &mut self.entities[id];
         let rules = &self.catalog[entity.type_index].veterancy;
-        if !rules.trainable {
+        if !entity
+            .combat_bike
+            .rider_trainable
+            .unwrap_or(rules.trainable)
+        {
             return;
         }
         let scaled = if can_scale {
@@ -179,7 +183,11 @@ impl Skirmish {
 
     pub(super) fn clear_pilot_veterancy(&mut self, id: usize) {
         let rules = &self.catalog[self.entities[id].type_index].veterancy;
-        if rules.trainable {
+        if self.entities[id]
+            .combat_bike
+            .rider_trainable
+            .unwrap_or(rules.trainable)
+        {
             self.entities[id].experience = 0;
             let mut level = 0;
             while level < 3 && rules.required[usize::from(level + 1)] == 0 {

@@ -1,4 +1,5 @@
 //! Original map Pad, paid capture and full-duration cargo delivery observation.
+mod supply_drop_zone;
 use crate::{
     capture_framing::{self, AircraftFrame},
     playtest::{CameraRig, Match},
@@ -9,6 +10,11 @@ use crate::{
 use bevy::{ecs::system::SystemParam, prelude::*};
 use generals_sim::skirmish::{Faction, Kind, Order, Skirmish};
 use std::error::Error;
+#[cfg(test)]
+pub use supply_drop_zone::build_paid_zone;
+pub use supply_drop_zone::{
+    prepare as prepare_supply_drop_zone, register as register_supply_drop_zone,
+};
 
 #[derive(Resource)]
 struct Check {

@@ -44,6 +44,7 @@ pub(super) fn audio() -> SourceAudio {
         },
         random: std::sync::Arc::new(std::sync::Mutex::new(Random::new(74))),
         firing: super::firing::State::new(),
+        wheels: super::wheels::State::new(),
         hazards: super::hazards::State::new(),
         fires: super::fire::State::new(),
         aircraft: super::aircraft::State::new(),

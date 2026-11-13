@@ -69,25 +69,13 @@ impl Skirmish {
         }
         let amount = self.entities[pad].maintenance.repair_dock_health_per_frame;
         self.apply_healing(id, Some(pad), amount);
-        let cached = self.entities[id]
+        let drone = self.entities[id]
             .ai
             .docking
             .as_ref()
-            .and_then(|dock| dock.repair_drone);
-        let drone = cached
-            .filter(|&drone| !self.entities[drone].masked())
-            .or_else(|| {
-                self.entities.iter().enumerate().find_map(|(drone, actor)| {
-                    (!actor.masked()
-                        && actor.owner == self.entities[id].owner
-                        && actor.drone_producer() == Some(id))
-                    .then_some(drone)
-                })
-            });
+            .and_then(|dock| dock.repair_drone)
+            .filter(|&drone| self.entities[drone].exists());
         if let Some(drone) = drone {
-            if let Some(dock) = &mut self.entities[id].ai.docking {
-                dock.repair_drone = Some(drone);
-            }
             // RepairDockUpdate reuses its healing source and submits maxHealth,
             // not the missing-health amount; the body applies HEALING armor.
             self.apply_healing(drone, Some(pad), self.entities[drone].max_health);

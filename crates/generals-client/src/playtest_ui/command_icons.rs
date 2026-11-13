@@ -105,10 +105,10 @@ pub(super) fn available(battle: &mut Match, command: &Command) -> bool {
             .any(|&id| battle.simulation.weapon_slot_present(id, slot));
     }
     if let CommandAction::Research(index) = command.action {
-        return battle
-            .selected
-            .first()
-            .is_some_and(|&id| battle.simulation.can_research(id, index));
+        return battle.selected.first().is_some_and(|&id| {
+            crate::input::bomb_truck::payload_available(battle, id, index)
+                .unwrap_or_else(|| battle.simulation.can_research(id, index))
+        });
     }
     if matches!(command.action, CommandAction::Sell) {
         return battle
@@ -167,6 +167,11 @@ fn targeted_ready(battle: &mut Match, command: &Command) -> Option<bool> {
             | CommandAction::FireWeapon(_)
             | CommandAction::ClearMines(_)
             | CommandAction::SnipeVehicle(_)
+            | CommandAction::BurtonKnife
+            | CommandAction::BurtonCharge(_)
+            | CommandAction::BurtonDetonate
+            | CommandAction::BombTruckDisguise
+            | CommandAction::BombTruckDetonate
             | CommandAction::Cleanup
     ) {
         return None;
@@ -193,6 +198,13 @@ fn targeted_ready(battle: &mut Match, command: &Command) -> Option<bool> {
             CommandAction::FireWeapon(slot) => battle.simulation.location_weapon_ready(id, slot),
             CommandAction::ClearMines(slot) => battle.simulation.mine_clearing_ready(id, slot),
             CommandAction::SnipeVehicle(slot) => battle.simulation.pilot_weapon_ready(id, slot),
+            CommandAction::BurtonKnife => battle.simulation.burton_knife_ready(id),
+            CommandAction::BurtonCharge(charge) => {
+                battle.simulation.burton_charge_ready(id, charge)
+            }
+            CommandAction::BurtonDetonate => battle.simulation.burton_can_detonate(id),
+            CommandAction::BombTruckDisguise => battle.simulation.bomb_truck_disguise_ready(id),
+            CommandAction::BombTruckDetonate => battle.simulation.can_detonate_bomb_truck(0, id),
             CommandAction::Cleanup => battle.simulation.cleanup_ready(id),
             _ => unreachable!("targeted command"),
         }
@@ -334,21 +346,7 @@ fn update_state(icon: &mut PromotionIcon, battle: &mut Match, data: &UiData, com
         icon.state.x = 1.0;
         return;
     }
-    if let crate::control_bar::CommandAction::SnipeVehicle(slot)
-    | crate::control_bar::CommandAction::ClearMines(slot) = command.action
-        && let Some(progress) = {
-            let simulation = &mut battle.simulation;
-            battle
-                .selected
-                .iter()
-                .filter_map(|&id| simulation.weapon_button_reload_progress(id, slot))
-                .max_by(f32::total_cmp)
-        }
-    {
-        icon.state.z = (progress * 100.0).trunc();
-        icon.clock_color =
-            data.schemes[faction_index(battle.simulation.players[0].faction)].clock_color;
-    }
+    weapon_reload_clock(icon, battle, data, command.action);
     if let Some(power) = command.action.power() {
         let caster = battle.selected[0];
         if !battle.simulation.can_use_power(caster, power) {
@@ -423,6 +421,34 @@ fn update_state(icon: &mut PromotionIcon, battle: &mut Match, data: &UiData, com
         // Source DOZER_CONSTRUCT and UNIT_BUILD both return COMMAND_RESTRICTED
         // for missing prerequisites or money, selecting disabled grayscale.
         icon.state.x = 1.0;
+    }
+}
+
+fn weapon_reload_clock(
+    icon: &mut PromotionIcon,
+    battle: &mut Match,
+    data: &UiData,
+    action: crate::control_bar::CommandAction,
+) {
+    let reload_slot = match action {
+        crate::control_bar::CommandAction::SnipeVehicle(slot)
+        | crate::control_bar::CommandAction::ClearMines(slot) => Some(slot),
+        crate::control_bar::CommandAction::BurtonKnife => Some(1),
+        _ => None,
+    };
+    if let Some(slot) = reload_slot
+        && let Some(progress) = {
+            let simulation = &mut battle.simulation;
+            battle
+                .selected
+                .iter()
+                .filter_map(|&id| simulation.weapon_button_reload_progress(id, slot))
+                .max_by(f32::total_cmp)
+        }
+    {
+        icon.state.z = (progress * 100.0).trunc();
+        icon.clock_color =
+            data.schemes[faction_index(battle.simulation.players[0].faction)].clock_color;
     }
 }
 

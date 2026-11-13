@@ -11,6 +11,13 @@ fn flame_field() -> super::super::Template {
     flame
 }
 
+fn advance(particles: &mut Particles, game: &Skirmish, region: [[f32; 2]; 2]) {
+    particles.fire_drawables(game, region, &mut |_, high| high);
+    particles.advance_frame(game.tick, &mut |_, high| high, &|point| {
+        game.ground_height(point)
+    });
+}
+
 #[ignore = "requires original game installation"]
 #[test]
 fn invisible_fields_defer_creation_follow_object_pose_and_drain_after_removal() {
@@ -28,22 +35,14 @@ fn invisible_fields_defer_creation_follow_object_pose_and_drain_after_removal() 
         .bindings
         .insert(kind, Bindings { draw: vec![0] });
     let mut calls = 0;
-    particles.fire_drawables(game, [[-2000.0; 2], [-1000.0; 2]], false, &mut |_, high| {
+    particles.fire_drawables(game, [[-2000.0; 2], [-1000.0; 2]], &mut |_, high| {
         calls += 1;
         high
     });
     assert_eq!(calls, 0);
     assert!(particles.emitters.is_empty());
     let region = [[0.0; 2], [10000.0; 2]];
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
-    assert!(
-        particles
-            .emitters
-            .iter()
-            .all(|emitter| emitter.particles.is_empty())
-    );
-    game.tick += 1;
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
+    advance(&mut particles, game, region);
     let emitter = particles
         .emitters
         .iter()
@@ -54,8 +53,7 @@ fn invisible_fields_defer_creation_follow_object_pose_and_drain_after_removal() 
     let old_particle = emitter.particles[0].position;
     game.entities[id].position[0] += 10.0;
     game.tick += 1;
-    particles.logic(game.tick, &mut |_, high| high, &|_| 0.0);
-    particles.fire_drawables(game, region, true, &mut |_, high| high);
+    particles.fire_drawables(game, region, &mut |_, high| high);
     let emitter = particles
         .emitters
         .iter()
@@ -73,9 +71,9 @@ fn invisible_fields_defer_creation_follow_object_pose_and_drain_after_removal() 
         emitter.particles[0].position.map(f32::to_bits),
         old_particle.map(f32::to_bits)
     );
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
+    advance(&mut particles, game, region);
     let count = particles.next_id;
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
+    advance(&mut particles, game, region);
     assert_eq!(particles.next_id, count);
     let emitter = particles
         .emitters
@@ -88,7 +86,7 @@ fn invisible_fields_defer_creation_follow_object_pose_and_drain_after_removal() 
     );
     game.entities.clear();
     game.tick += 1;
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
+    advance(&mut particles, game, region);
     assert!(
         particles
             .emitters
@@ -103,7 +101,7 @@ fn invisible_fields_defer_creation_follow_object_pose_and_drain_after_removal() 
     );
     for _ in 0..30 {
         game.tick += 1;
-        particles.fire_drawables(game, region, false, &mut |_, high| high);
+        advance(&mut particles, game, region);
     }
     assert!(particles.emitters.is_empty());
     particles.begin(1, 0);
@@ -151,7 +149,7 @@ fn original_inferno_shell_trail_follows_shell_and_drains_after_native_impact() {
     assert_eq!(particles.templates[indices[0]].name, "InfernoTrail");
     let region = [[-10000.0; 2], [10000.0; 2]];
     particles.begin(0, game.tick);
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
+    advance(&mut particles, game, region);
     let emitter = particles.emitters.iter().find(|emitter| matches!(emitter.fire_attachment, Some(Attachment::Projectile(id)) if id == projectile)).unwrap();
     let system = emitter.id;
     assert_eq!(
@@ -166,13 +164,13 @@ fn original_inferno_shell_trail_follows_shell_and_drains_after_native_impact() {
             .map(f32::to_bits)
     );
     let created = particles.next_id;
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
+    advance(&mut particles, game, region);
     assert_eq!(particles.next_id, created);
     game.stop(gun).unwrap();
     for _ in 0..600 {
         game.step();
         particles.begin(0, game.tick);
-        particles.fire_drawables(game, region, false, &mut |_, high| high);
+        advance(&mut particles, game, region);
         if !game.projectiles.iter().any(|value| value.id == projectile) {
             break;
         }
@@ -197,7 +195,7 @@ fn original_inferno_shell_trail_follows_shell_and_drains_after_native_impact() {
     for _ in 0..600 {
         game.step();
         particles.begin(0, game.tick);
-        particles.fire_drawables(game, region, false, &mut |_, high| high);
+        advance(&mut particles, game, region);
         if particles
             .emitters
             .iter()
@@ -229,7 +227,7 @@ fn original_inferno_trail_drains_in_fog_before_a_long_range_impact() {
     let mut particles = crate::particles::load(&assets, &game.catalog).unwrap();
     let region = [[-10000.0; 2], [10000.0; 2]];
     particles.begin(0, game.tick);
-    particles.fire_drawables(game, region, false, &mut |_, high| high);
+    advance(&mut particles, game, region);
     let emitter = particles.emitters.iter().find(|emitter| matches!(emitter.fire_attachment, Some(Attachment::Projectile(id)) if id == projectile)).unwrap();
     let system = emitter.id;
     assert!(!emitter.particles.is_empty());
@@ -239,7 +237,7 @@ fn original_inferno_trail_drains_in_fog_before_a_long_range_impact() {
     for _ in 0..600 {
         game.step();
         particles.begin(0, game.tick);
-        particles.fire_drawables(game, region, false, &mut |_, high| high);
+        advance(&mut particles, game, region);
         if let Some(emitter) = particles
             .emitters
             .iter()
@@ -355,4 +353,95 @@ fn installed_missile_jammed_state_selects_original_sparks_without_normal_state_l
     let jammed = &particles.fires.projectile_bindings[&(kind, 0, true)];
     assert_eq!(jammed.len(), 1);
     assert_eq!(particles.templates[jammed[0]].name, "SparksMedium");
+}
+
+#[ignore = "requires original game installation"]
+#[test]
+fn rendered_projectile_clear_footprint_records_observer_grace() {
+    use crate::{
+        model_animation::{
+            AnimatedPart,
+            draw_visibility::{DrawVisibility, record},
+        },
+        model_render::PartBinding,
+        playtest::Match,
+        projectile_render::ProjectileVisual,
+    };
+    use bevy::prelude::*;
+    let (_, mut battle) = crate::cleanup_verification::tests::installed();
+    let gun = launch_inferno(&mut battle.simulation, true);
+    let shot = battle
+        .simulation
+        .projectiles
+        .iter()
+        .find(|shot| shot.source == gun)
+        .unwrap();
+    let object = shot.object.unwrap();
+    let visual = ProjectileVisual {
+        id: shot.id,
+        generation: battle.generation,
+    };
+    let mut app = App::new();
+    app.insert_resource(battle)
+        .insert_resource(DrawVisibility::new())
+        .add_systems(Update, record);
+    let parent = app.world_mut().spawn(visual).id();
+    let part = app
+        .world_mut()
+        .spawn((
+            ChildOf(parent),
+            ViewVisibility::VISIBLE,
+            AnimatedPart {
+                model: 0,
+                binding: std::sync::Arc::new(PartBinding {
+                    mesh: 0,
+                    pass: 0,
+                    vertices: Vec::new(),
+                    linear_mapper: None,
+                }),
+            },
+        ))
+        .id();
+    app.update();
+    assert!(!app.world().resource::<DrawVisibility>().obscured_at(
+        app.world().resource::<Match>(),
+        object,
+        true
+    ));
+    app.world_mut()
+        .entity_mut(part)
+        .insert(ViewVisibility::HIDDEN);
+    app.world_mut().resource_mut::<Match>().simulation.tick += 59;
+    app.update();
+    assert!(!app.world().resource::<DrawVisibility>().obscured_at(
+        app.world().resource::<Match>(),
+        object,
+        true
+    ));
+    app.world_mut().resource_mut::<Match>().simulation.tick += 1;
+    app.update();
+    assert!(app.world().resource::<DrawVisibility>().obscured_at(
+        app.world().resource::<Match>(),
+        object,
+        true
+    ));
+    app.world_mut()
+        .entity_mut(part)
+        .insert(ViewVisibility::VISIBLE);
+    app.update();
+    assert!(!app.world().resource::<DrawVisibility>().obscured_at(
+        app.world().resource::<Match>(),
+        object,
+        true
+    ));
+    app.world_mut()
+        .entity_mut(part)
+        .insert(ViewVisibility::HIDDEN);
+    app.world_mut().resource_mut::<Match>().observer_player = Some(1);
+    app.update();
+    assert!(app.world().resource::<DrawVisibility>().obscured_at(
+        app.world().resource::<Match>(),
+        object,
+        true
+    ));
 }

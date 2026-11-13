@@ -2,7 +2,7 @@
 use super::Skirmish;
 use crate::{
     collision_geometry::{Geometry, Shape},
-    skirmish::{DamageType, DeathType, UnitType},
+    skirmish::{DamageType, DeathType, UnitType, partition::Identity},
 };
 use num_traits::ToPrimitive;
 
@@ -69,22 +69,53 @@ impl Skirmish {
         let unit = &self.catalog[actor.type_index];
         let victim = &self.catalog[self.entities[other].type_index];
         if !matches!(unit.ai.update, crate::skirmish::UnitAiUpdate::Absent)
-            && !((!actor.alive() || actor.parachute_rider()) && victim.immobile())
+            && !((actor.is_effectively_dead() || actor.parachute_rider()) && victim.immobile())
             && !self.process_ground_contact(id, other)
         {
             return;
         }
+        self.resolve_physical_contact(id, Identity::Actor(other));
+    }
+
+    pub(in crate::skirmish) fn physical_map_contact(&mut self, id: usize, index: usize) {
+        let actor = &self.entities[id];
+        let unit = &self.catalog[actor.type_index];
+        // Noncatalog scenery has no AI. Its lack of AI rejects the ordinary
+        // mover collision in processCollision, but not dead/parachuting movers.
+        if !(actor.physical_present() || actor.live_physics_active())
+            || actor.projectile_flight.is_some()
+            || !unit
+                .behavior_modules
+                .iter()
+                .any(|module| module.interfaces & 0x10 != 0 && module.family == "PhysicsBehavior")
+            || (!matches!(unit.ai.update, crate::skirmish::UnitAiUpdate::Absent)
+                && !actor.is_effectively_dead()
+                && !actor.parachute_rider())
+        {
+            return;
+        }
+        self.resolve_physical_contact(id, Identity::Map(index));
+    }
+
+    fn resolve_physical_contact(&mut self, id: usize, other: Identity) {
         let unit = &self.catalog[self.entities[id].type_index];
         let position = self.object_position(id);
         let us = center(self.body_geometry(id), position);
-        let them = center(self.body_geometry(other), self.object_position(other));
+        let (geometry, position) = match other {
+            Identity::Actor(other) => (self.body_geometry(other), self.object_position(other)),
+            Identity::Map(index) => {
+                let object = &self.layout.world_objects[index];
+                (&object.geometry, object.position)
+            }
+        };
+        let them = center(geometry, position);
         let mut delta = std::array::from_fn::<_, 3, _>(|axis| them[axis] - us[axis]);
         let above = self.height_above_ground(id) > 0.0;
         if !above {
             delta[2] = 0.0;
         }
         let our_radius = radius(self.body_geometry(id), above);
-        let radius = our_radius + radius(self.body_geometry(other), above);
+        let radius = our_radius + radius(geometry, above);
         let squares = delta.map(|value| value * value);
         let distance_squared = squares[0] + squares[1] + squares[2];
         if distance_squared > radius * radius {
@@ -107,7 +138,7 @@ impl Skirmish {
     fn apply_physical_collision_force(
         &mut self,
         id: usize,
-        other: usize,
+        other: Identity,
         delta: [f32; 3],
         radius: f32,
         our_radius: f32,
@@ -118,7 +149,10 @@ impl Skirmish {
             .expect("collision rules");
         let stiffness = rules.stiffness.clamp(0.01, 0.99);
         let rubble_height = rules.rubble_height;
-        let immobile = self.catalog[self.entities[other].type_index].immobile();
+        let immobile = match other {
+            Identity::Actor(other) => self.catalog[self.entities[other].type_index].immobile(),
+            Identity::Map(_) => true,
+        };
         let position = self.object_position(id);
         let distance = distance_squared.sqrt();
         let overlap = radius - distance;
@@ -166,10 +200,13 @@ impl Skirmish {
         self.physical_force(id, delta.map(|value| factor * value / distance));
     }
 
-    fn crash_into_immobile(&mut self, id: usize, other: usize) -> bool {
+    fn crash_into_immobile(&mut self, id: usize, other: Identity) -> bool {
         let unit = &self.catalog[self.entities[id].type_index];
-        let victim = &self.catalog[self.entities[other].type_index];
-        let building = victim.kind_of.iter().any(|kind| kind == "STRUCTURE");
+        let kinds = match other {
+            Identity::Actor(other) => &self.catalog[self.entities[other].type_index].kind_of,
+            Identity::Map(index) => &self.layout.world_objects[index].kind_of,
+        };
+        let building = kinds.iter().any(|kind| kind == "STRUCTURE");
         let vehicle = unit.kind_of.iter().any(|kind| kind == "VEHICLE");
         if vehicle
             && let Some(weapon) =
@@ -180,7 +217,9 @@ impl Skirmish {
             let death = weapon.death_type;
             let effect = weapon.effects[usize::from(self.entities[id].veterancy)].clone();
             // CRC=0: SH 17/05/2026 and 19/04/2026 fixes target this object only.
-            self.apply_weapon_hit(other, id, amount, damage_type, death);
+            if let Identity::Actor(other) = other {
+                self.apply_weapon_hit(other, id, amount, damage_type, death);
+            }
             self.object_fx(id, effect);
         }
         if building {

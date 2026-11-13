@@ -46,6 +46,12 @@ impl UnitType {
             return Some(&loco.locomotor);
         }
         match role {
+            set::SLUGGISH if self.combat_bike.is_some() => self
+                .combat_bike
+                .as_ref()?
+                .sluggish
+                .get(index)
+                .map(|variant| &variant.locomotor),
             set::NORMAL if index == 0 => Some(&self.locomotor),
             set::NORMAL => self
                 .locomotor_sets

@@ -41,7 +41,7 @@ impl Skirmish {
         if active.is_empty() {
             return Ok(());
         }
-        let (center, _, _) = self.group_bounds(&active);
+        let (center, _, _, _) = self.group_bounds(&active);
         // The pinned getMinMaxAndCenter intentionally retains the first ID;
         // its subsequent-member branch never compares against the other ID.
         let remove = if members.len() == 1 {
@@ -65,6 +65,14 @@ impl Skirmish {
     }
 
     pub(super) fn update_formation_speed(&mut self, members: &[usize]) {
+        let speed = self.group_travel_speed(members);
+        for &id in members {
+            self.entities[id].ai.command.formation_speed =
+                self.entities[id].ai.command.formation_id.map(|_| speed);
+        }
+    }
+
+    pub(in crate::skirmish) fn group_travel_speed(&self, members: &[usize]) -> f32 {
         let mut speed = 10_000_000_000.0_f32;
         for &id in members {
             let actor = &self.entities[id];
@@ -78,10 +86,7 @@ impl Skirmish {
                 speed = speed.min(locomotor::speed(actor, unit));
             }
         }
-        for &id in members {
-            self.entities[id].ai.command.formation_speed =
-                self.entities[id].ai.command.formation_id.map(|_| speed);
-        }
+        speed
     }
 
     pub(super) fn move_formation(
@@ -89,6 +94,7 @@ impl Skirmish {
         members: &[usize],
         destination: [f32; 3],
         route: Option<&[[f32; 3]]>,
+        source: i32,
     ) -> Result<(), &'static str> {
         let anchors = route.and_then(|route| {
             let first = route.iter().position(|&point| {
@@ -109,7 +115,7 @@ impl Skirmish {
         for &id in members {
             self.remove_goal(id);
             let offset = self.entities[id].ai.command.formation_offset;
-            let wanted = [end[0] + offset[0], end[1] + offset[1]];
+            let wanted = [end[0] + offset[0], end[1] + offset[1], end[2]];
             if let (Some(route), Some((first, last))) = (route, anchors) {
                 let mut points = Vec::new();
                 // Native includes both anchor nodes in the offset path.
@@ -120,19 +126,13 @@ impl Skirmish {
                     }
                 }
                 let goal = self
-                    .adjusted_destination_world(id, [wanted[0], wanted[1], destination[2]])
-                    .unwrap_or([wanted[0], wanted[1], destination[2]]);
+                    .adjusted_destination_world(id, wanted)
+                    .unwrap_or(wanted);
                 points.push(goal);
-                self.native_follow_path_from(
-                    id,
-                    points,
-                    None,
-                    crate::skirmish::ai_goals::COMMAND_FROM_PLAYER,
-                    false,
-                );
-                self.reserve_goal(id, [goal[0], goal[1]]);
+                self.reserve_goal_on(id, [goal[0], goal[1]], 1);
+                self.native_follow_path_from(id, points, None, source, false);
             } else {
-                self.begin_move_world(id, [wanted[0], wanted[1], destination[2]])?;
+                self.move_group_member_from(id, wanted, source)?;
             }
         }
         Ok(())

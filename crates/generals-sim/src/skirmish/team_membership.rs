@@ -13,6 +13,7 @@ struct Team {
     prototype: usize,
     members: Vec<usize>,
     common_attack_target: Option<usize>,
+    current_waypoint: Option<usize>,
     active: bool,
     created: bool,
 }
@@ -74,12 +75,21 @@ impl Membership {
         self.teams[team].common_attack_target = target;
     }
 
+    pub(in crate::skirmish) fn current_waypoint(&self, team: usize) -> Option<usize> {
+        self.teams[team].current_waypoint
+    }
+
+    pub(in crate::skirmish) fn set_current_waypoint(&mut self, team: usize, waypoint: usize) {
+        self.teams[team].current_waypoint = Some(waypoint);
+    }
+
     pub(super) fn create_team(&mut self, prototype: usize) -> usize {
         let id = self.teams.len();
         self.teams.push(Team {
             prototype,
             members: Vec::new(),
             common_attack_target: None,
+            current_waypoint: None,
             active: false,
             created: false,
         });

@@ -35,13 +35,16 @@ fn fixture() -> (Particles, BTreeMap<(usize, usize), DrawState>) {
             stopped: false,
             pose: Pose::at([100.0, 200.0, 30.0]),
             offsets: Vec::new(),
+            wheels: None,
+            tank: None,
         },
     )]);
     (particles, states)
 }
 
 fn advance(particles: &mut Particles, states: &BTreeMap<(usize, usize), DrawState>, frame: u64) {
-    particles.update_draw_particles(states, frame, false, &|_| 0.0, &mut |_, high| high);
+    particles.sync_model_states(states, &mut |_, high| high);
+    particles.advance_frame(frame, &mut |_, high| high, &|_| 0.0);
 }
 
 #[test]
@@ -77,7 +80,7 @@ fn hidden_and_offscreen_creation_waits_but_existing_hidden_emitters_keep_age_and
     let (mut particles, mut states) = fixture();
     states.get_mut(&(8, 0)).unwrap().stopped = true;
     let mut draws = 0;
-    particles.update_draw_particles(&states, 0, false, &|_| 0.0, &mut |_, high| {
+    particles.sync_model_states(&states, &mut |_, high| {
         draws += 1;
         high
     });
@@ -119,14 +122,8 @@ fn model_particles_update_after_draw_once_per_tick_and_preserve_paused_world_par
     advance(&mut particles, &states, 1);
     let original = particles.emitters[0].particles[0].position;
     let remaining = particles.emitters[0].particles[0].remaining;
-    // The earlier shared FixedUpdate must not update draw-owned emitters.
-    particles.logic(2, &mut |_, high| high, &|_| 0.0);
-    assert_eq!(
-        particles.emitters[0].particles[0].remaining.to_bits(),
-        remaining.to_bits()
-    );
     states.get_mut(&(8, 0)).unwrap().pose.position = [120.0, 210.0, 40.0];
-    particles.update_draw_particles(&states, 2, true, &|_| 0.0, &mut |_, high| high);
+    particles.sync_model_states(&states, &mut |_, high| high);
     assert_eq!(
         particles.emitters[0].particles[0].remaining.to_bits(),
         remaining.to_bits()
@@ -157,8 +154,95 @@ fn model_particles_update_after_draw_once_per_tick_and_preserve_paused_world_par
     assert!(particles.emitters.is_empty());
     particles.begin(1, 0);
     assert!(particles.model_states.active.is_empty());
-    assert!(particles.model_states.frame.is_none());
+    assert!(particles.advanced.is_none());
     assert!(!particles.model_states.bindings.is_empty());
+}
+
+#[test]
+fn shared_manager_emits_in_creation_order_across_drawable_and_free_systems() {
+    let (mut particles, states) = fixture();
+    particles.templates[0].size = super::super::Range {
+        low: 10.0,
+        high: 11.0,
+    };
+    particles.templates[1].size = super::super::Range {
+        low: 20.0,
+        high: 21.0,
+    };
+    particles.sync_model_states(&states, &mut |_, high| high);
+    particles.create(1, Pose::at([0.0; 3]), None, &mut |_, high| high);
+    assert!(
+        particles
+            .emitters
+            .iter()
+            .all(|emitter| emitter.particles.is_empty())
+    );
+    let mut draws = Vec::new();
+    particles.advance_frame(
+        1,
+        &mut |low, high| {
+            let range = [low.to_bits(), high.to_bits()];
+            if [[10.0, 11.0_f32], [20.0, 21.0]]
+                .map(|values| values.map(f32::to_bits))
+                .contains(&range)
+            {
+                draws.push(low.to_bits());
+            }
+            high
+        },
+        &|_| 0.0,
+    );
+    assert_eq!(draws, [10.0_f32.to_bits(), 20.0_f32.to_bits()]);
+    assert!(
+        particles
+            .emitters
+            .iter()
+            .all(|emitter| emitter.particles.len() == 1)
+    );
+    particles.advance_frame(1, &mut |_, _| panic!("second manager pass"), &|_| 0.0);
+}
+
+#[ignore = "requires original game installation"]
+#[test]
+fn newer_fire_draw_constructor_precedes_older_model_state_in_the_shared_view() {
+    use crate::particles::fire::{Attachment as FireAttachment, Bindings};
+
+    let (_, battle) = crate::cleanup_verification::tests::installed();
+    let game = &battle.simulation;
+    let (fire, actor) = game
+        .entities
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(id, actor)| {
+            *id > 0
+                && actor.owner == 0
+                && !actor.masked()
+                && matches!(
+                    game.visibility_status(0, *id),
+                    Status::Clear | Status::Partial
+                )
+        })
+        .expect("installed local starting object");
+    let (mut particles, mut states) = fixture();
+    let state = states.remove(&(8, 0)).unwrap();
+    states.insert((0, 0), state);
+    particles
+        .fires
+        .bindings
+        .insert(actor.type_index, Bindings { draw: vec![1] });
+    particles.sync_drawables(
+        &states,
+        Some((game, [[-10_000.0; 2], [10_000.0; 2]])),
+        &mut |_, high| high,
+    );
+    assert!(
+        matches!(particles.emitters[0].fire_attachment, Some(FireAttachment::Object(id)) if id == fire)
+    );
+    assert_eq!(
+        particles.emitters.last().unwrap().drawable_attachment,
+        Some((0, 0))
+    );
 }
 
 #[ignore = "requires original game installation"]
@@ -211,6 +295,8 @@ fn constructor_draws_follow_native_drawable_and_authored_binding_order() {
             stopped: false,
             pose: Pose::at([0.0; 3]),
             offsets: Vec::new(),
+            wheels: None,
+            tank: None,
         },
     );
     let mut ranges = Vec::new();
@@ -231,6 +317,8 @@ fn constructor_draws_follow_native_drawable_and_authored_binding_order() {
 #[test]
 fn required_state_particle_templates_must_resolve_before_runtime() {
     let pending = Pending {
+        wheels: BTreeMap::new(),
+        tanks: BTreeMap::new(),
         bindings: BTreeMap::from([(
             0,
             vec![ParticleDraw {
@@ -330,7 +418,7 @@ fn animated_bones_use_full_world_axes_without_parent_twice_or_extra_random_draws
         let state = states.get_mut(&(8, 0)).unwrap();
         state.in_view = in_view;
         state.stopped = stopped;
-        particles.update_draw_particles(&states, 1, true, &|_| 0.0, &mut |_, _| {
+        particles.sync_model_states(&states, &mut |_, _| {
             panic!("hidden animated emitter consumed RNG")
         });
         assert_eq!(
@@ -341,7 +429,7 @@ fn animated_bones_use_full_world_axes_without_parent_twice_or_extra_random_draws
     let state = states.get_mut(&(8, 0)).unwrap();
     state.in_view = true;
     state.stopped = false;
-    particles.update_draw_particles(&states, 1, true, &|_| 0.0, &mut |_, _| {
+    particles.sync_model_states(&states, &mut |_, _| {
         panic!("animated matrix update consumed RNG or recreated emitter")
     });
     let emitter = &particles.emitters[0];
@@ -438,4 +526,24 @@ fn installed_mig_particles_are_admitted_to_the_real_state_emitter() {
             .flatten()
             .any(|&id| particles.templates[id].name == "JetExhaust")
     );
+}
+
+#[test]
+fn replacement_of_same_object_and_state_retires_old_particle_incarnation() {
+    let (mut particles, states) = fixture();
+    particles.retire_replaced_drawables(BTreeMap::from([(8, 1)]));
+    advance(&mut particles, &states, 1);
+    let original = particles.emitters[0].id;
+    particles.retire_replaced_drawables(BTreeMap::from([(8, 1)]));
+    advance(&mut particles, &states, 2);
+    assert_eq!(particles.next_id, 1);
+    particles.retire_replaced_drawables(BTreeMap::from([(8, 20)]));
+    particles.sync_model_states(&states, &mut |_, high| high);
+    assert_eq!(particles.next_id, 2);
+    assert_eq!(particles.emitters[0].id, original);
+    assert!(particles.emitters[0].lifecycle.destroyed);
+    assert!(!particles.emitters[0].particles.is_empty());
+    assert!(!particles.emitters[1].lifecycle.destroyed);
+    particles.begin(9, 0);
+    assert!(particles.model_states.incarnations.is_empty());
 }

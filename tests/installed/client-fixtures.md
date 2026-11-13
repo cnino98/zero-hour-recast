@@ -27,3 +27,11 @@ python3 -B tests/installed/prepare-metadata.py \
 The script defaults to `clang++`. Use `--cxx PATH` to select another compiler. It keeps the generated C++ and native output alongside `test-fixtures/`. An optional `--compare PATH` checks the new files against an existing `test-fixtures/` directory as well.
 
 The `--maps-archive` option is needed for the custom map chooser checks. It copies the original Tournament Desert map and preview into twelve numbered entries under `UserData/Maps/` to exercise scrolling and selection. The generated `MapCache.ini` uses paths tied to the output location. Keep that directory in place as the runtime and follow the [installed-game setup](../README.md#installed-game-checks) to attach the original installations and run the suite.
+
+The native Repair Pad check uses a declared custom map because the original skirmish maps have no `TechRepairPad` placements. Generate it after preparing the runtime above. The script copies the owned Hostile Dawn map and changes its single `TechRepairbay` placement to `TechRepairPad`, retaining the position, orientation, object properties, terrain and scripts. It clears the copy's `WorldInfo` title tag so the chooser uses the custom filename and keeps it alongside the official map. Rerunning the script updates the previously generated fixture if its bytes match the known older version.
+
+```sh
+python3 -B tests/installed/prepare-repair-pad.py \
+  --maps-archive "../private/GameData/Command and Conquer Generals Zero Hour/MapsZH.big" \
+  --runtime-root ../private/installed-runtime
+```

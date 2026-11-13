@@ -28,6 +28,14 @@ pub struct Event {
 
 impl Skirmish {
     pub(in crate::skirmish) fn deposit_native_money(&mut self, owner: usize, amount: u32) {
+        self.deposit_money(owner, amount, true);
+    }
+
+    pub(in crate::skirmish) fn deposit_sale_refund(&mut self, owner: usize, amount: u32) {
+        self.deposit_money(owner, amount, false);
+    }
+
+    fn deposit_money(&mut self, owner: usize, amount: u32, track_income: bool) {
         if amount == 0 {
             return;
         }
@@ -38,8 +46,10 @@ impl Skirmish {
         let now = self.update_frame();
         let player = &mut self.players[owner];
         let money = &mut player.native_money;
-        money.buckets[money.current] = money.buckets[money.current].wrapping_add(amount);
-        money.per_minute = money.per_minute.wrapping_add(amount);
+        if track_income {
+            money.buckets[money.current] = money.buckets[money.current].wrapping_add(amount);
+            money.per_minute = money.per_minute.wrapping_add(amount);
+        }
         player.cash = player.cash.wrapping_add(amount);
         // Native recordIncome subtracts now from the previous unsigned frame.
         let delta = money.last_income.wrapping_sub(now);
@@ -65,6 +75,20 @@ impl Skirmish {
 #[cfg(test)]
 mod tests {
     use crate::skirmish::tests;
+
+    #[test]
+    fn sale_refund_sounds_and_records_academy_time_without_counting_as_income() {
+        let mut game = tests::game();
+        let cash = game.players[0].cash;
+        game.tick = 179;
+        game.deposit_sale_refund(0, 500);
+        assert_eq!(game.players[0].cash, cash + 500);
+        assert_eq!(game.players[0].statistics.money_earned, 0);
+        assert_eq!(game.players[0].native_money.per_minute, 0);
+        assert_eq!(game.players[0].native_money.last_income, 179);
+        assert_eq!(game.presentation.money_deposit_events.len(), 1);
+        assert_eq!(game.presentation.money_deposit_events[0].owner, 0);
+    }
 
     #[test]
     fn native_deposit_zero_wrap_income_window_and_academy_unsigned_gap() {

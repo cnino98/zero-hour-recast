@@ -83,11 +83,17 @@ impl Match {
                 | ScreenCapture::Pathfinder
                 | ScreenCapture::Aircraft
                 | ScreenCapture::AircraftCrash
+                | ScreenCapture::PilotEjection
+                | ScreenCapture::ParachuteTerrain
+                | ScreenCapture::MigCrash
+                | ScreenCapture::ComancheCountermeasures
+                | ScreenCapture::HijackerAirborne
                 | ScreenCapture::ChinaAircraft
                 | ScreenCapture::Terrorist
                 | ScreenCapture::Sabotage
                 | ScreenCapture::Hijacker
                 | ScreenCapture::Helix
+                | ScreenCapture::Ground(_)
                 | ScreenCapture::Aurora
                 | ScreenCapture::AngryMob
                 | ScreenCapture::BattleBus
@@ -99,8 +105,11 @@ impl Match {
                 | ScreenCapture::World(_)
                 | ScreenCapture::BridgeDestruction
                 | ScreenCapture::ReinforcementPad(_)
+                | ScreenCapture::SupplyDropZone
                 | ScreenCapture::NeutralExpanded
+                | ScreenCapture::NeutralDamage
                 | ScreenCapture::RepairBay
+                | ScreenCapture::RepairPad
                 | ScreenCapture::FakeBuildings
                 | ScreenCapture::Tractor
                 | ScreenCapture::Fire(_)
@@ -238,6 +247,11 @@ pub enum ScreenCapture {
     Pathfinder,
     Aircraft,
     AircraftCrash,
+    PilotEjection,
+    ParachuteTerrain,
+    MigCrash,
+    ComancheCountermeasures,
+    HijackerAirborne,
     ChinaAircraft,
     MapSelection(usize),
     CustomMap,
@@ -246,6 +260,7 @@ pub enum ScreenCapture {
     Sabotage,
     Hijacker,
     Helix,
+    Ground(crate::p02_ground_capture::Kind),
     Aurora,
     AngryMob,
     BattleBus,
@@ -257,8 +272,11 @@ pub enum ScreenCapture {
     World(bool),
     BridgeDestruction,
     ReinforcementPad(Faction),
+    SupplyDropZone,
     NeutralExpanded,
+    NeutralDamage,
     RepairBay,
+    RepairPad,
     FakeBuildings,
     Tractor,
     Fire(bool),
@@ -338,10 +356,10 @@ impl ScreenCapture {
     }
 
     const fn map_name(&self) -> &'static str {
-        if matches!(self, Self::BridgeDestruction) {
+        if matches!(self, Self::BridgeDestruction | Self::ParachuteTerrain) {
             return crate::radar::bridge_destruction_capture::map_name();
         }
-        if matches!(self, Self::ReinforcementPad(_)) {
+        if matches!(self, Self::ReinforcementPad(_) | Self::SupplyDropZone) {
             return "Maps\\Cairo Commandos\\Cairo Commandos.map";
         }
         if let Self::World(bridge) = self {
@@ -353,7 +371,10 @@ impl ScreenCapture {
         if matches!(self, Self::RepairBay) {
             return crate::neutral_expanded_verification::repair_bay_map_name();
         }
-        if matches!(self, Self::NeutralExpanded) {
+        if matches!(self, Self::RepairPad) {
+            return crate::neutral_expanded_verification::repair_pad_map_name();
+        }
+        if matches!(self, Self::NeutralExpanded | Self::NeutralDamage) {
             return crate::neutral_expanded_verification::map_name();
         }
         if let Self::NeutralTech(refinery) = self {
@@ -460,7 +481,6 @@ fn load_map(
     report("inputs")?;
     let mut data = skirmish_data::load(&assets, &map.objects)?;
     report("catalog")?;
-    world.insert_resource(crate::dynamic_lod::load(&assets, root)?);
     let (settings, preferences, values) = map_settings(world, &assets, root)?;
 
     let opponent = capture.load_opponent(&assets, &map)?;
@@ -494,11 +514,10 @@ fn load_map(
         &layout,
     )?;
     let move_hints = crate::move_hint::load(&assets, map.lighting.as_ref())?;
-    let mut mouse = input::load(&assets, &root.join("UserData/Options.ini"), &data.types)?;
-    mouse.set_alternate_mouse(values.alternate_mouse);
-    mouse.set_double_click_attack_move(values.double_click_attack_move);
+    let mouse = load_mouse(&assets, root, &data.types, &values)?;
     report("controls")?;
     let (mut animations, projectiles) = load_unit_art(&assets, &mut data, &world_objects)?;
+    let mut tracks = crate::model_animation::load_tracks(&assets, root, &animations)?;
     report("animations")?;
     let (audio, mut particles, tree_shadows) = load_environment_effects(
         &assets,
@@ -522,6 +541,7 @@ fn load_map(
     )?;
     report("models")?;
     particles.scorches.set_color(models.scorch_color());
+    tracks.set_color(models.track_color());
     animations.retain_models(std::mem::take(&mut data.models), layout.random_seed);
     capture.load_world_scene(
         world,
@@ -551,6 +571,7 @@ fn load_map(
     world.insert_resource(water);
     world.insert_resource(weather);
     world.insert_resource(animations);
+    world.insert_resource(tracks);
     world.insert_resource(world_objects);
     world.insert_resource(tree_shadows);
     world.insert_resource(ui);
@@ -558,6 +579,18 @@ fn load_map(
     world.insert_resource(move_hints);
     report("complete")?;
     Ok(settings)
+}
+
+fn load_mouse(
+    assets: &VirtualAssets,
+    root: &Path,
+    catalog: &[generals_sim::skirmish::UnitType],
+    values: &crate::options_preferences::Values,
+) -> Result<input::Mouse, Box<dyn Error>> {
+    let mut mouse = input::load(assets, &root.join("UserData/Options.ini"), catalog)?;
+    mouse.set_alternate_mouse(values.alternate_mouse);
+    mouse.set_double_click_attack_move(values.double_click_attack_move);
+    Ok(mouse)
 }
 
 fn prepare_simulation(
@@ -817,7 +850,7 @@ fn load_controls(
 }
 
 fn map_settings(
-    world: &World,
+    world: &mut World,
     assets: &VirtualAssets,
     root: &Path,
 ) -> Result<
@@ -828,6 +861,7 @@ fn map_settings(
     ),
     Box<dyn Error>,
 > {
+    world.insert_resource(crate::dynamic_lod::load(assets, root)?);
     let mut settings = world_data::camera_settings(assets, root)?;
     let preferences = if world.contains_resource::<crate::options_preferences::Preferences>() {
         None
@@ -865,6 +899,8 @@ fn load_feedback(
     let feedback = selection_feedback::load(assets)?;
     let veterancy = crate::veterancy_feedback::load(assets)?;
     let waypoints = waypoint_display::load(assets)?;
+    let bomb_icons = crate::sticky_bomb_icons::load(assets)?;
+    let world_hover = crate::world_hover::load(assets)?;
     world.insert_resource(income);
     world.insert_resource(money_crates);
     world.insert_resource(notifications);
@@ -877,6 +913,8 @@ fn load_feedback(
     world.insert_resource(feedback);
     world.insert_resource(veterancy);
     world.insert_resource(waypoints);
+    world.insert_resource(bomb_icons);
+    world.insert_resource(world_hover);
     world.insert_resource(crate::stealth_view::Cloaks::new());
     Ok(())
 }
@@ -1115,7 +1153,15 @@ fn register_ability_captures(app: &mut App, capture: &ScreenCapture) {
             crate::stealth_unit_capture::register(app);
         }
         ScreenCapture::Aircraft => crate::aircraft_capture::register(app),
+        ScreenCapture::NeutralDamage => crate::neutral_expanded_capture::damage::register(app),
         ScreenCapture::AircraftCrash => crate::aircraft_crash_capture::register(app),
+        ScreenCapture::PilotEjection => crate::aircraft_crash_capture::pilot::register(app),
+        ScreenCapture::ParachuteTerrain => crate::aircraft_crash_capture::terrain::register(app),
+        ScreenCapture::MigCrash => crate::china_aircraft_capture::crash::register(app),
+        ScreenCapture::ComancheCountermeasures => {
+            crate::aircraft_capture::countermeasures::register(app);
+        }
+        ScreenCapture::HijackerAirborne => crate::hijacker_capture::airborne::register(app),
         ScreenCapture::ChinaAircraft => crate::china_aircraft_capture::register(app),
         ScreenCapture::Terrorist => crate::terrorist_capture::register(app),
         ScreenCapture::Hijacker => crate::hijacker_capture::register(app),
@@ -1131,6 +1177,9 @@ fn register_ability_captures(app: &mut App, capture: &ScreenCapture) {
         ScreenCapture::World(_) => crate::world_capture::register(app),
         ScreenCapture::BridgeDestruction => crate::radar::bridge_destruction_capture::register(app),
         ScreenCapture::ReinforcementPad(_) => crate::reinforcement_pad_capture::register(app),
+        ScreenCapture::SupplyDropZone => {
+            crate::reinforcement_pad_capture::register_supply_drop_zone(app);
+        }
         ScreenCapture::FakeBuildings => crate::fake_building_capture::register(app),
         ScreenCapture::Options => crate::playtest_ui::options::verification::register(app),
         ScreenCapture::Sabotage => crate::sabotage_verification::register(app),
@@ -1191,8 +1240,8 @@ fn prepare_abilities(
     if matches!(capture, ScreenCapture::Hijacker) {
         crate::hijacker_capture::prepare(app, battle)?;
     }
-    if matches!(capture, ScreenCapture::Helix) {
-        crate::helix_capture::prepare(app, battle)?;
+    if let ScreenCapture::Ground(kind) = capture {
+        crate::p02_ground_capture::prepare(app, battle, *kind)?;
     }
     if matches!(capture, ScreenCapture::Sabotage) {
         crate::sabotage_verification::prepare(app, battle)?;
@@ -1257,6 +1306,9 @@ fn prepare_aircraft_captures(
     battle: &mut Match,
     capture: &ScreenCapture,
 ) -> Result<(), Box<dyn Error>> {
+    if matches!(capture, ScreenCapture::Helix) {
+        crate::helix_capture::prepare(app, battle)?;
+    }
     if matches!(capture, ScreenCapture::AngryMob) {
         crate::angry_mob_capture::prepare(app, battle)?;
     }
@@ -1287,6 +1339,21 @@ fn prepare_aircraft_captures(
     if matches!(capture, ScreenCapture::Aircraft) {
         crate::aircraft_capture::prepare(app, battle)?;
     }
+    if matches!(capture, ScreenCapture::ParachuteTerrain) {
+        crate::aircraft_crash_capture::terrain::prepare(app, battle)?;
+    }
+    if matches!(capture, ScreenCapture::PilotEjection) {
+        crate::aircraft_crash_capture::pilot::prepare(app, battle)?;
+    }
+    if matches!(capture, ScreenCapture::MigCrash) {
+        crate::china_aircraft_capture::crash::prepare(app, battle)?;
+    }
+    if matches!(capture, ScreenCapture::ComancheCountermeasures) {
+        crate::aircraft_capture::countermeasures::prepare(app, battle)?;
+    }
+    if matches!(capture, ScreenCapture::HijackerAirborne) {
+        crate::hijacker_capture::airborne::prepare(app, battle)?;
+    }
     if matches!(capture, ScreenCapture::AircraftCrash) {
         crate::aircraft_crash_capture::prepare(app, battle)?;
     }
@@ -1310,6 +1377,15 @@ fn prepare_economy_captures(
         }
         ScreenCapture::FakeBuildings => crate::fake_building_capture::prepare(app, battle),
         ScreenCapture::NeutralExpanded => crate::neutral_expanded_capture::prepare(app, battle),
+        ScreenCapture::NeutralDamage => {
+            crate::neutral_expanded_capture::damage::prepare(app, battle)
+        }
+        ScreenCapture::RepairPad => {
+            crate::neutral_expanded_capture::prepare_repair_pad(app, battle)
+        }
+        ScreenCapture::SupplyDropZone => {
+            crate::reinforcement_pad_capture::prepare_supply_drop_zone(app, battle)
+        }
         ScreenCapture::RepairBay => {
             crate::neutral_expanded_capture::prepare_repair_bay(app, battle)
         }
@@ -1465,11 +1541,17 @@ const fn selection_focus(capture: &ScreenCapture) -> bool {
             | ScreenCapture::Pathfinder
             | ScreenCapture::Aircraft
             | ScreenCapture::AircraftCrash
+            | ScreenCapture::PilotEjection
+            | ScreenCapture::ParachuteTerrain
+            | ScreenCapture::MigCrash
+            | ScreenCapture::ComancheCountermeasures
+            | ScreenCapture::HijackerAirborne
             | ScreenCapture::ChinaAircraft
             | ScreenCapture::Terrorist
             | ScreenCapture::Sabotage
             | ScreenCapture::Hijacker
             | ScreenCapture::Helix
+            | ScreenCapture::Ground(_)
             | ScreenCapture::Aurora
             | ScreenCapture::AngryMob
             | ScreenCapture::BattleBus
@@ -1481,8 +1563,11 @@ const fn selection_focus(capture: &ScreenCapture) -> bool {
             | ScreenCapture::World(_)
             | ScreenCapture::BridgeDestruction
             | ScreenCapture::ReinforcementPad(_)
+            | ScreenCapture::SupplyDropZone
             | ScreenCapture::NeutralExpanded
+            | ScreenCapture::NeutralDamage
             | ScreenCapture::RepairBay
+            | ScreenCapture::RepairPad
             | ScreenCapture::FakeBuildings
             | ScreenCapture::Tractor
             | ScreenCapture::Fire(_)
@@ -1731,11 +1816,17 @@ fn register_capture(app: &mut App, root: &Path, capture: &ScreenCapture) {
             | ScreenCapture::Pathfinder
             | ScreenCapture::Aircraft
             | ScreenCapture::AircraftCrash
+            | ScreenCapture::PilotEjection
+            | ScreenCapture::ParachuteTerrain
+            | ScreenCapture::MigCrash
+            | ScreenCapture::ComancheCountermeasures
+            | ScreenCapture::HijackerAirborne
             | ScreenCapture::ChinaAircraft
             | ScreenCapture::Terrorist
             | ScreenCapture::Sabotage
             | ScreenCapture::Hijacker
             | ScreenCapture::Helix
+            | ScreenCapture::Ground(_)
             | ScreenCapture::Aurora
             | ScreenCapture::AngryMob
             | ScreenCapture::BattleBus
@@ -1747,8 +1838,11 @@ fn register_capture(app: &mut App, root: &Path, capture: &ScreenCapture) {
             | ScreenCapture::World(_)
             | ScreenCapture::BridgeDestruction
             | ScreenCapture::ReinforcementPad(_)
+            | ScreenCapture::SupplyDropZone
             | ScreenCapture::NeutralExpanded
+            | ScreenCapture::NeutralDamage
             | ScreenCapture::RepairBay
+            | ScreenCapture::RepairPad
             | ScreenCapture::FakeBuildings
             | ScreenCapture::Tractor
             | ScreenCapture::Fire(_)
@@ -1814,7 +1908,9 @@ const fn capture_path(capture: &ScreenCapture) -> &'static str {
         ScreenCapture::AngryMob => "output/angry-mob.png",
         ScreenCapture::BattleBus => "output/battle-bus.png",
         ScreenCapture::RepairBay => "output/repair-bay.png",
+        ScreenCapture::RepairPad => "output/repair-pad.png",
         ScreenCapture::NeutralExpanded => "output/neutral-expanded.png",
+        ScreenCapture::NeutralDamage => "output/neutral-tech-death.png",
         ScreenCapture::FakeBuildings => "output/fake-buildings.png",
         ScreenCapture::Options => "output/options.png",
         ScreenCapture::Sabotage => "output/sabotage.png",
@@ -1873,8 +1969,22 @@ const fn flight_capture_path(capture: &ScreenCapture) -> Option<&'static str> {
     Some(match capture {
         ScreenCapture::Aircraft => "output/aircraft.png",
         ScreenCapture::AircraftCrash => "output/aircraft-crash-hulk.png",
+        ScreenCapture::PilotEjection => "output/ejected-pilot-landed.png",
+        ScreenCapture::ParachuteTerrain => "output/parachute-water-destruction.png",
+        ScreenCapture::MigCrash => "output/mig-crash-hulk.png",
+        ScreenCapture::ComancheCountermeasures => "output/comanche-countermeasures.png",
+        ScreenCapture::HijackerAirborne => "output/hijacker-airborne-landed.png",
         ScreenCapture::ChinaAircraft => "output/china-aircraft.png",
         ScreenCapture::Helix => "output/helix.png",
+        ScreenCapture::Ground(crate::p02_ground_capture::Kind::Burton) => {
+            "output/burton-c4-detonation.png"
+        }
+        ScreenCapture::Ground(crate::p02_ground_capture::Kind::BombTruck) => {
+            "output/bomb-truck-detonation.png"
+        }
+        ScreenCapture::Ground(crate::p02_ground_capture::Kind::CombatBike) => {
+            "output/combat-bike-hulk.png"
+        }
         ScreenCapture::Aurora => "output/aurora.png",
         ScreenCapture::StealthFighter => "output/stealth-fighter.png",
         ScreenCapture::Microwave => "output/microwave-emitter.png",
@@ -1886,6 +1996,7 @@ const fn flight_capture_path(capture: &ScreenCapture) -> Option<&'static str> {
         ScreenCapture::World(true) => "output/world-bridge.png",
         ScreenCapture::BridgeDestruction => "output/bridge-destroyed.png",
         ScreenCapture::ReinforcementPad(_) => "output/reinforcement-pad.png",
+        ScreenCapture::SupplyDropZone => "output/supply-drop-zone.png",
         ScreenCapture::Chinook => "output/chinook.png",
         ScreenCapture::SupplyLift => "output/supply-lift.png",
         _ => return None,
@@ -2036,21 +2147,6 @@ fn configure_fixed_update(app: &mut App) {
 
 fn configure_app(app: &mut App) {
     app.add_systems(
-        PostUpdate,
-        crate::dynamic_lod::update.run_if(resource_exists::<Match>),
-    );
-    app.add_systems(
-        Update,
-        (crate::spectre_decals::update, crate::lockon_cursor::update)
-            .run_if(resource_exists::<Match>),
-    );
-    app.add_systems(
-        Update,
-        crate::scenery_clear::update
-            .after(crate::model_animation::update_world)
-            .run_if(resource_exists::<Match>),
-    );
-    app.add_systems(
         Update,
         (
             (
@@ -2099,15 +2195,26 @@ fn configure_app(app: &mut App) {
                     .chain()
                     .after(crate::model_animation::update_clock)
                     .after(playtest_view::render),
-                crate::aircraft_pose::update.after(playtest_view::render),
+                (
+                    crate::aircraft_pose::update,
+                    crate::model_animation::update_truck_chassis,
+                )
+                    .chain()
+                    .after(playtest_view::render),
                 crate::projectile_render::update,
                 crate::projectile_stream::update,
                 crate::weapon_fx::update,
                 crate::weapon_fx::update_ropes,
                 crate::scorch::update,
-                crate::model_animation::update,
-                crate::particles::update_model_states,
-                crate::particles::update_fire,
+                (
+                    crate::model_animation::update,
+                    crate::model_animation::treads::update
+                        .after(crate::model_animation::update)
+                        .before(selection_feedback::tint_models),
+                    crate::model_animation::update_tracks,
+                    crate::particles::advance,
+                )
+                    .chain(),
                 (
                     crate::particles::update,
                     crate::w3d_emitter::update
@@ -2127,12 +2234,35 @@ fn configure_app(app: &mut App) {
             .chain()
             .run_if(resource_exists::<Match>),
     );
-    configure_interface(app);
+    configure_presentation(app);
     playtest_ui::shell::configure(app);
     app.add_systems(Update, playtest_view::capture);
 }
 
-fn configure_interface(app: &mut App) {
+fn configure_presentation(app: &mut App) {
+    app.add_systems(
+        Update,
+        (crate::world_hover::spawn, crate::world_hover::update)
+            .chain()
+            .after(input::pointer)
+            .run_if(resource_exists::<Match>)
+            .run_if(resource_exists::<crate::world_hover::Style>),
+    );
+    app.add_systems(
+        PostUpdate,
+        crate::dynamic_lod::update.run_if(resource_exists::<Match>),
+    );
+    app.add_systems(
+        Update,
+        (crate::spectre_decals::update, crate::lockon_cursor::update)
+            .run_if(resource_exists::<Match>),
+    );
+    app.add_systems(
+        Update,
+        crate::scenery_clear::update
+            .after(crate::model_animation::update_world)
+            .run_if(resource_exists::<Match>),
+    );
     app.add_systems(
         Update,
         (
@@ -2149,6 +2279,7 @@ fn configure_interface(app: &mut App) {
         (
             (
                 selection_feedback::health_bars,
+                crate::sticky_bomb_icons::update,
                 crate::veterancy_feedback::insignia,
                 crate::veterancy_feedback::animations,
                 crate::income::map_crates::animations,
@@ -2159,6 +2290,7 @@ fn configure_interface(app: &mut App) {
             crate::particles::orientation::update,
             (playtest_ui::observer::update, playtest_ui::pictures).chain(),
             playtest_ui::cancellation_update,
+            playtest_ui::ocl_timer_update,
             playtest_ui::result_update,
             crate::notifications::update,
             playtest_ui::promotion_icons,
@@ -2216,12 +2348,14 @@ fn step(
         let selected = battle.selected.clone();
         battle.simulation.sync_drawable_selection(&selected);
         battle.simulation.step();
+        // ReplaceObjectUpgrade reads the first selected drawable before destroying it.
+        mouse.apply_replacements(&mut battle);
+        battle.apply_bike_selections();
         input::apply_spectre_selections(&mut battle);
         audio.map_script_actions(&battle.simulation.take_map_script_audio());
         crate::diagnostics::simulation_time(&battle.simulation, started.elapsed(), &mut slow_tick);
         mouse.refresh_idle_workers(&battle.simulation, battle.generation);
         log_elimination(&battle.simulation, &mut enemy_buildings);
-        mouse.apply_replacements(&mut battle);
         deselect_sniped_vehicle(&mut battle);
     }
     let battle = battle.into_inner();

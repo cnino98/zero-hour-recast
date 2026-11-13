@@ -20,6 +20,7 @@ pub mod material;
 mod pose;
 mod public_bones;
 mod scene_bounds;
+pub use load::read_asset;
 pub use pose::{BoneControl, Deformation, Hierarchy, MeshPose};
 
 const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;

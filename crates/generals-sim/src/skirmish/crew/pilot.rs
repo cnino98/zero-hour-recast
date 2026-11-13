@@ -106,6 +106,7 @@ impl Skirmish {
         };
         let unit = &self.catalog[victim.type_index];
         victim.alive()
+            && (unit.combat_bike.is_none() || victim.loaded())
             && !victim.unmanned()
             && !victim.masked()
             && self.enemies(actor.owner, victim.owner)
@@ -170,7 +171,9 @@ impl Skirmish {
             return;
         }
         let unit = &self.catalog[self.entities[target].type_index];
-        if unit.kind_of.iter().any(|kind| kind == "VEHICLE") {
+        if unit.combat_bike.is_some() {
+            self.bike_kill_pilot(target, source);
+        } else if unit.kind_of.iter().any(|kind| kind == "VEHICLE") {
             self.set_unmanned(target);
             self.deselect_dead_object(target);
             if self.entities[target].ai.registration.is_some() {

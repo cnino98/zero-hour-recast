@@ -97,6 +97,7 @@ pub fn load(assets: &VirtualAssets, map: &MapData) -> Result<OpponentRules, Box<
     Ok(OpponentRules {
         defense_extra_distance: number(&lines, 0, "SkirmishBaseDefenseExtraDistance")?,
         max_recruit_distance: number(&lines, 0, "MaxRecruitRadius")?,
+        skirmish_group_fudge: number(&lines, 0, "SkirmishGroupFudgeDistance")?,
         attack_priority_distance: number(&lines, 0, "AttackPriorityDistanceModifier")?,
         alert_range_modifier: number(&lines, 0, "AlertRangeModifier")?,
         aggressive_range_modifier: number(&lines, 0, "AggressiveRangeModifier")?,

@@ -1,4 +1,5 @@
 //! `AIPlayer::buildStructureWithDozer` for ordinary map NPC players.
+pub(in crate::skirmish::map_scripts::build_lists) use crate::skirmish::ai_repair::select_dozer;
 use crate::skirmish::{
     Order, Skirmish,
     movement::{distance_squared, footprints_overlap},
@@ -53,58 +54,6 @@ pub(super) fn build(
         game.entities[worker].ai.construction_dock = game.construction_approach(worker, building);
     }
     Some((building, worker))
-}
-
-pub(in crate::skirmish::map_scripts::build_lists) fn select_dozer(
-    game: &Skirmish,
-    owner: usize,
-    position: [f32; 2],
-    reserved: Option<usize>,
-) -> (Option<usize>, bool) {
-    let mut selected = None;
-    let mut closest = None;
-    let mut nearest = 0.0;
-    let mut exists = false;
-    for id in (0..game.entities.len()).rev() {
-        let actor = &game.entities[id];
-        if actor.owner != owner
-            || !actor.exists()
-            || !game.catalog[actor.type_index]
-                .kind_of
-                .iter()
-                .any(|flag| flag == "DOZER")
-            || actor.ai.dozer.is_none()
-        {
-            continue;
-        }
-        if reserved == Some(id) {
-            continue;
-        }
-        let pending = actor.has_pending_dozer_task();
-        if !pending
-            && game.worker_interface(id)
-            && (matches!(actor.ai.order, Order::Harvest(_) | Order::ReturnSupply)
-                || actor.ai.supply.force_wanting)
-        {
-            continue;
-        }
-        exists = true;
-        if actor.build_task_target().is_some() {
-            continue;
-        }
-        let idle = !pending;
-        if idle || selected.is_none() {
-            selected = Some(id);
-        }
-        if idle {
-            let distance = distance_squared(position, actor.position);
-            if closest.is_none() || distance < nearest {
-                closest = Some(id);
-                nearest = distance;
-            }
-        }
-    }
-    (closest.or(selected), !exists)
 }
 
 fn wiggle(

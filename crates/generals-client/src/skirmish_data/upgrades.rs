@@ -59,7 +59,7 @@ fn load_module(
         Some("StealthUpgrade") => {
             // StealthUpdate owns CAN_STEALTH and the original spawned-weapon
             // propagation. Its UpgradeMux executes at normal upgrade activation.
-            if super::stealth::load(object)?.is_none() {
+            if super::stealth::load(files, object)?.is_none() {
                 return Err("stealth upgrade has no original StealthUpdate".into());
             }
         }
@@ -195,6 +195,7 @@ pub(super) fn supported(name: &str) -> bool {
         "Upgrade_AmericaSentryDroneGun",
         "Upgrade_ComancheRocketPods",
         "Upgrade_AmericaLaserMissiles",
+        "Upgrade_AmericaCountermeasures",
         "Upgrade_ChinaAircraftArmor",
         "Upgrade_ChinaMines",
         "Upgrade_ChinaSatelliteHackOne",
@@ -203,6 +204,8 @@ pub(super) fn supported(name: &str) -> bool {
         "Upgrade_GLABuggyAmmo",
         "Upgrade_GLAAPRockets",
         "Upgrade_GLAAnthraxBeta",
+        "Upgrade_GLABombTruckBioBomb",
+        "Upgrade_GLABombTruckHighExplosiveBomb",
         "Upgrade_GLAScorpionRocket",
         "Upgrade_AmericaAdvancedControlRods",
         "Upgrade_ChinaChainGuns",
@@ -488,9 +491,10 @@ mod tests {
             &mut MaintenanceRules::none(),
         )
         .unwrap();
-        let stealth = super::super::stealth::load(&file.declarations[0])
-            .unwrap()
-            .unwrap();
+        let stealth =
+            super::super::stealth::load(std::slice::from_ref(&file), &file.declarations[0])
+                .unwrap()
+                .unwrap();
         assert_eq!(stealth.upgrades, ["Upgrade_GLACamoNetting"]);
         assert_eq!(stealth.delay, 75);
         assert!(!stealth.innate);

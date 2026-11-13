@@ -23,6 +23,8 @@ impl Skirmish {
         );
         flags.extend(unit.radar.conditions().into_iter().map(str::to_owned));
         flags.extend(unit.container_conditions().into_iter().map(str::to_owned));
+        flags.extend(unit.combat_bike.rider_model.map(str::to_owned));
+        flags.extend(unit.combat_bike.steering.map(str::to_owned));
         if unit.freefall_disabled() {
             flags.insert("FREEFALL".into());
         }

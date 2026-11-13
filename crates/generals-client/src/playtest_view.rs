@@ -55,6 +55,7 @@ pub struct Models {
 }
 
 pub struct WorldObject {
+    pub terrain_bridge: bool,
     pub animation: Option<Arc<crate::model_animation::WorldDraw>>,
     pub model_index: usize,
     pub position: [f32; 3],
@@ -93,6 +94,7 @@ impl Models {
             .parameters;
         let mut roads = crate::road_view::load(assets, records, terrain)?;
         for part in &mut roads {
+            part.material.parameters.shroud_mode = 1;
             part.material.parameters.scene_ambient = lighting.scene_ambient;
             part.material.parameters.light_color = lighting.light_color;
             part.material.parameters.light_direction = lighting.light_direction;
@@ -126,6 +128,19 @@ impl Models {
             color += light.truncate() * (-direction.y).max(0.0);
         }
         color.to_array()
+    }
+
+    pub(crate) fn track_color(&self) -> [f32; 3] {
+        let terrain = &self
+            .terrain
+            .first()
+            .expect("loaded terrain material")
+            .material
+            .parameters;
+        let color = terrain.scene_ambient.truncate() + terrain.light_color[0].truncate() * 0.5;
+        color
+            .to_array()
+            .map(|channel| (channel.clamp(0.0, 1.0) * 255.0).trunc() / 255.0)
     }
 
     pub(crate) fn scorch_color(&self) -> [f32; 4] {
@@ -352,6 +367,7 @@ fn terrain_parts(
                         false,
                     );
                     material.depth_bias = f32::from(batch.layer);
+                    material.parameters.shroud_mode = 1;
                     material
                 },
             })
@@ -703,20 +719,7 @@ pub fn setup(
         .into_iter()
         .map(|(key, image)| (key, images.add(image)))
         .collect();
-    for object in &objects.0 {
-        if object.tree {
-            for part in &mut models.parts[object.model_index] {
-                // W3DTreeBuffer::doLighting uses full ambient/diffuse and post-light DCG.
-                part.material.parameters.ambient = Vec4::ONE;
-                part.material.parameters.diffuse = Vec4::ONE;
-                part.material.parameters.vertex_diffuse = 2;
-                part.material.parameters.alpha_test = 96.0 / 255.0;
-                part.material.alpha_mode = AlphaMode::Mask(96.0 / 255.0);
-                part.material.double_sided = true;
-                part.material.depth_write = true;
-            }
-        }
-    }
+    prepare_tree_materials(&mut models, objects);
     let lighting = &models.tree_lighting;
     let tree_lighting = crate::tree_buffer::Lighting {
         ambient: lighting.ambient,
@@ -760,8 +763,13 @@ pub fn setup(
         )
     };
 
+    let mut shroud_meshes = Vec::new();
     for (index, part) in terrain_parts.into_iter().enumerate() {
+        let base = matches!(part.material.alpha_mode, AlphaMode::Opaque);
         let part = prepare(part);
+        if base {
+            shroud_meshes.push(part.mesh.clone());
+        }
         commands.spawn((
             Mesh3d(part.mesh),
             MeshMaterial3d(part.materials[0].clone()),
@@ -782,7 +790,21 @@ pub fn setup(
         .into_iter()
         .map(|parts| parts.into_iter().map(&mut prepare).collect())
         .collect();
-    spawn_world_objects(&mut commands, objects, &handles);
+    let shroud = source_materials.add(crate::source_material::terrain::shroud_material());
+    for mesh in shroud_meshes {
+        commands.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(shroud.clone()),
+            RenderLayers::layer(crate::source_material::terrain::SHROUD),
+        ));
+    }
+    spawn_world_objects(
+        &mut commands,
+        objects,
+        &handles,
+        &mut source_materials,
+        &shroud,
+    );
     commands.insert_resource(placement_preview::Previews::new(models.placement_opacity));
     commands.insert_resource(Geometry {
         colors: colors.iter().map(|color| color.map(f32::to_bits)).collect(),
@@ -794,11 +816,31 @@ pub fn setup(
     cameras(&mut commands, &static_levels);
 }
 
+fn prepare_tree_materials(models: &mut Models, objects: &WorldObjects) {
+    for object in &objects.0 {
+        if object.tree {
+            for part in &mut models.parts[object.model_index] {
+                // W3DTreeBuffer::doLighting uses full ambient/diffuse and post-light DCG.
+                part.material.parameters.ambient = Vec4::ONE;
+                part.material.parameters.diffuse = Vec4::ONE;
+                part.material.parameters.vertex_diffuse = 2;
+                part.material.parameters.alpha_test = 96.0 / 255.0;
+                part.material.alpha_mode = AlphaMode::Mask(96.0 / 255.0);
+                part.material.double_sided = true;
+                part.material.depth_write = true;
+            }
+        }
+    }
+}
+
 fn spawn_world_objects(
     commands: &mut Commands,
     objects: &WorldObjects,
     handles: &[Vec<PreparedPart>],
+    materials: &mut Assets<SourceMaterial>,
+    shroud: &Handle<SourceMaterial>,
 ) {
+    let mut bridge_materials = BTreeMap::new();
     for (index, object) in objects.0.iter().enumerate() {
         if object.tree {
             continue;
@@ -826,13 +868,43 @@ fn spawn_world_objects(
         let instance = crate::sorted_view::RenderInstance::new();
         entity.with_children(|parent| {
             for part in &handles[object.model_index] {
+                let material = if object.terrain_bridge {
+                    bridge_materials
+                        .entry(part.materials[0].id())
+                        .or_insert_with(|| {
+                            let mut material = materials
+                                .get(&part.materials[0])
+                                .expect("prepared bridge material")
+                                .clone();
+                            material.parameters.shroud_mode = 1;
+                            materials.add(material)
+                        })
+                        .clone()
+                } else {
+                    part.materials[0].clone()
+                };
+                if object.terrain_bridge {
+                    parent.spawn((
+                        Mesh3d(part.mesh.clone()),
+                        MeshMaterial3d(shroud.clone()),
+                        RenderLayers::from_layers(&[
+                            crate::source_material::terrain::BRIDGE_SHROUD,
+                        ]),
+                    ));
+                }
                 let mut child = parent.spawn((
                     instance.clone(),
                     Mesh3d(part.mesh.clone()),
-                    MeshMaterial3d(part.materials[0].clone()),
-                    part.order,
-                    RenderLayers::layer(part.order.layer(1.0)),
+                    MeshMaterial3d(material),
+                    RenderLayers::layer(if object.terrain_bridge {
+                        crate::source_material::terrain::BRIDGE
+                    } else {
+                        part.order.layer(1.0)
+                    }),
                 ));
+                if !object.terrain_bridge {
+                    child.insert(part.order);
+                }
                 if object.supply.is_some() && part.pickable {
                     child.insert(model_render::Pickable);
                 }
@@ -866,7 +938,9 @@ fn cameras(commands: &mut Commands, static_levels: &std::collections::BTreeSet<u
     // W3DScene renders waypoint feedback after terrain and before drawables.
     // Bevy shares the target's depth texture; later passes preserve its contents.
     // RTS3DScene::Flush: opaque/occluded objects, tree decals, trees, static lists.
-    let mut layers = vec![11, 1, 2, 12, 13];
+    let mut layers = vec![11];
+    layers.extend(crate::source_material::terrain::PASSES);
+    layers.extend([1, 2, 12, 13]);
     layers.extend(
         static_levels
             .iter()
@@ -912,7 +986,7 @@ fn cameras(commands: &mut Commands, static_levels: &std::collections::BTreeSet<u
             NoIndirectDrawing,
             Tonemapping::None,
             Transform::default(),
-            RenderLayers::layer(layer),
+            RenderLayers::from_layers(&[layer]),
         ));
     }
 }
@@ -1007,11 +1081,14 @@ pub fn render(
         Option<&mut crate::light_environment::DrawPose>,
     )>,
     timings: Option<Res<crate::render_performance::Timings>>,
+    draw_visibility: Option<Res<crate::model_animation::draw_visibility::DrawVisibility>>,
 ) {
     let timings = timings.map(Res::into_inner);
+    let draw_visibility = draw_visibility.map(Res::into_inner);
     let _span = timings.map(|timings| timings.span("unit_visuals"));
 
     let battle = battle.into_inner();
+    let observer = battle.observer_player.unwrap_or(0);
     if geometry.generation != battle.generation {
         for (entity, _, _, _, _) in &visuals {
             commands.entity(entity).despawn();
@@ -1042,18 +1119,28 @@ pub fn render(
                 commands.entity(entity).despawn();
                 continue;
             }
-            visibility.set_if_neq(if battle.simulation.crate_visible_to(0, visual.index) {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            });
+            visibility.set_if_neq(
+                if battle.simulation.crate_visible_to(observer, visual.index) {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                },
+            );
             continue;
         }
         if unit.masked() && unit.alive() {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
         }
-        let shroud = battle.simulation.visibility_status(0, visual.index);
+        let mut shroud = battle.simulation.visibility_status(observer, visual.index);
+        if matches!(
+            shroud,
+            generals_sim::skirmish::visibility::Status::Fogged
+                | generals_sim::skirmish::visibility::Status::Shrouded
+        ) && draw_visibility.is_some_and(|cache| !cache.obscured(battle, visual.index))
+        {
+            shroud = &generals_sim::skirmish::visibility::Status::Partial;
+        }
         if matches!(shroud, generals_sim::skirmish::visibility::Status::Fogged) {
             // PartitionData's ghost retains the last visible drawable pose.
             visibility.set_if_neq(Visibility::Visible);
@@ -1080,7 +1167,7 @@ pub fn render(
                     .kind_of
                     .iter()
                     .any(|kind| kind == "LANDMARK_BRIDGE"))
-                && (!unit.alive() || battle.simulation.logically_visible(0, visual.index))
+                && (!unit.alive() || battle.simulation.logically_visible(observer, visual.index))
                 && !matches!(shroud, generals_sim::skirmish::visibility::Status::Shrouded)
             {
                 Visibility::Visible
@@ -1659,7 +1746,7 @@ mod transform_tests {
                 .iter(&world)
                 .collect();
             passes.sort_by_key(|(camera, _, _)| camera.order);
-            let mut expected = vec![11, 1, 2, 12, 13];
+            let mut expected = vec![11, 60, 61, 64, 62, 63, 1, 2, 12, 13];
             if !levels.is_empty() {
                 expected.push(20);
             }
@@ -1674,7 +1761,7 @@ mod transform_tests {
             {
                 assert_eq!(camera.order, isize::try_from(index + 1).unwrap());
                 assert!(camera.is_active);
-                assert_eq!(layers, &RenderLayers::layer(layer));
+                assert_eq!(layers, &RenderLayers::from_layers(&[layer]));
                 assert!(matches!(depth.depth_load_op, Camera3dDepthLoadOp::Load));
                 assert!(matches!(camera.clear_color, ClearColorConfig::None));
                 if layer != 10 {
@@ -1694,6 +1781,77 @@ mod transform_tests {
                 assert!(matches!(clear_color, ClearColorConfig::None));
             }
         }
+    }
+
+    #[test]
+    fn buffered_bridge_overlay_spawns_on_its_own_high_layer_and_camera() {
+        use crate::source_material::terrain::{BRIDGE, BRIDGE_SHROUD};
+        use bevy::ecs::world::CommandQueue;
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        let mut materials = Assets::<SourceMaterial>::default();
+        let original = materials.add(SourceMaterial::new(
+            [1.0; 3],
+            [1.0; 3],
+            [0.0; 3],
+            1.0,
+            AlphaMode::Opaque,
+            false,
+        ));
+        let shroud = materials.add(crate::source_material::terrain::shroud_material());
+        let parts = vec![vec![PreparedPart {
+            light_bounds: None,
+            submission: None,
+            order: model_render::RenderOrder::ordinary(),
+            binding: None,
+            pickable: false,
+            mesh: Handle::default(),
+            materials: vec![original],
+        }]];
+        let objects = WorldObjects(vec![WorldObject {
+            terrain_bridge: true,
+            animation: None,
+            model_index: 0,
+            position: [0.0; 3],
+            angle: 0.0,
+            scale: 1.0,
+            tree: false,
+            tree_data: None,
+            prop_radius: None,
+            supply: None,
+            supply_draw: None,
+        }]);
+        let mut commands = Commands::new(&mut queue, &world);
+        spawn_world_objects(&mut commands, &objects, &parts, &mut materials, &shroud);
+        cameras(&mut commands, &std::collections::BTreeSet::new());
+        queue.apply(&mut world);
+        let mut meshes: Vec<_> = world
+            .query_filtered::<(
+                &RenderLayers,
+                &MeshMaterial3d<SourceMaterial>,
+                Has<model_render::RenderOrder>,
+            ), With<Mesh3d>>()
+            .iter(&world)
+            .collect();
+        meshes.sort_by_key(|(layers, _, _)| layers.iter().next().unwrap());
+        assert_eq!(meshes.len(), 2);
+        for ((layers, material, sorted), layer) in meshes.into_iter().zip([BRIDGE, BRIDGE_SHROUD]) {
+            assert_eq!(layers.iter().collect::<Vec<_>>(), [layer]);
+            assert!(!sorted);
+            assert_eq!(
+                materials.get(&material.0).unwrap().parameters.shroud_mode,
+                if layer == BRIDGE { 1 } else { 2 }
+            );
+        }
+        let overlay = RenderLayers::from_layers(&[BRIDGE_SHROUD]);
+        let cameras: Vec<_> = world
+            .query_filtered::<(&Camera, &RenderLayers), With<ScenePassCamera>>()
+            .iter(&world)
+            .filter(|(_, layers)| layers.intersects(&overlay))
+            .collect();
+        assert_eq!(cameras.len(), 1);
+        // Road, scorch and bridge base precede the bridge overlay; tracks follow it.
+        assert_eq!(cameras[0].0.order, 4);
     }
 
     #[test]
@@ -1739,7 +1897,7 @@ mod transform_tests {
                     GlobalTransform::from_translation(Vec3::new(x, 0.0, -10.0)),
                     inherited,
                     ViewVisibility::default(),
-                    RenderLayers::layer(layer),
+                    RenderLayers::from_layers(&[layer]),
                 ))
                 .id()
         };

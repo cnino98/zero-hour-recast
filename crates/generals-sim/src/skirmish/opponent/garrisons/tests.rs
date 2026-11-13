@@ -267,7 +267,7 @@ fn rejected_damaged_host_consumes_assignment_and_preserves_previous_guard() {
     state.teams[0].members.push(rider);
     game.update_ground_contacts();
     assert!(!game.can_enter(rider, host));
-    assert!(assign(&mut game, &mut state, 0).is_some());
+    assert!(assign(&mut game, &state, 0).is_some());
     assert!(matches!(game.entities[rider].ai.order, Order::Guard(_)));
     assert!(game.entities[host].containment.waiting.is_empty());
 }
@@ -289,7 +289,7 @@ fn stationary_goal_loss_keeps_the_last_native_move_destination() {
         ],
     });
     game.update_ground_contacts();
-    approach(&mut game, &rules, &mut state, 0, "ChinaBunker", "Perimeter").unwrap();
+    approach(&mut game, &rules, &state, 0, "ChinaBunker", "Perimeter").unwrap();
     let Order::Move(goal) = game.entities[rider].ai.order else {
         panic!("no source approach")
     };

@@ -5,6 +5,8 @@ mod detection;
 mod eligibility;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(in crate::skirmish) use tests::rules as test_rules;
 
 pub const ATTACKING: u32 = 1;
 pub const MOVING: u32 = 2;
@@ -20,6 +22,9 @@ pub enum Wake {
     Automatic,
     SpecialPower,
 }
+
+mod disguise;
+pub use disguise::{Appearance, Rules as DisguiseRules};
 
 const CAN_STEALTH: u8 = 1;
 const STEALTHED: u8 = 2;
@@ -43,6 +48,7 @@ pub struct Rules {
     pub black_market_frames: u32,
     pub friendly_opacity: [f32; 2],
     pub pulse_frames: u32,
+    pub disguise: Option<DisguiseRules>,
 }
 
 pub struct Detector {
@@ -76,6 +82,10 @@ pub enum Event {
     Pulse {
         object: usize,
     },
+    DisguiseOpacity {
+        object: usize,
+        opacity: f32,
+    },
     Look {
         object: usize,
         stealthed: bool,
@@ -108,7 +118,7 @@ pub(super) struct State {
     status: u8,
     enabled: bool,
     frames_granted: u32,
-    disguised_player: Option<usize>,
+    disguise: disguise::State,
 }
 
 impl State {
@@ -130,21 +140,15 @@ impl State {
                 detected_until: 0,
                 next_black_market: 0,
                 status: if rules.innate { CAN_STEALTH } else { 0 },
-                enabled: matches!(rules.wake, Wake::Automatic),
+                enabled: matches!(rules.wake, Wake::Automatic) && rules.disguise.is_none(),
                 frames_granted: 0,
-                disguised_player: None,
+                disguise: disguise::State::default(),
             })
         })
     }
 }
 
 impl Entity {
-    pub(in crate::skirmish) fn disguised_player(&self) -> Option<usize> {
-        self.stealth
-            .as_ref()
-            .and_then(|state| state.disguised_player)
-    }
-
     #[must_use]
     pub fn stealthed(&self) -> bool {
         self.stealth
@@ -161,6 +165,32 @@ impl Entity {
 }
 
 impl Skirmish {
+    /// Player group move/append and stop give a revealed unit time to cloak again.
+    pub(super) fn delay_group_stealth_acquisition(&mut self, id: usize) {
+        let actor = &self.entities[id];
+        let unit = &self.catalog[actor.type_index];
+        let Some(rules) = &unit.behavior.stealth else {
+            return;
+        };
+        if actor.ai.registration.is_none()
+            || unit.ai.acquisition == 0
+            || unit.ai.acquire_stealthed()
+            || matches!(rules.wake, Wake::SpecialPower)
+            || actor
+                .stealth
+                .as_ref()
+                .is_none_or(|state| !state.has(CAN_STEALTH))
+            || actor.stealthed()
+            || actor.detected()
+        {
+            return;
+        }
+        let delay = rules.delay.wrapping_add(self.random_between(30));
+        let mood = &mut self.entities[id].ai.mood;
+        mood.next_check = deadline(self.tick, delay);
+        mood.offset_check = false;
+    }
+
     pub(in crate::skirmish) fn apply_stealth_upgrade(&mut self, id: usize) {
         if let Some(state) = &mut self.entities[id].stealth {
             state.set(CAN_STEALTH | UPGRADED, true);
@@ -196,7 +226,13 @@ impl Skirmish {
             return false;
         };
         // WeaponSet's ordinary object attack gate is independent of shroud.
-        actor.ai.attack_context.ignoring_stealth || !victim.stealthed() || victim.detected()
+        actor.ai.attack_context.ignoring_stealth
+            || !victim.stealthed()
+            || victim.detected()
+            || self.attack_kind(target, "DISGUISER")
+                && victim
+                    .disguised_player()
+                    .is_none_or(|owner| self.enemies(actor.owner, owner))
     }
 
     pub(in crate::skirmish) fn grant_stealth(&mut self, id: usize) {
@@ -224,10 +260,17 @@ impl Skirmish {
 
     fn receive_stealth_grant(&mut self, id: usize, active: bool, frames: u32) {
         let now = self.tick;
+        if self.catalog[self.entities[id].type_index]
+            .behavior
+            .stealth
+            .as_ref()
+            .is_some_and(|rules| rules.disguise.is_some())
+        {
+            return;
+        }
         let Some(state) = self.entities[id].stealth.as_mut() else {
             return;
         };
-        // DisguisesAsTeam remains explicitly rejected by the catalog parser.
         state.enabled = active;
         state.set(CAN_STEALTH | STEALTHED, active);
         state.allowed_frame = if active { now } else { u64::from(u32::MAX) };
@@ -242,8 +285,13 @@ impl Skirmish {
                 hint: false,
             });
         }
-        // RiderChangeContain is not admitted by the current catalog; ordinary
-        // transports deliberately do not propagate receiveGrant to passengers.
+        if self.catalog[self.entities[id].type_index]
+            .combat_bike
+            .is_some()
+            && let Some(&rider) = self.passengers(id).first()
+        {
+            self.receive_stealth_grant(rider, active, frames);
+        }
     }
 
     fn update_temporary_stealth(&mut self, id: usize) {
@@ -345,15 +393,29 @@ impl Skirmish {
         if !state.enabled {
             return;
         }
-        self.presentation
-            .stealth_events
-            .push(Event::Pulse { object: id });
+        let disguise = self.catalog[actor.type_index]
+            .behavior
+            .stealth
+            .as_ref()
+            .is_some_and(|rules| rules.disguise.is_some());
+        if disguise {
+            if !self.update_disguise(id) {
+                return;
+            }
+        } else {
+            self.presentation
+                .stealth_events
+                .push(Event::Pulse { object: id });
+        }
+        let actor = &self.entities[id];
         let rules = self.catalog[actor.type_index]
             .behavior
             .stealth
             .as_ref()
             .expect("stealth module");
-        let delay = rules.delay;
+        let delay = self
+            .rider_stealth_rules(id, rules)
+            .map_or(rules.delay, |rider| rider.delay);
         if rules.reveal_distance > 0.0
             && actor.ai.current_victim.is_some_and(|target| {
                 super::movement::distance_squared(actor.position, self.entities[target].position)
@@ -421,8 +483,12 @@ impl Skirmish {
         let Some(rules) = &self.catalog[actor.type_index].behavior.stealth else {
             return;
         };
-        let delay = rules.delay;
-        let wake_enemies = rules.idle_enemies_on_reveal;
+        let owner_rules = self.rider_stealth_rules(id, rules).unwrap_or(rules);
+        let delay = owner_rules.delay;
+        let wake_enemies = owner_rules.idle_enemies_on_reveal;
+        if let Some(disguise) = &rules.disguise {
+            self.reveal_vehicle_disguise(id, disguise.reveal_transition);
+        }
         let state = self.entities[id].stealth.as_mut().expect("stealth module");
         state.detected_until = if frames == 0 {
             deadline(self.tick, delay)
@@ -447,6 +513,17 @@ impl Skirmish {
                 }
             }
         }
+    }
+
+    fn rider_stealth_rules(&self, id: usize, rules: &Rules) -> Option<&Rules> {
+        if !rules.use_rider {
+            return None;
+        }
+        let rider = *self.passengers(id).first()?;
+        self.catalog[self.entities[rider].type_index]
+            .behavior
+            .stealth
+            .as_ref()
     }
 }
 

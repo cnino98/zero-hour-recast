@@ -2,6 +2,7 @@
 //! destination claims follow `AIGroup.cpp` and `AIPathfind.cpp`; source profile
 //! and remaining layer/locomotor limits are recorded in docs/PATHFINDING.md.
 
+use super::ai_goals::COMMAND_FROM_PLAYER;
 use super::movement::{bounding_radius, distance_squared, native_cell_position};
 use super::{CELL_SIZE, Cell, GroupKind, MovementSurface, Order, Skirmish, startup};
 
@@ -215,23 +216,18 @@ impl Skirmish {
     /// Applies one original group move/Alt-waypoint command to a selection snapshot.
     ///
     /// # Errors
-    /// Rejects missing/immobile members and destinations with no legal ground goal.
+    /// Rejects unavailable selections and invalid destinations.
     pub fn group_move_to(
         &mut self,
         ids: &[usize],
         position: [f32; 2],
         add_waypoint: bool,
     ) -> Result<(), &'static str> {
-        for &id in ids {
-            if self
-                .entities
-                .get(id)
-                .is_none_or(|actor| actor.contained_by().is_none())
-            {
-                self.ready_actor(id)?;
-            }
-        }
-        self.move_group(ids, position, add_waypoint)
+        self.group_move_to_world(
+            ids,
+            [position[0], position[1], self.ground_height(position)],
+            add_waypoint,
+        )
     }
 
     /// Original world-space group command including the picked destination Z.
@@ -252,96 +248,133 @@ impl Skirmish {
                 self.ready_actor(id)?;
             }
         }
-        self.move_group_world(ids, position, add_waypoint)
+        for &id in ids {
+            self.release_group_temporary_lock(id);
+        }
+        self.move_group_world(ids, position, add_waypoint, COMMAND_FROM_PLAYER)
     }
 
-    pub(super) fn move_group(
+    /// `AIGroup::groupAttackMoveToPosition` dispatches in member order.
+    /// # Errors
+    /// Rejects a nonfinite destination or a group with no available member.
+    pub fn group_attack_move_world(
         &mut self,
-        ids: &[usize],
-        position: [f32; 2],
-        add_waypoint: bool,
+        members: &[usize],
+        position: [f32; 3],
     ) -> Result<(), &'static str> {
-        self.move_group_world(
-            ids,
-            [position[0], position[1], self.ground_height(position)],
-            add_waypoint,
-        )
+        if position.iter().any(|value| !value.is_finite()) {
+            return Err("Destination is not finite");
+        }
+        for &id in members {
+            if self.entities.get(id).is_some_and(super::Entity::exists) {
+                self.release_group_temporary_lock(id);
+            }
+        }
+        let mut issued = false;
+        for &id in members {
+            if self.ready_actor(id).is_err()
+                || self.entities[id].ai.registration.is_none()
+                || self.catalog[self.entities[id].type_index].immobile()
+            {
+                continue;
+            }
+            self.dozer_player_command(id);
+            if self.object_can_attack(id) {
+                self.native_attack_move_from(
+                    id,
+                    position,
+                    i32::MAX.unsigned_abs(),
+                    COMMAND_FROM_PLAYER,
+                );
+            } else {
+                self.native_move_from(id, position, COMMAND_FROM_PLAYER);
+            }
+            self.finish_dozer_player_command(id);
+            issued = true;
+        }
+        if issued {
+            Ok(())
+        } else {
+            Err("Selection has no available attack-move members")
+        }
     }
 
-    fn move_group_world(
+    /// `AIGroup::groupGuardPosition` keeps the same requested center for every member.
+    /// # Errors
+    /// Rejects a nonfinite position or a group with no available guard member.
+    pub fn group_guard_world(
+        &mut self,
+        members: &[usize],
+        position: [f32; 3],
+        flying_only: bool,
+    ) -> Result<(), &'static str> {
+        if position.iter().any(|value| !value.is_finite()) {
+            return Err("Guard position is not finite");
+        }
+        let mut issued = false;
+        for &id in members {
+            issued |= self.guard_world_mode(id, position, flying_only).is_ok();
+        }
+        if issued {
+            Ok(())
+        } else {
+            Err("Selection has no available guard members")
+        }
+    }
+
+    pub(super) fn move_group_world(
         &mut self,
         ids: &[usize],
         world: [f32; 3],
         add_waypoint: bool,
+        source: i32,
     ) -> Result<(), &'static str> {
         if world.iter().any(|value| !value.is_finite()) {
             return Err("Destination is not finite");
         }
         let position = [world[0], world[1]];
-        if position.iter().any(|value| !value.is_finite()) {
-            return Err("Destination is not finite");
-        }
         let mut members = Vec::new();
         for &id in ids {
             if self
                 .entities
                 .get(id)
-                .is_some_and(|actor| actor.contained_by().is_some())
+                .is_some_and(|actor| actor.disabled_held() || actor.contained_by().is_some())
             {
                 // AIGroup excludes DISABLED_HELD passengers while issuing the
                 // carrier's move; a held team member must not reject the group.
                 continue;
             }
             let actor = self.active_actor(id)?;
-            if self.catalog[actor.type_index].speed > 0.0 && !members.contains(&id) {
+            if actor.exists() && !members.contains(&id) {
                 members.push(id);
             }
         }
-        if members.is_empty() || members.len() > usize::from(u16::MAX) {
+        if members.len() > usize::from(u16::MAX) {
+            return Err("Selection exceeds the group size limit");
+        }
+        let mut movers: Vec<_> = members
+            .iter()
+            .copied()
+            .filter(|&id| self.group_position_mover(id))
+            .collect();
+        if movers.is_empty() {
             return Err("Selection has no mobile units");
         }
-        for &id in &members {
-            self.assault_command(id, Order::Move(position));
-        }
         self.refresh_occupancy();
-        let (center, min, max) = self.group_bounds(&members);
+        let (center, min, max, formation) = self.group_bounds(&members);
         self.update_formation_speed(&members);
-        let formation = !add_waypoint
-            && members.len() > 1
-            && self.entities[members[0]].ai.command.formation_id.is_some()
-            && members.iter().all(|&id| {
-                !matches!(
-                    self.catalog[self.entities[id].type_index].group_kind,
-                    GroupKind::Helicopter | GroupKind::Aircraft
-                )
-            });
-        if formation {
-            let margin = 40.0;
-            let destination = self.clamp_group_point(position, margin);
-            let route = self.ground_group_route(
-                &members,
-                center,
-                min,
-                max,
-                [destination[0], destination[1], world[2]],
-            );
-            return self.move_formation(
-                &members,
-                [destination[0], destination[1], world[2]],
-                route.as_deref(),
-            );
-        }
+        let formation = !add_waypoint && formation;
         let mut did_infantry = false;
         let mut did_vehicles = false;
-        if !add_waypoint {
+        if !add_waypoint && !formation {
             for &id in &members {
                 self.remove_goal(id);
             }
             if let Some(route) = self.ground_group_route(&members, center, min, max, world) {
-                did_infantry = self.move_columns(&members, center, world, &route, true);
+                did_infantry = self.move_columns(&movers, center, world, &route, true, source);
                 // Infantry deletes a too-short shared path before vehicles see it.
                 if columns::valid_infantry_anchors(&route) {
-                    did_vehicles = self.move_columns(&members, center, world, &route, false);
+                    did_vehicles = self.move_columns(&movers, center, world, &route, false, source);
                 }
             }
         }
@@ -355,22 +388,36 @@ impl Skirmish {
                 },
             )
         });
-        let gather = !add_waypoint && self.gather_group(&members, position, min, max);
-        let position = self.clamp_group_point(position, margin.trunc());
+        let gather = source == COMMAND_FROM_PLAYER
+            && !add_waypoint
+            && !formation
+            && self.gather_group(&members, position, min, max);
+        let formation = formation && members.iter().all(|&id| self.allows_group_formation(id));
+        let world = self.clamp_group_destination(world, margin.trunc());
         if gather {
-            return self.tighten_group(&members, [position[0], position[1], world[2]]);
+            return self.tighten_group(&movers, world);
         }
-        members.retain(|&id| {
-            let unit = &self.catalog[self.entities[id].type_index];
-            !(did_infantry && matches!(unit.group_kind, GroupKind::Infantry)
+        if formation {
+            let route = self.ground_group_route(&members, center, min, max, world);
+            return self.move_formation(&movers, world, route.as_deref(), source);
+        }
+        movers.retain(|&id| {
+            !(did_infantry && self.attack_kind(id, "INFANTRY")
                 || did_vehicles
-                    && matches!(unit.group_kind, GroupKind::Vehicle)
-                    && matches!(unit.movement_surface, MovementSurface::Ground))
+                    && self.attack_kind(id, "VEHICLE")
+                    && self.attack_ground_movement(id)
+                    && !self.attack_kind(id, "CLIFF_JUMPER"))
         });
-        if members.is_empty() {
+        if movers.is_empty() {
             return Ok(());
         }
-        self.move_individual_group(members, [position[0], position[1], world[2]], add_waypoint)
+        self.move_individual_group(movers, world, add_waypoint, source)
+    }
+
+    fn group_position_mover(&self, id: usize) -> bool {
+        let actor = &self.entities[id];
+        let unit = &self.catalog[actor.type_index];
+        actor.ai.registration.is_some() && unit.speed > 0.0 && !unit.immobile()
     }
 
     fn move_individual_group(
@@ -378,6 +425,7 @@ impl Skirmish {
         mut members: Vec<usize>,
         world: [f32; 3],
         add_waypoint: bool,
+        source: i32,
     ) -> Result<(), &'static str> {
         let position = [world[0], world[1]];
         let layer = self
@@ -414,34 +462,83 @@ impl Skirmish {
                 [0.0, 0.0]
             };
             let wanted = [position[0] + displacement[0], position[1] + displacement[1]];
-            let Some(destination) = self.adjust_destination_on(
-                id,
-                [wanted[0], wanted[1], world[2]],
-                Some(position),
-                layer,
-            ) else {
-                failure = Some("No unoccupied reachable group destination");
-                continue;
-            };
-            let result = if add_waypoint {
+            let mut destination = [
+                wanted[0],
+                wanted[1],
+                self.movement_layer_height(layer, wanted),
+            ];
+            if self.attack_ground_movement(id) {
+                if let Some(adjusted) =
+                    self.adjust_destination_on(id, destination, Some(position), layer)
+                {
+                    destination = adjusted;
+                }
+                self.reserve_goal_on(id, [destination[0], destination[1]], 1);
+            }
+            if source == COMMAND_FROM_PLAYER {
+                self.delay_group_stealth_acquisition(id);
+            }
+            let result = if add_waypoint && !self.object_disabled(id) {
                 self.queue_move_to_world(id, destination)
             } else {
-                self.begin_move_world(id, destination)
+                self.move_group_member_from(id, destination, source)
             };
             if let Err(error) = result {
                 failure = Some(error);
-            } else {
-                self.reserve_goal(id, [destination[0], destination[1]]);
             }
         }
         failure.map_or(Ok(()), Err)
     }
 
-    fn group_bounds(&self, members: &[usize]) -> ([f32; 2], [f32; 2], [f32; 2]) {
+    fn move_group_member_from(
+        &mut self,
+        id: usize,
+        position: [f32; 3],
+        source: i32,
+    ) -> Result<(), &'static str> {
+        if self.object_disabled(id) {
+            return Ok(());
+        }
+        let actor = &self.entities[id];
+        let locomotor = actor.active_locomotor(&self.catalog[actor.type_index]);
+        let simplified = locomotor.ground.is_none() && locomotor.flight.is_none();
+        self.assault_command_from(
+            id,
+            Order::Move([position[0], position[1]]),
+            Some(position),
+            source,
+            false,
+        );
+        if simplified {
+            // Catalogs without translated force data use the existing
+            // simplified movement adapter.
+            self.set_last_command_source(id, source);
+            return self.begin_move_world(id, position);
+        }
+        if source == COMMAND_FROM_PLAYER {
+            self.dozer_player_command(id);
+        }
+        self.native_move_from(id, position, source);
+        if source == COMMAND_FROM_PLAYER {
+            self.finish_dozer_player_command(id);
+        }
+        Ok(())
+    }
+
+    fn group_bounds(&self, members: &[usize]) -> ([f32; 2], [f32; 2], [f32; 2], bool) {
         let mut center = [0.0; 2];
         let mut min = [f32::MAX; 2];
         let mut max = [f32::MIN; 2];
-        for &id in members {
+        let mut count = 0_u16;
+        let mut formation = false;
+        for &id in members
+            .iter()
+            .filter(|&&id| self.entities[id].ai.registration.is_some())
+        {
+            if count == 0 {
+                formation = self.entities[id].ai.command.formation_id.is_some();
+            }
+            count += 1;
             for axis in 0..2 {
                 let value = self.entities[id].position[axis];
                 center[axis] += value;
@@ -449,8 +546,43 @@ impl Skirmish {
                 max[axis] = max[axis].max(value);
             }
         }
-        let count = f32::from(u16::try_from(members.len()).expect("Group size was checked"));
-        ([center[0] / count, center[1] / count], min, max)
+        let divisor = f32::from(count);
+        (
+            [center[0] / divisor, center[1] / divisor],
+            min,
+            max,
+            formation && count > 1,
+        )
+    }
+
+    /// `AIGroup::getCenter` prefers unheld objects with an AI interface.
+    pub(in crate::skirmish) fn native_group_center(&self, members: &[usize]) -> Option<[f32; 3]> {
+        let mut ai_center = [0.0; 3];
+        let mut all_center = [0.0; 3];
+        let mut ai_count = 0_u16;
+        let mut all_count = 0_u16;
+        for &id in members {
+            let actor = &self.entities[id];
+            if actor.disabled_held() {
+                continue;
+            }
+            let position = self.object_position(id);
+            all_count = all_count.checked_add(1)?;
+            for axis in 0..3 {
+                all_center[axis] += position[axis];
+            }
+            if actor.ai.registration.is_some() {
+                ai_count = ai_count.checked_add(1)?;
+                for axis in 0..3 {
+                    ai_center[axis] += position[axis];
+                }
+            }
+        }
+        if ai_count != 0 {
+            Some(ai_center.map(|axis| axis / f32::from(ai_count)))
+        } else {
+            (all_count != 0).then(|| all_center.map(|axis| axis / f32::from(all_count)))
+        }
     }
 
     fn ground_group_leader(
@@ -467,13 +599,15 @@ impl Skirmish {
         let mut infantry = 0;
         let mut vehicles = 0;
         for &id in members {
-            let unit = &self.catalog[self.entities[id].type_index];
-            match unit.group_kind {
-                GroupKind::Infantry => infantry += 1,
-                GroupKind::Vehicle if matches!(unit.movement_surface, MovementSurface::Ground) => {
-                    vehicles += 1;
-                }
-                _ => continue,
+            if self.entities[id].ai.registration.is_none() {
+                continue;
+            }
+            if self.attack_kind(id, "INFANTRY") {
+                infantry += 1;
+            } else if self.attack_kind(id, "VEHICLE") && !self.attack_kind(id, "AIRCRAFT") {
+                vehicles += 1;
+            } else {
+                continue;
             }
             let point = self.entities[id].position;
             distance = distance.min(distance_squared(point, position));
@@ -497,10 +631,7 @@ impl Skirmish {
             || vehicles > 4;
         if !close
             && !members.iter().all(|&id| {
-                if !matches!(
-                    self.catalog[self.entities[id].type_index].group_kind,
-                    GroupKind::Infantry
-                ) {
+                if !self.attack_kind(id, "INFANTRY") {
                     return true;
                 }
                 self.ground_line_passable_on(
@@ -587,12 +718,9 @@ impl Skirmish {
         mut max: [f32; 2],
     ) -> bool {
         if self.ai_rules.group_move_gather_factor <= 0.0
-            || members.iter().any(|&id| {
-                matches!(
-                    self.catalog[self.entities[id].type_index].group_kind,
-                    GroupKind::Aircraft
-                )
-            })
+            || members
+                .iter()
+                .any(|&id| self.group_aircraft_uses_flight(id))
         {
             return false;
         }
@@ -606,6 +734,31 @@ impl Skirmish {
         // Original uses X width for both dx and dy here; preserve it.
         width * width < 2000.0
             && (0..2).all(|axis| position[axis] >= min[axis] && position[axis] <= max[axis])
+    }
+
+    fn allows_group_formation(&self, id: usize) -> bool {
+        !matches!(
+            self.catalog[self.entities[id].type_index].group_kind,
+            GroupKind::Helicopter
+        ) && !self.group_aircraft_uses_flight(id)
+    }
+
+    fn group_aircraft_uses_flight(&self, id: usize) -> bool {
+        matches!(
+            self.catalog[self.entities[id].type_index].group_kind,
+            GroupKind::Aircraft
+        ) && self.entities[id].ai.registration.is_some()
+            && !self.attack_ground_movement(id)
+    }
+
+    fn clamp_group_destination(&self, world: [f32; 3], margin: f32) -> [f32; 3] {
+        let position = [world[0], world[1]];
+        let clamped = self.clamp_group_point(position, margin);
+        if position.map(f32::to_bits) == clamped.map(f32::to_bits) {
+            world
+        } else {
+            [clamped[0], clamped[1], self.ground_height(clamped)]
+        }
     }
 
     fn tighten_group(&mut self, members: &[usize], world: [f32; 3]) -> Result<(), &'static str> {

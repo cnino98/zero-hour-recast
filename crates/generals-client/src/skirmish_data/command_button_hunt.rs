@@ -150,6 +150,18 @@ fn button(files: &[ContentFile], definition: &Declaration) -> Result<Button, Box
         command,
         weapon_slot,
         power,
+        upgrade: field(&definition.lines, 0, "Upgrade")
+            .map(scalar)
+            .transpose()?
+            // UpgradeCenter reopens existing templates; repeated INI declarations
+            // still name the same upgrade used by CommandButton::isReady.
+            .filter(|name| {
+                files
+                    .iter()
+                    .flat_map(|file| &file.declarations)
+                    .any(|upgrade| upgrade.kind == "Upgrade" && upgrade.name == *name)
+            })
+            .map(str::to_owned),
         needs_object,
     })
 }
@@ -250,6 +262,16 @@ fn command_options(definition: &Declaration) -> Result<u32, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_upgrade_reference_retains_a_reopened_native_template() {
+        let files = vec![generals_assets::content::scan(generals_assets::virtual_assets::Asset {
+            path: "commands.ini".into(), origin: "upgrade reference regression".into(),
+            bytes: b"Upgrade Reopened\nBuildTime=1\nEnd\nUpgrade Reopened\nBuildTime=2\nEnd\nCommandButton Research\nCommand=OBJECT_UPGRADE\nUpgrade=Reopened\nEnd\n".to_vec(),
+        }).unwrap()];
+        let definitions = definitions(&files).unwrap();
+        assert_eq!(definitions.buttons[0].upgrade.as_deref(), Some("Reopened"));
+    }
+
     #[test]
     fn repeated_scan_fields_and_all_eighteen_command_slots_keep_native_values() {
         let files = vec![generals_assets::content::scan(generals_assets::virtual_assets::Asset {

@@ -338,9 +338,7 @@ impl Skirmish {
             {
                 return false;
             }
-            if actor.has_native_disguise()
-                && let Some(owner) = actor.disguised_player()
-            {
+            if let Some(owner) = actor.disguised_player() {
                 return self.enemies(self.entities[id].owner, owner);
             }
         } else {

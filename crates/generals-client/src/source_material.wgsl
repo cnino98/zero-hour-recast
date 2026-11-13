@@ -15,6 +15,8 @@ struct Parameters {
     opacity:f32,
     primary_gradient:u32,
     shroud_extent:vec4<f32>,
+    uv_transform:vec4<f32>,
+    shroud_mode:u32,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material:Parameters;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var color_texture:texture_2d<f32>;
@@ -29,7 +31,7 @@ fn vertex(vertex:Vertex)->VertexOutput {
     out.world_position=mesh_functions::mesh_position_local_to_world(world_from_local,vec4<f32>(vertex.position,1.0));
     out.position=position_world_to_clip(out.world_position.xyz);
     out.world_normal=mesh_functions::mesh_normal_local_to_world(vertex.normal,vertex.instance_index);
-    out.uv=vertex.uv;
+    out.uv=vertex.uv*material.uv_transform.xy+material.uv_transform.zw;
     var diffuse=vec3<f32>(0.0);
     var point_ambient=vec3<f32>(0.0);
     for(var index=0u;index<4u;index+=1u) {
@@ -74,12 +76,16 @@ fn vertex(vertex:Vertex)->VertexOutput {
 
 @fragment
 fn fragment(input:VertexOutput)->@location(0) vec4<f32> {
-    var color=textureSample(color_texture,color_sampler,input.uv)*input.color;
-    if(color.a<material.alpha_test){discard;}
-    if(material.shroud_extent.x>0.0 && material.vertex_diffuse!=3u){
+    var shroud=vec3<f32>(1.0);
+    if(material.shroud_mode!=1u && material.shroud_extent.x>0.0){
         let point=vec2<f32>(input.world_position.x,-input.world_position.z);
         let uv=(point+material.shroud_extent.zw)/material.shroud_extent.xy;
-        let shroud=textureSample(shroud_texture,shroud_sampler,uv).rgb;
+        shroud=textureSample(shroud_texture,shroud_sampler,uv).rgb;
+    }
+    if(material.shroud_mode==2u){return vec4<f32>(shroud,1.0);}
+    var color=textureSample(color_texture,color_sampler,input.uv)*input.color;
+    if(color.a<material.alpha_test){discard;}
+    if(material.shroud_mode==0u && material.vertex_diffuse!=3u){
         color=vec4<f32>(color.rgb*shroud,color.a);
     }
     // World cameras retain D3D8 encoded RGB through modulation and blending.

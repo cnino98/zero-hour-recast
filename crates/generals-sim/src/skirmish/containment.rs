@@ -380,6 +380,12 @@ impl Skirmish {
         if self.container_encloses(carrier, id) {
             self.containment_world_membership(id, false);
         }
+        let bike = self.catalog[self.entities[carrier].type_index]
+            .combat_bike
+            .is_some();
+        if bike {
+            self.bike_mount(carrier, id);
+        }
         self.container_enter_callback(carrier);
         if !matches!(
             self.catalog[self.entities[carrier].type_index].contain_family(),
@@ -390,7 +396,13 @@ impl Skirmish {
         self.capture_cave_network(carrier, id);
         if matches!(
             self.catalog[self.entities[carrier].type_index].contain_family(),
-            Some("TransportContain" | "InternetHackContain" | "HelixContain" | "OverlordContain")
+            Some(
+                "TransportContain"
+                    | "InternetHackContain"
+                    | "HelixContain"
+                    | "OverlordContain"
+                    | "RiderChangeContain"
+            )
         ) {
             let slots = i32::from_ne_bytes(
                 self.catalog[self.entities[id].type_index]
@@ -401,6 +413,9 @@ impl Skirmish {
                 .containment
                 .extra_slots_in_use
                 .wrapping_add(slots.wrapping_sub(1));
+        }
+        if bike {
+            self.transfer_bike_sniper_reload(carrier, id, true);
         }
         if self.entities[carrier].containment.tunnel.is_some() {
             let owner = self.entities[id].owner;

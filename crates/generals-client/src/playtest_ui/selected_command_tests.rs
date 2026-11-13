@@ -4,6 +4,74 @@ use generals_sim::skirmish::Order;
 
 #[ignore = "requires original game installation"]
 #[test]
+fn installed_raptor_and_mig_dispatch_the_original_air_guard_slots() {
+    use crate::{
+        skirmish_verification::{
+            advance_until, construct, construct_type, friendly_entity, produce_type,
+        },
+        strategy_verification::template,
+    };
+    use generals_sim::skirmish::{Faction, Kind};
+    let (assets, mut battle, mut animations) =
+        crate::cleanup_verification::tests::installed_with_animations();
+    animations.bind_logical_bones(&mut battle.simulation.catalog);
+    let options = generals_assets::game_root()
+        .unwrap()
+        .join("UserData/Options.ini");
+    let data = crate::control_bar::load(&assets, &battle.simulation.catalog, &options).unwrap();
+    let mut mouse = crate::input::load(&assets, &options, &battle.simulation.catalog).unwrap();
+    for (owner, enemy, field, aircraft, slot) in [
+        (
+            Faction::Usa,
+            Faction::China,
+            "AmericaAirfield",
+            "AmericaJetRaptor",
+            10,
+        ),
+        (
+            Faction::China,
+            Faction::Usa,
+            "ChinaAirfield",
+            "ChinaJetMIG",
+            12,
+        ),
+    ] {
+        let game = &mut battle.simulation;
+        game.reset(owner, enemy).unwrap();
+        let builder = friendly_entity(game, Kind::Builder, 0).unwrap();
+        construct(game, builder, Kind::PowerPlant, 0).unwrap();
+        construct(game, builder, Kind::SupplyCenter, 0).unwrap();
+        let field = construct_type(game, builder, template(game, field).unwrap(), 0).unwrap();
+        let actor = produce_type(game, field, template(game, aircraft).unwrap(), 0).unwrap();
+        advance_until(game, 3600, "paid jet in original hangar", |game| {
+            game.entities[actor].aircraft_phase() == Some("idle")
+        })
+        .unwrap();
+        battle.select_objects(&[actor], true);
+        let command = selected_command(&battle, &data, slot).unwrap().action;
+        assert!(matches!(command, CommandAction::GuardFlying));
+        dispatch_command(&mut battle, &mut mouse, command);
+        assert!(matches!(mouse.pending_command, CommandMode::GuardFlying));
+        let [x, y] = battle.simulation.entities[actor].position;
+        let point = [
+            x + 100.0,
+            y,
+            battle.simulation.ground_height([x + 100.0, y]),
+        ];
+        crate::input::targeted_movement(&mut battle, &mut mouse, Vec3::from_array(point));
+        assert!(matches!(mouse.pending_command, CommandMode::Normal));
+        advance_until(
+            &mut battle.simulation,
+            1800,
+            "air guard dispatch through jet takeoff",
+            |game| matches!(game.entities[actor].ai.order, Order::Guard(_)),
+        )
+        .unwrap();
+    }
+}
+
+#[ignore = "requires original game installation"]
+#[test]
 fn paid_mob_parent_and_selected_members_keep_original_commands_without_unmasking() {
     let (assets, mut battle) = crate::cleanup_verification::tests::installed();
     let setup = crate::angry_mob_verification::prepare(&mut battle.simulation).unwrap();

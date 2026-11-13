@@ -228,6 +228,7 @@ fn recording_world() -> bevy::prelude::World {
     world.insert_resource(crate::playtest_view::WorldObjects(
         (0..2)
             .map(|index| crate::playtest_view::WorldObject {
+                terrain_bridge: false,
                 animation: None,
                 model_index: 0,
                 position: [500.0, 500.0, 0.0],

@@ -378,6 +378,8 @@ fn interchangeable_materials(left: &SourceMaterial, right: &SourceMaterial) -> b
         opacity,
         primary_gradient,
         shroud_extent,
+        uv_transform,
+        shroud_mode,
     } = parameters;
     let bits = |value: Vec4| value.to_array().map(f32::to_bits);
     let b = &right.parameters;
@@ -386,6 +388,8 @@ fn interchangeable_materials(left: &SourceMaterial, right: &SourceMaterial) -> b
         (a, b) => a == b,
     };
     alpha
+        && *shroud_mode == b.shroud_mode
+        && bits(*uv_transform) == bits(b.uv_transform)
         && texture == &right.texture
         && shroud == &right.shroud
         && *double_sided == right.double_sided

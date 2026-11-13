@@ -3,7 +3,7 @@
 //! sorting, corner offsets, final row spacing and directional waypoint trimming.
 
 use super::super::movement::distance_squared;
-use super::super::{CELL_SIZE, GroupKind, MovementSurface, Skirmish};
+use super::super::{CELL_SIZE, Skirmish};
 
 struct Member {
     id: usize,
@@ -37,6 +37,7 @@ impl Skirmish {
         destination: [f32; 3],
         route: &[[f32; 3]],
         infantry: bool,
+        source: i32,
     ) -> bool {
         let Some((start_node, end_node)) = column_anchors(route, infantry) else {
             return false;
@@ -45,12 +46,13 @@ impl Skirmish {
             .iter()
             .copied()
             .filter(|&id| {
-                let unit = &self.catalog[self.entities[id].type_index];
-                matches!(unit.movement_surface, MovementSurface::Ground)
+                let actor = &self.entities[id];
+                actor.ai.registration.is_some()
+                    && !actor.disabled_held()
                     && if infantry {
-                        matches!(unit.group_kind, GroupKind::Infantry)
+                        self.attack_kind(id, "INFANTRY")
                     } else {
-                        matches!(unit.group_kind, GroupKind::Vehicle)
+                        self.attack_kind(id, "VEHICLE") && self.attack_ground_movement(id)
                     }
             })
             .map(|id| Member {
@@ -134,9 +136,9 @@ impl Skirmish {
             &members,
             destination,
             route,
-            start_node,
-            end_vector,
+            (start_node, end_vector),
             infantry,
+            source,
         );
         true
     }
@@ -180,9 +182,9 @@ impl Skirmish {
         members: &[Member],
         destination: [f32; 3],
         route: &[[f32; 3]],
-        start_node: usize,
-        end_vector: [f32; 2],
+        (start_node, end_vector): (usize, [f32; 2]),
         infantry: bool,
+        source: i32,
     ) {
         let mut factors = [0_u16; 5];
         let normal = direction([0.0, 0.0], [-end_vector[1], end_vector[0]]);
@@ -244,13 +246,7 @@ impl Skirmish {
             };
             let goal = adjusted;
             path.push(goal);
-            self.native_follow_path_from(
-                member.id,
-                path,
-                None,
-                crate::skirmish::ai_goals::COMMAND_FROM_PLAYER,
-                false,
-            );
+            self.native_follow_path_from(member.id, path, None, source, false);
             self.reserve_goal(member.id, xy(goal));
         }
     }
@@ -404,12 +400,26 @@ mod nexus_tests {
             [600.0, 255.0, 0.0],
         ];
         assert!(
-            game.move_columns(&members, [355.0, 255.0], [600.0, 255.0, 0.0], &route, true),
+            game.move_columns(
+                &members,
+                [355.0, 255.0],
+                [600.0, 255.0, 0.0],
+                &route,
+                true,
+                crate::skirmish::ai_goals::COMMAND_FROM_PLAYER
+            ),
             "the same ordinary infantry meet the real column-path prerequisites"
         );
         members.push(parent);
         let before = game.entities[parent].ai_goal_position();
-        let result = game.move_columns(&members, [355.0, 255.0], [600.0, 255.0, 0.0], &route, true);
+        let result = game.move_columns(
+            &members,
+            [355.0, 255.0],
+            [600.0, 255.0, 0.0],
+            &route,
+            true,
+            crate::skirmish::ai_goals::COMMAND_FROM_PLAYER,
+        );
         assert!(!result);
         assert_eq!(
             game.entities[parent].ai_goal_position().map(f32::to_bits),

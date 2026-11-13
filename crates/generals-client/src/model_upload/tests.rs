@@ -31,6 +31,7 @@ fn extraction_tracks_sorted_run_lifetime_without_admitting_ordinary_sources() {
                 AnimatedPart {
                     model: 0,
                     binding: Arc::new(PartBinding {
+                        linear_mapper: None,
                         mesh: 0,
                         pass: 0,
                         vertices: vec![0, 1, 2],

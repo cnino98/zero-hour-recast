@@ -41,6 +41,7 @@ fn fixture() -> (Skirmish, usize, usize) {
     });
     let unit = &mut game.catalog[5];
     unit.kind_of.push("CAN_RAPPEL".into());
+    unit.locomotor.stick_to_ground = true;
     unit.live_physics = Some(LiveRules {
         motion: MotionRules {
             center_of_mass_offset: 0.0,
@@ -86,6 +87,7 @@ fn combat_drop_removes_passenger_and_runs_rappel_until_actual_ground_contact() {
     game.update_chinook_state(host);
     assert!(game.entities[rider].contained_by().is_none());
     assert!(!game.entities[rider].disabled_held());
+    assert!(game.entities[rider].physics_allows_fall());
     assert!(matches!(
         game.entities[rider].ai.command.main_state,
         MainState::Rappel

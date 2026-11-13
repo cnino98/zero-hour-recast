@@ -46,7 +46,7 @@ impl Skirmish {
     pub(in crate::skirmish) fn update_demo_trap(&mut self, id: usize, ordinal: usize) -> i32 {
         let actor = &self.entities[id];
         let state = &actor.behaviors.demo_trap[ordinal];
-        if state.detonated || actor.under_construction() || actor.sold_model() {
+        if state.detonated || actor.under_construction() || actor.selling() {
             return 1;
         }
         let rules = &self.catalog[actor.type_index].demo_trap[ordinal];
@@ -133,7 +133,7 @@ impl Skirmish {
         let actor = &self.entities[id];
         let unit = &self.catalog[actor.type_index];
         if !actor.under_construction()
-            && !actor.sold_model()
+            && !actor.selling()
             && unit.demo_trap[ordinal].detonation_weapon.is_some()
         {
             let binding = WeaponBinding {

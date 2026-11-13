@@ -18,6 +18,42 @@ pub(super) struct Binding {
 }
 
 impl Skirmish {
+    pub(super) fn broken_bridge_towards(
+        &self,
+        actor: usize,
+        destination: [f32; 2],
+    ) -> Option<usize> {
+        let from = self.object_position(actor);
+        let [x, y] = destination;
+        let goal = [x, y, self.ground_height(destination)];
+        let layer_cell = |point: [f32; 3]| {
+            let xy = [point[0], point[1]];
+            crate::grid::LayerCell {
+                cell: self.clipped_path_cell(xy),
+                layer: self
+                    .movement_terrain
+                    .get_layer_for_destination(point, self.ground_height(xy)),
+            }
+        };
+        let (from, to) = (layer_cell(from), layer_cell(goal));
+        let entity = &self.entities[actor];
+        let surfaces = entity.locomotor_surfaces(&self.catalog[entity.type_index]);
+        let navigation = self.navigation_for(actor);
+        if navigation.quick_path_exists_layers(surfaces, from, to) {
+            return None;
+        }
+        let layer = navigation.broken_bridge_connecting_zones(
+            &self.movement_terrain,
+            from,
+            to,
+            surfaces,
+        )?;
+        self.bridge_objects
+            .iter()
+            .find(|binding| binding.layer == layer)
+            .map(|binding| binding.id)
+    }
+
     /// Native bridge picking requires a drawable owned by a bridge object.
     #[must_use]
     pub fn pick_bridge(&self, from: [f32; 3], to: [f32; 3]) -> Option<[f32; 3]> {

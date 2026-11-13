@@ -317,7 +317,7 @@ pub(super) const fn default_event() -> Event {
     }
 }
 
-pub(super) const VOICE_KEYS: [&str; 31] = [
+pub(super) const VOICE_KEYS: [&str; 38] = [
     "VoiceSelect",
     "VoiceMove",
     "VoiceAttack",
@@ -349,6 +349,13 @@ pub(super) const VOICE_KEYS: [&str; 31] = [
     "VoiceSnipePilot",
     "VoiceDisarm",
     "VoiceCombatDrop",
+    "VoiceModeBurtonKnife",
+    "VoiceModeBurtonTimed",
+    "VoiceModeBurtonRemote",
+    "VoiceMelee",
+    "VoiceModeBombTruckDisguise",
+    "VoiceModeBombTruckBioBomb",
+    "VoiceModeBombTruckHighExplosive",
 ];
 
 pub fn units(
@@ -361,7 +368,16 @@ pub fn units(
     for unit in catalog {
         let object = definition(&objects, "Object", &unit.name)?;
         let per_unit = blocks(&object.lines, 0, "UnitSpecificSounds")?;
+        let wheel = |key| {
+            per_unit
+                .iter()
+                .find_map(|lines| field(lines, 1, key))
+                .map(scalar)
+                .transpose()
+                .map(|name| name.unwrap_or("NoSound").to_owned())
+        };
         result.push(UnitAudio {
+            wheels: [wheel("TruckLandingSound")?, wheel("TruckPowerslideSound")?],
             hacker: hacker_sounds(unit, &per_unit)?,
             capture: super::capture::bindings(&object.lines)?,
             lotus: super::lotus::bindings(unit, &object.lines)?,
@@ -477,6 +493,12 @@ fn voice_bindings(
                 | "VoiceModeLotusVehicle"
                 | "VoiceModeLotusCash"
                 | "VoiceModeSnipe"
+                | "VoiceModeBurtonKnife"
+                | "VoiceModeBurtonTimed"
+                | "VoiceModeBurtonRemote"
+                | "VoiceModeBombTruckDisguise"
+                | "VoiceModeBombTruckBioBomb"
+                | "VoiceModeBombTruckHighExplosive"
         ) {
             let button = mode_button(unit, key);
             if let Some(button) = button {
@@ -518,6 +540,7 @@ fn voice_bindings(
                 | "VoiceAttackLaser"
                 | "VoiceSalvage"
                 | "VoiceSnipePilot"
+                | "VoiceMelee"
                 | "VoiceDisarm"
         ) {
             per_unit
@@ -541,6 +564,29 @@ fn voice_bindings(
 }
 
 fn mode_button(unit: &UnitType, key: &str) -> Option<&'static str> {
+    if unit.name == "AmericaInfantryColonelBurton" {
+        return match key {
+            "VoiceModeBurtonKnife" => Some("Command_ColonelBurtonKnifeAttack"),
+            "VoiceModeBurtonTimed" => Some("Command_ColonelBurtonTimedDemoCharge"),
+            "VoiceModeBurtonRemote" => Some("Command_ColonelBurtonRemoteDemoCharge"),
+            _ => None,
+        };
+    }
+    if unit
+        .behavior
+        .stealth
+        .as_ref()
+        .is_some_and(|rules| rules.disguise.is_some())
+    {
+        return match key {
+            "VoiceModeBombTruckDisguise" => Some("Command_DisguiseAsVehicle"),
+            "VoiceModeBombTruckBioBomb" => Some("Command_UpgradeGLABombTruckBioBomb"),
+            "VoiceModeBombTruckHighExplosive" => {
+                Some("Command_UpgradeGLABombTruckHighExplosiveBomb")
+            }
+            _ => None,
+        };
+    }
     match key {
         "VoiceModeSnipe" if unit.name == "GLAInfantryJarmenKell" => {
             Some("Command_GLAInfantryJarmenKellSnipeVehicleAttack")

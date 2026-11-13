@@ -23,8 +23,8 @@ pub(super) fn move_wheels(
     terrain_valid: &mut impl FnMut([f32; 2]) -> bool,
 ) {
     let frame = force.frame;
-    let rules = unit
-        .locomotor
+    let rules = actor
+        .active_locomotor(unit)
         .ground
         .as_ref()
         .expect("Ground rules selected");

@@ -10,6 +10,7 @@ use crate::skirmish::{
 pub struct State {
     pub(in crate::skirmish) registration: Option<usize>,
     pub(in crate::skirmish) completed_waypoint: Option<i32>,
+    pub(in crate::skirmish) follow_waypoint: Option<super::follow_waypoint::State>,
     pub(in crate::skirmish) current_victim: Option<usize>,
     pub(in crate::skirmish) ai_dead: bool,
     pub(in crate::skirmish) in_update: bool,
@@ -65,6 +66,7 @@ impl State {
         Self {
             registration: None,
             completed_waypoint: None,
+            follow_waypoint: None,
             current_victim: None,
             ai_dead: false,
             in_update: false,

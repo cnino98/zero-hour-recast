@@ -441,15 +441,7 @@ impl Skirmish {
             conditions.set_flag(ModelConditions::EXPLODED_FLAILING, false);
             conditions.set_flag(ModelConditions::EXPLODED_BOUNCING, true);
         }
-        let tree = self.entities[id]
-            .physics_last_collidee()
-            .is_some_and(|other| {
-                self.entities[other].exists()
-                    && self.catalog[self.entities[other].type_index]
-                        .kind_of
-                        .iter()
-                        .any(|kind| kind == "SHRUBBERY")
-            });
+        let tree = self.physics_collided_with_tree(id);
         if tree {
             self.set_disabled_held(id);
             let conditions = &mut self.entities[id].drawable.model_conditions;

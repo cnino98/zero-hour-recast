@@ -831,16 +831,57 @@ pub fn step(
     );
     let mut random = random(&mut animations, battle.generation);
     particles.emit_detector_scans(scans, &mut random);
-    particles.logic(simulation.tick, &mut random, &|point| {
-        simulation.ground_height(point)
-    });
     particles.shake.advance();
     particles.flush_effect_sounds(&mut audio);
+}
+
+/// `GameClient::update` advances the manager after current drawable callbacks.
+pub fn advance(
+    battle: Res<Match>,
+    mut particles: ResMut<Particles>,
+    mut animations: ResMut<Animations>,
+    mut audio: ResMut<crate::source_audio::SourceAudio>,
+) {
+    use super::model_states::WheelSound;
+    let battle = battle.into_inner();
+    let game = &battle.simulation;
+    for sound in std::mem::take(&mut particles.model_states.wheel_sounds) {
+        match sound {
+            WheelSound::Draw {
+                object,
+                landing,
+                sliding,
+            } => audio.wheel_sounds(
+                game,
+                object,
+                landing,
+                sliding,
+                battle.observer_player.unwrap_or(0),
+            ),
+            WheelSound::Retire(object) => audio.retire_wheel_sounds(object),
+        }
+    }
+    if !battle.started || battle.paused || particles.processed != Some(battle.simulation.tick) {
+        return;
+    }
+    particles.advance_frame(
+        game.tick,
+        &mut random(&mut animations, battle.generation),
+        &|point| game.ground_height(point),
+    );
 }
 
 pub(super) fn attached_pose(
     simulation: &generals_sim::skirmish::Skirmish,
     projectile: &generals_sim::skirmish::Projectile,
+) -> Option<(Pose, bool)> {
+    attached_pose_for_player(simulation, projectile, 0)
+}
+
+pub(super) fn attached_pose_for_player(
+    simulation: &generals_sim::skirmish::Skirmish,
+    projectile: &generals_sim::skirmish::Projectile,
+    observer: usize,
 ) -> Option<(Pose, bool)> {
     use generals_sim::{collision_geometry::Body, skirmish::visibility::Status};
     let (position, axes) = projectile.effect_transform(&simulation.entities)?;
@@ -852,7 +893,7 @@ pub(super) fn attached_pose(
         geometry,
     };
     let shrouded = !matches!(
-        simulation.visibility_footprint(0, &body),
+        simulation.visibility_footprint(observer, &body),
         Status::Clear | Status::Partial
     );
     Some((Pose { position, axes }, shrouded))

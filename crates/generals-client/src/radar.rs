@@ -254,7 +254,7 @@ impl Radar {
                 }
                 let color = game
                     .player_colors
-                    .get(actor.owner)
+                    .get(game.apparent_disguise_owner(id, viewed))
                     .copied()
                     .flatten()
                     .and_then(|color| self.colors.get(color))

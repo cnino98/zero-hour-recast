@@ -20,7 +20,7 @@ Run `python3 -B tests/run.py --references` to include differential checks agains
 
 Use a POSIX desktop with graphics and audio, both [game installations and UI fonts](../README.md#build-and-play), and the pinned checkout from the [reference guide](reference/PROVENANCE.md). Installed playtesting has used Apple Silicon. Run against a separate writable runtime so your normal game settings stay intact.
 
-1. From the checkout root, generate the comparison inputs and custom map entries with the [fixture preparation command](installed/client-fixtures.md#prepare-the-fixtures). Use `../private/installed-runtime` as the new output directory or substitute another external path in both commands.
+1. From the checkout root, run both [fixture preparation commands](installed/client-fixtures.md#prepare-the-fixtures). Run `prepare-metadata.py` to generate the comparison inputs and map chooser entries, then `prepare-repair-pad.py` to generate the Repair Pad map. Use the same external runtime directory for both commands and the full suite below.
 2. Copy or link the installed `GameData/` directory into that runtime, with both named game directories inside it. Copy the original user's `Options.ini` into the runtime's `UserData/` alongside the generated `Maps/` directory.
 3. Run the full suite from the checkout root, reusing the source-check build and dependency caches.
 

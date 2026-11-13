@@ -115,9 +115,7 @@ impl Skirmish {
             MovementSurface::Air
         )
         .then_some(building);
-        // DozerAIUpdate::findGoodBuildOrRepairPosition uses the same source
-        // finder as docks, with a ground-only maximum height difference of 10.
-        // The current XY map does not yet represent that vertical filter.
+        // Legacy construction adapter for objects without a Dozer task.
         Some(self.find_approach_position(id, working, ignore, None))
     }
 
@@ -141,26 +139,7 @@ impl Skirmish {
         let normalized = offset.map(|value| value * inverse);
         let offset = normalized.map(|value| value * radius);
         let working = std::array::from_fn(|axis| center[axis] + offset[axis]);
-        let point = [working[0], working[1]];
-        let actor = &self.entities[id];
-        let airborne = actor.is_using_airborne_locomotor(&self.catalog[actor.type_index]);
-        let mut selected = None;
-        self.find_position_around(point, |game, point, angle| {
-            let height = game.ground_height(point);
-            let surface = game.movement_terrain.physics_surfaces(point, height);
-            if surface.is_none_or(|flags| flags & (2 | 4) != 0)
-                || (!airborne && (height - working[2]).abs() > 10.0)
-                || !game.clear_approach_geometry(id, point, angle, airborne.then_some(target), None)
-                || game
-                    .movement_path(id, game.entities[id].position, point)
-                    .is_none()
-            {
-                return false;
-            }
-            selected = Some([point[0], point[1], height]);
-            true
-        });
-        selected.unwrap_or(working)
+        self.find_dock_approach_position(id, target, working, Some(10.0))
     }
 
     pub(in crate::skirmish) fn find_native_dock_position(
@@ -169,26 +148,7 @@ impl Skirmish {
         target: usize,
         working: [f32; 3],
     ) -> [f32; 3] {
-        let actor = &self.entities[id];
-        let airborne = actor.is_using_airborne_locomotor(&self.catalog[actor.type_index]);
-        let mut selected = None;
-        self.find_position_around([working[0], working[1]], |game, point, angle| {
-            let height = game.ground_height(point);
-            if game
-                .movement_terrain
-                .physics_surfaces(point, height)
-                .is_none_or(|flags| flags & (2 | 4) != 0)
-                || !game.clear_approach_geometry(id, point, angle, airborne.then_some(target), None)
-                || game
-                    .movement_path(id, game.entities[id].position, point)
-                    .is_none()
-            {
-                return false;
-            }
-            selected = Some([point[0], point[1], height]);
-            true
-        });
-        selected.unwrap_or(working)
+        self.find_dock_approach_position(id, target, working, None)
     }
 
     pub(in crate::skirmish) fn supply_regroup_position(

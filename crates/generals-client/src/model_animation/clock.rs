@@ -8,6 +8,7 @@ pub struct Clock {
     sync_ms: u32,
     fractional_ms: f32,
     previous_sync_ms: u32,
+    logic_frame_phase: f32,
     tick: u64,
     generation: Option<u32>,
 }
@@ -18,6 +19,7 @@ impl Clock {
             sync_ms: 0,
             fractional_ms: 0.0,
             previous_sync_ms: 0,
+            logic_frame_phase: 1.0,
             tick: 0,
             generation: None,
         }
@@ -26,6 +28,14 @@ impl Clock {
     fn advance(&mut self, tick: u64, generation: u32, paused: bool, ratio: f32) {
         // WW3D's static clock survives map loads; only the logic tick identity changes.
         let updated = self.generation != Some(generation) || self.tick != tick;
+        let phase_step = if paused { 0.0 } else { ratio.min(1.0) };
+        self.logic_frame_phase = if self.generation != Some(generation) {
+            1.0
+        } else if updated {
+            phase_step
+        } else {
+            (self.logic_frame_phase + phase_step).min(1.0)
+        };
         self.generation = Some(generation);
         self.previous_sync_ms = self.sync_ms;
         // FramePacer::getLogicTimeStepMilliseconds caps each rendered engine
@@ -60,6 +70,14 @@ impl Clock {
 
     pub const fn frame_milliseconds(&self) -> u32 {
         self.sync_ms.wrapping_sub(self.previous_sync_ms)
+    }
+
+    pub(super) const fn previous_sync_milliseconds(&self) -> u32 {
+        self.previous_sync_ms
+    }
+
+    pub(super) const fn logic_frame_phase(&self) -> f32 {
+        self.logic_frame_phase
     }
 
     pub fn milliseconds(&self) -> u32 {
@@ -117,6 +135,28 @@ pub fn update_clock(
 #[cfg(test)]
 mod tests {
     use super::Clock;
+
+    #[test]
+    fn chassis_logic_phase_resets_accumulates_and_freezes() {
+        let mut clock = Clock::new();
+        let mut phases = Vec::new();
+        for (tick, generation, paused, ratio) in [
+            (0, 0, false, 0.25),
+            (1, 0, false, 0.25),
+            (1, 0, false, 0.25),
+            (1, 0, true, 0.25),
+            (1, 0, false, 2.0),
+            (2, 0, false, 0.125),
+            (0, 1, true, 0.0),
+        ] {
+            clock.advance(tick, generation, paused, ratio);
+            phases.push(clock.logic_frame_phase().to_bits());
+        }
+        assert_eq!(
+            phases,
+            [1.0_f32, 0.25, 0.5, 0.5, 1.0, 0.125, 1.0].map(f32::to_bits)
+        );
+    }
 
     #[test]
     fn render_steps_accumulate_truncated_milliseconds_between_logic_updates() {

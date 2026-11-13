@@ -3,7 +3,7 @@ use super::{
     Setup as Aircraft, advance_until, construct, details, friendly_entity, produce_type, require,
     template,
 };
-use generals_sim::skirmish::{Kind, Order, Skirmish};
+use generals_sim::skirmish::{Kind, Order, Skirmish, diagnostics::movement_details};
 use std::error::Error;
 
 pub struct Setup {
@@ -13,10 +13,169 @@ pub struct Setup {
 
 pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
     let aircraft = super::prepare(game)?;
+    stage(game, aircraft)
+}
+
+pub fn prepare_pilot_ejection(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
+    let (aircraft, _) = prepare_veteran_raptor(game)?;
+    stage(game, aircraft)
+}
+
+pub fn prepare_veteran_raptor(game: &mut Skirmish) -> Result<(Aircraft, usize), Box<dyn Error>> {
+    let (aircraft, factory) = prepare_training(game)?;
+    let tank = stage_training_tank(game, &aircraft, factory)?;
+    earn_raptor_veterancy(game, aircraft.raptor, tank)?;
+    advance_until(
+        game,
+        7200,
+        "veteran Raptor safely rearmed before ejection trial",
+        |game| {
+            game.entities[aircraft.raptor].aircraft_phase() == Some("idle")
+                && game.height_above_ground(aircraft.raptor) < 10.0
+        },
+    )?;
+    Ok((aircraft, factory))
+}
+
+pub fn prepare_veteran_comanche(game: &mut Skirmish) -> Result<(usize, usize), Box<dyn Error>> {
+    let (aircraft, factory) = prepare_training(game)?;
+    let tank = stage_training_tank(game, &aircraft, factory)?;
+    let heli = aircraft.comanche;
+    if game.entities[tank].alive() {
+        game.attack(heli, tank)?;
+        advance_until(
+            game,
+            5400,
+            "paid Comanche defeats original Battle Master",
+            |game| !game.entities[tank].alive(),
+        )
+        .map_err(|error| {
+            format!(
+                "{error}; {}; {}",
+                details(game, heli),
+                movement_details(game, tank)
+            )
+        })?;
+    }
+    verify_veterancy(game, heli, tank)?;
+    Ok((heli, factory))
+}
+
+fn prepare_training(game: &mut Skirmish) -> Result<(Aircraft, usize), Box<dyn Error>> {
+    let aircraft = super::prepare(game)?;
     let builder = friendly_entity(game, Kind::Builder, 1)?;
     construct(game, builder, Kind::PowerPlant, 1)?;
     construct(game, builder, Kind::SupplyCenter, 1)?;
     let factory = construct(game, builder, Kind::Factory, 1)?;
+    Ok((aircraft, factory))
+}
+
+fn stage_training_tank(
+    game: &mut Skirmish,
+    aircraft: &Aircraft,
+    factory: usize,
+) -> Result<usize, Box<dyn Error>> {
+    // The paid original 400-health Battle Master grants exactly the 100 XP a
+    // each regular aircraft needs. Stage outside the opposing base.
+    let kind = template(game, "ChinaTankBattleMaster")?;
+    let tank = produce_type(game, factory, kind, 1)?;
+    let base = game.entities[aircraft.target].position;
+    let home = game.entities[aircraft.airfield].position;
+    let direction = [home[0] - base[0], home[1] - base[1]];
+    let length = direction[0].hypot(direction[1]);
+    let [dx, dy] = direction.map(|axis| axis / length);
+    let position = [0.0, -180.0, 180.0, -360.0, 360.0]
+        .into_iter()
+        .map(|side| {
+            [
+                dy.mul_add(-side, dx.mul_add(520.0, base[0])),
+                dx.mul_add(side, dy.mul_add(520.0, base[1])),
+            ]
+        })
+        .find(|&point| game.build_site_reachable(tank, point))
+        .ok_or_else(|| {
+            format!(
+                "no reachable training ground from {base:?} toward {home:?}; {}",
+                movement_details(game, tank)
+            )
+        })?;
+    game.move_to(tank, position)?;
+    advance_until(
+        game,
+        5400,
+        "paid Battle Master reaches isolated flight range",
+        |game| {
+            let actor = &game.entities[tank];
+            actor.alive()
+                && !actor.moving()
+                && matches!(actor.ai.order, Order::Idle)
+                && (actor.position[0] - position[0]).hypot(actor.position[1] - position[1]) < 50.0
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "{error}; requested={position:?}; attacker={:?}; {}",
+            game.entities[tank].last_attacker(),
+            movement_details(game, tank)
+        )
+    })?;
+    Ok(tank)
+}
+
+fn earn_raptor_veterancy(
+    game: &mut Skirmish,
+    jet: usize,
+    tank: usize,
+) -> Result<(), Box<dyn Error>> {
+    for _ in 0..3 {
+        super::approach(game, jet, tank)?;
+        game.attack(jet, tank)?;
+        advance_until(
+            game,
+            7200,
+            "ordinary Raptor sortie against paid Battle Master",
+            |game| {
+                !game.entities[tank].alive()
+                    || (game.entities[jet].aircraft_phase() == Some("idle")
+                        && game.height_above_ground(jet) < 10.0
+                        && game.entities[jet].weapon_rounds_remaining(0) == 4)
+            },
+        )?;
+        if !game.entities[tank].alive() {
+            break;
+        }
+    }
+    verify_veterancy(game, jet, tank)
+}
+
+fn verify_veterancy(game: &Skirmish, aircraft: usize, tank: usize) -> Result<(), Box<dyn Error>> {
+    require(
+        !game.entities[tank].alive()
+            && game.entities[tank].last_attacker() == Some(aircraft)
+            && game.entities[aircraft].veterancy > 0,
+        &format!(
+            "paid Battle Master did not grant aircraft veterancy: health={} attacker={:?} XP={}; {}",
+            game.entities[tank].health,
+            game.entities[tank].last_attacker(),
+            game.entities[aircraft].experience,
+            details(game, aircraft)
+        ),
+    )
+}
+
+fn stage(game: &mut Skirmish, aircraft: Aircraft) -> Result<Setup, Box<dyn Error>> {
+    let builder = friendly_entity(game, Kind::Builder, 1)?;
+    if friendly_entity(game, Kind::PowerPlant, 1).is_err() {
+        construct(game, builder, Kind::PowerPlant, 1)?;
+    }
+    if friendly_entity(game, Kind::SupplyCenter, 1).is_err() {
+        construct(game, builder, Kind::SupplyCenter, 1)?;
+    }
+    let factory = if let Ok(factory) = friendly_entity(game, Kind::Factory, 1) {
+        factory
+    } else {
+        construct(game, builder, Kind::Factory, 1)?
+    };
     let kind = template(game, "ChinaTankGattling")?;
     let attacker = produce_type(game, factory, kind, 1)?;
     let center = game.entities[aircraft.target].position;

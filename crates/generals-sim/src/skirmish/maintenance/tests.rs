@@ -113,7 +113,10 @@ fn sale_waits_for_scaffold_then_refunds_without_kill_credit() {
     game.catalog[0].maintenance.sell_fraction = 0.5;
     let cash = game.players[0].cash;
     let cost = game.catalog[0].cost;
+    assert_eq!(game.select_object(0, &[], 0, true), [0]);
     game.sell(0, 0).unwrap();
+    assert!(game.selected_objects(0).is_empty());
+    assert_eq!(game.entities[0].animation_duration(), Some((0, 45, false)));
     assert!(!game.entities[0].selectable(&game.catalog[game.entities[0].type_index]));
     assert!(game.sell(0, 0).is_err());
     for _ in 0..44 {
@@ -142,11 +145,58 @@ fn destroyed_sale_has_no_refund() {
     game.catalog[0].maintenance.sell_fraction = 0.5;
     let cash = game.players[0].cash;
     game.sell(0, 0).unwrap();
-    game.entities[0].health = 0.0;
-    game.finish_death(0, None);
+    game.destroy_maintenance_object(0);
+    game.process_update_destruction();
+    assert!(!game.entities[0].exists());
     game.tick = 200;
     game.update_sales();
     assert_eq!(game.players[0].cash, cash);
+}
+
+#[test]
+fn sold_structure_retained_by_slow_death_still_finishes_sale() {
+    use crate::skirmish::{DeathType, death_lifecycle};
+
+    let mut game = game();
+    let mut unit = fixture_type(Faction::Gla, Kind::Defense);
+    unit.maintenance.refund = 500;
+    unit.behavior_modules
+        .retain(|module| module.family != "DestroyDie");
+    unit.death_lifecycle = Some(death_lifecycle::Rules {
+        on_die: Vec::new(),
+        physics: None,
+        slow: vec![death_lifecycle::SlowDeath {
+            derived: death_lifecycle::Derived::None,
+            tag: "Slow".into(),
+            conditions: crate::skirmish::tests::death_conditions(),
+            probability: 10,
+            overkill_bonus: 0.0,
+            sink_delay: [200, 0],
+            destruction_delay: [240, 0],
+            sink_rate: 0.0,
+            fling: None,
+            fx: std::array::from_fn(|_| Vec::new()),
+            objects: std::array::from_fn(|_| Vec::new()),
+            weapons: std::array::from_fn(|_| Vec::new()),
+        }],
+        weapons: Vec::new(),
+    });
+    let kind = game.catalog.len();
+    game.catalog.push(unit);
+    let id = game.spawn(kind, 0, [350.0, 250.0], true);
+    let cash = game.players[0].cash;
+    game.sell(0, id).unwrap();
+    game.tick = 44;
+    game.kill_object(id, DeathType::Normal);
+    game.process_update_destruction();
+    assert!(game.entities[id].exists() && game.entities[id].corpse_present());
+    for frame in 45..=179 {
+        game.tick = frame;
+        game.update_sales();
+        game.process_update_destruction();
+    }
+    assert!(!game.entities[id].exists());
+    assert_eq!(game.players[0].cash, cash + 500);
 }
 
 #[test]
@@ -741,14 +791,8 @@ fn capture_rechecks_native_sold_status_when_defection_triggers() {
         Some("RAISING_FLAG")
     );
     game.sell(1, oil).unwrap();
-    // Sale reversal initially has no SOLD status. Complete() is not its gate.
-    game.tick += 2;
-    assert!(game.can_capture(infantry, oil));
-    for _ in 0..135 {
-        game.tick += 1;
-        game.update_sales();
-    }
-    assert!(game.entities[oil].alive() && game.entities[oil].sold_model());
+    // OBJECT_STATUS_SOLD is immediate. The draw condition waits for the sink.
+    assert!(!game.entities[oil].sold_model());
     assert!(!game.can_capture(infantry, oil));
     for _ in 0..4 {
         game.tick += 1;

@@ -99,6 +99,12 @@ impl Entity {
     pub const fn has_drawable(&self) -> bool {
         self.drawable.present
     }
+
+    /// Creation order includes replacement drawables on an existing object.
+    #[must_use]
+    pub const fn drawable_birth(&self) -> u64 {
+        self.drawable.birth
+    }
     #[must_use]
     pub const fn is_effectively_dead(&self) -> bool {
         self.private_status & 1 != 0

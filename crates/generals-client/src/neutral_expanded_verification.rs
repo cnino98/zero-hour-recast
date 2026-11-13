@@ -11,6 +11,10 @@ pub const fn repair_bay_map_name() -> &'static str {
     "Maps\\Hostile Dawn\\Hostile Dawn.map"
 }
 
+pub const fn repair_pad_map_name() -> &'static str {
+    "user-maps/repair pad fixture/repair pad fixture.map"
+}
+
 pub fn run(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use generals_assets::{map::MapData, virtual_assets::VirtualAssets};
     let assets = VirtualAssets::for_zero_hour(
@@ -151,39 +155,9 @@ fn verify_artillery(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
 
 pub fn prepare_repair_bay(game: &mut Skirmish) -> Result<usize, Box<dyn Error>> {
     let (bay, ranger) = prepare(game, "TechRepairbay")?;
-    let builder = friendly_entity(game, Kind::Builder, 0)?;
-    construct(game, builder, Kind::SupplyCenter, 0)?;
-    let factory = construct(game, builder, Kind::Factory, 0)?;
-    let vehicle = produce(game, factory, Kind::Tank, 0)?;
-    let enemy_builder = friendly_entity(game, Kind::Builder, 1)?;
-    construct(game, enemy_builder, Kind::PowerPlant, 1)?;
-    let enemy_barracks = construct(game, enemy_builder, Kind::Barracks, 1)?;
-    construct(game, enemy_builder, Kind::SupplyCenter, 1)?;
-    let enemy_factory = construct(game, enemy_builder, Kind::Factory, 1)?;
-    let enemy = produce(game, enemy_factory, Kind::Tank, 1)?;
+    let (vehicle, enemy, factory, enemy_barracks) = prepare_repair_vehicles(game)?;
     let injured_health = injure_bay_vehicle(game, vehicle, enemy, factory)?;
-    game.stop(enemy)?;
-    game.stop(vehicle)?;
-    let enemy_base = game.entities[friendly_entity(game, Kind::CommandCenter, 1)?].position;
-    game.move_to(enemy, enemy_base)?;
-    advance_until(
-        game,
-        18000,
-        "enemy tank retreating from original Repair Bay trial",
-        |game| {
-            let a = game.entities[enemy].position;
-            let b = game.entities[vehicle].position;
-            (a[0] - b[0]).hypot(a[1] - b[1]) > 400.0
-                && game
-                    .projectiles
-                    .iter()
-                    .all(|projectile| projectile.source != enemy)
-        },
-    )?;
-    require(
-        game.entities[vehicle].alive(),
-        "Repair Bay trial vehicle died",
-    )?;
+    retreat_repair_attacker(game, vehicle, enemy)?;
     let damaged = game.entities[vehicle].health;
     if damaged <= injured_health {
         advance_until(
@@ -210,6 +184,76 @@ pub fn prepare_repair_bay(game: &mut Skirmish) -> Result<usize, Box<dyn Error>> 
 
     transfer_repair_bay(game, bay, ranger, enemy_barracks, enemy)?;
     Ok(bay)
+}
+
+fn prepare_repair_vehicles(
+    game: &mut Skirmish,
+) -> Result<(usize, usize, usize, usize), Box<dyn Error>> {
+    let builder = friendly_entity(game, Kind::Builder, 0)?;
+    construct(game, builder, Kind::SupplyCenter, 0)?;
+    let factory = construct(game, builder, Kind::Factory, 0)?;
+    let vehicle = produce(game, factory, Kind::Tank, 0)?;
+    let enemy_builder = friendly_entity(game, Kind::Builder, 1)?;
+    construct(game, enemy_builder, Kind::PowerPlant, 1)?;
+    let enemy_barracks = construct(game, enemy_builder, Kind::Barracks, 1)?;
+    construct(game, enemy_builder, Kind::SupplyCenter, 1)?;
+    let enemy_factory = construct(game, enemy_builder, Kind::Factory, 1)?;
+    let enemy = produce(game, enemy_factory, Kind::Tank, 1)?;
+    Ok((vehicle, enemy, factory, enemy_barracks))
+}
+
+fn retreat_repair_attacker(
+    game: &mut Skirmish,
+    vehicle: usize,
+    enemy: usize,
+) -> Result<(), Box<dyn Error>> {
+    game.stop(enemy)?;
+    game.stop(vehicle)?;
+    let enemy_base = game.entities[friendly_entity(game, Kind::CommandCenter, 1)?].position;
+    game.move_to(enemy, enemy_base)?;
+    advance_until(
+        game,
+        18000,
+        "enemy tank retreating from original Repair Bay trial",
+        |game| {
+            let a = game.entities[enemy].position;
+            let b = game.entities[vehicle].position;
+            (a[0] - b[0]).hypot(a[1] - b[1]) > 400.0
+                && game
+                    .projectiles
+                    .iter()
+                    .all(|projectile| projectile.source != enemy)
+        },
+    )?;
+    require(game.entities[vehicle].alive(), "repair trial vehicle died")
+}
+
+pub fn prepare_repair_pad(game: &mut Skirmish) -> Result<(usize, usize), Box<dyn Error>> {
+    let (pad, ranger) = prepare(game, "TechRepairPad")?;
+    let home = game.entities[friendly_entity(game, Kind::CommandCenter, 0)?].position;
+    game.move_to(ranger, home)?;
+    let (vehicle, enemy, factory, _) = prepare_repair_vehicles(game)?;
+    injure_bay_vehicle(game, vehicle, enemy, factory)?;
+    retreat_repair_attacker(game, vehicle, enemy)?;
+    let [x, y] = game.entities[pad].position;
+    game.move_to(vehicle, [x + 75.0, y])?;
+    advance_until(game, 18_000, "scouting the captured Repair Pad", |game| {
+        game.can_repair(vehicle, pad)
+    })?;
+    let damaged = game.entities[vehicle].health;
+    require(
+        damaged < game.entities[vehicle].max_health,
+        "repair trial lacks vehicle damage",
+    )?;
+    game.repair(vehicle, pad)?;
+    advance_until(
+        game,
+        18_000,
+        "paid tank docking and healing at Repair Pad",
+        |game| game.entities[vehicle].health > damaged,
+    )
+    .map_err(|error| bay_tank_error(game, vehicle, enemy, error.as_ref()))?;
+    Ok((pad, vehicle))
 }
 
 fn injure_bay_vehicle(
@@ -360,4 +404,35 @@ fn transfer_repair_bay(
 fn verify_repair_bay(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
     prepare_repair_bay(game)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use generals_sim::skirmish::Order;
+
+    #[ignore = "requires original installation and declared Repair Pad custom map"]
+    #[test]
+    fn installed_declared_repair_pad_captures_repairs_and_releases_paid_tank() {
+        let root = generals_assets::game_root().unwrap();
+        let fixture =
+            crate::playtest::map_fixture::Fixture::load(&root, repair_pad_map_name()).unwrap();
+        let mut game = fixture.into_simulation().unwrap();
+        let (pad, vehicle) = prepare_repair_pad(&mut game).unwrap();
+        let actor = &game.entities[vehicle];
+        assert!(matches!(actor.ai.order, Order::RepairAt(target) if target == pad));
+        assert!(actor.health < actor.max_health);
+        advance_until(
+            &mut game,
+            1_200,
+            "Repair Pad full repair and normal dock exit",
+            |game| {
+                let actor = &game.entities[vehicle];
+                actor.health >= actor.max_health && matches!(actor.ai.order, Order::Idle)
+            },
+        )
+        .unwrap();
+        assert!(!game.can_repair(vehicle, pad));
+        assert_eq!(game.entities[pad].owner, 0);
+    }
 }

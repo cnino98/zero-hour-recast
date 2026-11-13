@@ -7,16 +7,18 @@ impl Skirmish {
         &mut self,
         id: usize,
         position: [f32; 3],
-        distance: f32,
         speed: f32,
-        no_slow_down: bool,
     ) {
+        // AIUpdate.cpp2163/2327: POSITION_EXPLICIT replaces the prior goal kind
+        // and supplies zero path distance. Locomotor then enters exact braking
+        // before expanding the distance to the actual XY separation.
+        self.entities[id].ai.motion.clear_goal();
         let state = self.entities[id].flight.as_mut().expect("flight state");
         state.goal = Some(Goal {
             position,
-            distance,
+            distance: 0.0,
             speed: speed.min(state.speed_limit),
-            no_slow_down,
+            no_slow_down: false,
         });
     }
 

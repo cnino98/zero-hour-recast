@@ -5,7 +5,7 @@ use super::{
 use generals_sim::skirmish::{Kind, Skirmish};
 use std::error::Error;
 
-pub(super) fn prepare(game: &mut Skirmish, setup: &Setup) -> Result<[usize; 2], Box<dyn Error>> {
+pub fn prepare(game: &mut Skirmish, setup: &Setup) -> Result<[usize; 2], Box<dyn Error>> {
     let builder = friendly_entity(game, Kind::Builder, 1)?;
     construct(game, builder, Kind::PowerPlant, 1)?;
     construct(game, builder, Kind::PowerPlant, 1)?;
@@ -41,6 +41,23 @@ pub(super) fn prepare(game: &mut Skirmish, setup: &Setup) -> Result<[usize; 2], 
     Ok(defenders)
 }
 
+pub fn engage_visible(
+    game: &mut Skirmish,
+    id: usize,
+    defender: usize,
+    engaged: &mut bool,
+) -> Result<(), Box<dyn Error>> {
+    if !*engaged
+        && game.entities[id].alive()
+        && game.entities[defender].alive()
+        && game.logically_visible(0, defender)
+    {
+        game.attack(id, defender)?;
+        *engaged = true;
+    }
+    Ok(())
+}
+
 pub(super) fn verify(
     game: &mut Skirmish,
     setup: &Setup,
@@ -53,19 +70,12 @@ pub(super) fn verify(
     let mut shots = 0;
     let mut engaged = false;
     for _ in 0..9000 {
-        if !engaged
-            && game.entities[id].alive()
-            && game.entities[defenders[0]].alive()
-            && game.logically_visible(0, defenders[0])
-        {
-            game.attack(id, defenders[0]).map_err(|error| {
-                format!(
-                    "MiG counterattack on visible Patriot: {error}; {}",
-                    details(game, setup)
-                )
-            })?;
-            engaged = true;
-        }
+        engage_visible(game, id, defenders[0], &mut engaged).map_err(|error| {
+            format!(
+                "MiG counterattack on visible Patriot: {error}; {}",
+                details(game, setup)
+            )
+        })?;
         // Powered Patriot AI acquires the aircraft only inside its own original
         // weapon range; another battery's shared vision is not firing range.
         game.step();

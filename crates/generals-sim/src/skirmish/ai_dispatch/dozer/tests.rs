@@ -194,6 +194,11 @@ fn native_build_completion_stops_the_site_sound_and_keeps_the_departure_move() {
     game.catalog[index].maintenance.construction_sound = "BuildLoop".into();
     let site = game.spawn(index, 0, [180.0, 100.0], false);
     game.assist_build(id, site).unwrap();
+    let docks = game.entities[id].ai.dozer.as_ref().unwrap().tasks[BUILD].docks;
+    let action = docks[1].unwrap();
+    let departure = docks[2].unwrap();
+    assert!(((departure[0] - action[0]).hypot(departure[1] - action[1]) - 50.0).abs() < 0.000_01);
+    assert_eq!(departure[2].to_bits(), action[2].to_bits());
     let mut sound_actions = Vec::new();
     for _ in 0..600 {
         game.step();
@@ -224,6 +229,90 @@ fn native_build_completion_stops_the_site_sound_and_keeps_the_departure_move() {
             .is_none()
     );
     assert!(!game.entities[id].drawable.model_conditions.constructing);
+    let completion_position = game.entities[id].position;
+    let goal = game.entities[id].ai_goal_position();
+    assert_eq!(
+        game.entities[id].ai.command.last_command_source,
+        crate::skirmish::ai_goals::COMMAND_FROM_AI
+    );
+    for _ in 0..600 {
+        game.step();
+        if game.entities[id].ai_idle() {
+            break;
+        }
+    }
+    let final_position = game.entities[id].position;
+    assert!(game.entities[id].ai_idle());
+    assert!(
+        (final_position[0] - completion_position[0])
+            .hypot(final_position[1] - completion_position[1])
+            > 30.0
+    );
+    assert!((final_position[0] - goal[0]).hypot(final_position[1] - goal[1]) < 10.0);
+}
+
+#[test]
+fn completed_dozer_build_adjusts_an_end_dock_blocked_after_task_assignment() {
+    let (mut game, id) = native_dozer();
+    let index = game.type_for(0, Kind::Barracks).unwrap();
+    game.catalog[index].build_seconds = 2.0 / 30.0;
+    let site = game.spawn(index, 0, [180.0, 100.0], false);
+    game.assist_build(id, site).unwrap();
+    let departure = game.entities[id].ai.dozer.as_ref().unwrap().tasks[BUILD].docks[2].unwrap();
+    for _ in 0..600 {
+        game.step();
+        if game.entities[site].construction_percent > 0.0 {
+            break;
+        }
+    }
+    assert!(game.entities[site].under_construction());
+    assert!(game.entities[site].construction_percent > 0.0);
+    let obstacle = game.spawn(index, 0, [departure[0], departure[1]], true);
+    game.rebuild_navigation();
+    for _ in 0..600 {
+        game.step();
+        if game.entities[site].complete() {
+            break;
+        }
+    }
+    assert!(
+        game.entities[site].complete(),
+        "construction stopped at {} percent after the end dock became obstructed",
+        game.entities[site].construction_percent
+    );
+    let adjusted = game.entities[id].ai_goal_position();
+    assert_ne!(adjusted.map(f32::to_bits), departure.map(f32::to_bits));
+    assert!(game.entities[obstacle].alive());
+    assert!(matches!(game.entities[id].ai.order, Order::Move(_)));
+    let cell = game.cell_at([adjusted[0], adjusted[1]]).unwrap();
+    assert!(!game.navigation_for(id).is_blocked(cell));
+    // AIUpdate::computePath may return findClosestPath's reachable endpoint;
+    // AIInternalMoveToState tests the path end, not the requested command point.
+    let mut path_end = None;
+    for _ in 0..600 {
+        if game.entities[id].ai.path_request.pending.is_none()
+            && let Some(path) = &game.entities[id].ai.ground_path
+        {
+            path_end = path.last_position();
+        }
+        game.step();
+        if game.entities[id].ai_idle() {
+            break;
+        }
+    }
+    assert!(game.entities[id].ai_idle());
+    let destination = path_end.expect("resolved departure path");
+    let point = game.entities[id].position;
+    let close_enough = game.catalog[game.entities[id].type_index]
+        .locomotor
+        .ground
+        .as_ref()
+        .unwrap()
+        .close_enough;
+    assert!(
+        (point[0] - destination[0]).hypot(point[1] - destination[1]) < close_enough,
+        "command={adjusted:?} path_end={destination:?} final={point:?}"
+    );
 }
 
 #[test]

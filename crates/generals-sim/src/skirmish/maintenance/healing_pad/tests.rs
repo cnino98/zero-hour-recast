@@ -190,3 +190,31 @@ fn repair_pad_submits_drone_maximum_health_through_armor_with_pad_as_source() {
         ));
     }
 }
+
+#[test]
+fn repair_pad_heals_the_cached_drone_while_it_remains_masked_in_world() {
+    let mut game = game();
+    let pad = pad(&mut game, 0);
+    let kind = game.type_for(0, Kind::Tank).unwrap();
+    game.catalog[kind].maintenance.healing_kind_flags = 2;
+    let tank = game.spawn(kind, 0, [250.0, 100.0], true);
+    game.entities[tank].health *= 0.5;
+    let drone = game.spawn(kind, 0, [250.0, 125.0], true);
+    game.entities[drone].health *= 0.5;
+    game.mask_object(drone, true);
+    game.update_visibility();
+    game.repair(tank, pad).unwrap();
+    game.update_repair_pad(tank, pad);
+    game.entities[tank]
+        .ai
+        .docking
+        .as_mut()
+        .unwrap()
+        .repair_drone = Some(drone);
+    assert!(game.repair_dock_action(tank, pad));
+    assert_eq!(
+        game.entities[drone].health.to_bits(),
+        game.entities[drone].max_health.to_bits()
+    );
+    assert!(game.entities[drone].masked());
+}

@@ -37,7 +37,13 @@ impl Skirmish {
         let unit = &self.catalog[self.entities[carrier].type_index];
         if matches!(
             unit.contain_family(),
-            Some("TransportContain" | "InternetHackContain" | "OverlordContain" | "HelixContain")
+            Some(
+                "TransportContain"
+                    | "InternetHackContain"
+                    | "OverlordContain"
+                    | "HelixContain"
+                    | "RiderChangeContain"
+            )
         ) && unit
             .contain
             .as_ref()
@@ -181,7 +187,13 @@ impl Skirmish {
         let host_type = &self.catalog[host.type_index];
         if !matches!(
             host_type.contain_family(),
-            Some("TransportContain" | "InternetHackContain" | "HelixContain" | "OverlordContain")
+            Some(
+                "TransportContain"
+                    | "InternetHackContain"
+                    | "HelixContain"
+                    | "OverlordContain"
+                    | "RiderChangeContain"
+            )
         ) {
             return true;
         }
@@ -238,10 +250,23 @@ impl Skirmish {
             self.exit_garrison(id, carrier);
             return;
         }
-        if self.tick < self.entities[carrier].containment.exit_ready {
+        if self.catalog[self.entities[carrier].type_index]
+            .combat_bike
+            .is_none()
+            && self.tick < self.entities[carrier].containment.exit_ready
+        {
             return;
         }
         self.exit_spawned_from_container(id, carrier);
+    }
+
+    pub(in crate::skirmish) fn exit_bike_rider_instantly(&mut self, id: usize, carrier: usize) {
+        if self.entities[id].ai.registration.is_some()
+            && self.native_ai_command_allowed(id)
+            && self.entities[id].contained_by() == Some(carrier)
+        {
+            self.exit_spawned_from_container(id, carrier);
+        }
     }
 
     // SpawnBehavior also calls OpenContain::exitObjectViaDoor for a newly
@@ -265,6 +290,19 @@ impl Skirmish {
         self.remove_passenger(id, carrier);
         self.open_container_exit_door(carrier);
         if let Some((start, end)) = path {
+            let (start, end) = if self.catalog[self.entities[carrier].type_index]
+                .combat_bike
+                .is_some()
+            {
+                (
+                    self.logical_bone_position(carrier, "ExitStart")
+                        .unwrap_or([0.0; 3]),
+                    self.logical_bone_position(carrier, "ExitEnd")
+                        .unwrap_or([0.0; 3]),
+                )
+            } else {
+                (start, end)
+            };
             let start = self.container_point(carrier, start);
             let mut end = self.container_point(carrier, end);
             self.entities[carrier].containment.next_exit =
@@ -383,15 +421,29 @@ impl Skirmish {
     /// Container virtual `onRemoving` runs after list erasure, before the rider's
     /// `Object::onRemovedFrom` clears `containedBy`/MASKED/UNSELECTABLE.
     fn container_on_removing(&mut self, id: usize, carrier: usize, normal: bool) {
+        let bike = self.catalog[self.entities[carrier].type_index]
+            .combat_bike
+            .is_some();
+        if bike && self.entities[carrier].is_effectively_dead() {
+            self.destroy_maintenance_object(id);
+            return;
+        }
         let parachute = self.entities[carrier].parachute.is_some();
         let stationed = self.entities[id].stationed();
         self.container_removal_sound(carrier, id, normal);
         self.remove_garrison_point(id, carrier);
         self.entities[carrier].containment.waiting.remove(&id);
-        if matches!(
+        let transport = matches!(
             self.catalog[self.entities[carrier].type_index].contain_family(),
-            Some("TransportContain" | "InternetHackContain" | "HelixContain" | "OverlordContain")
-        ) {
+            Some(
+                "TransportContain"
+                    | "InternetHackContain"
+                    | "HelixContain"
+                    | "OverlordContain"
+                    | "RiderChangeContain"
+            )
+        );
+        if transport {
             let slots = i32::from_ne_bytes(
                 self.catalog[self.entities[id].type_index]
                     .transport_slots
@@ -422,6 +474,11 @@ impl Skirmish {
             self.delivery_transport_on_removing(id, carrier);
         } else {
             self.transport_exit_orientation(id, carrier);
+            if transport && self.height_above_ground(carrier) > 0.0 {
+                // TransportContain::onRemoving overrides the rider's ground
+                // locomotor until its PhysicsBehavior reaches the terrain.
+                self.entities[id].set_physics_allow_fall(true);
+            }
         }
         if !stationed && !parachute && !delivery {
             self.entities[id].position = self.entities[carrier].position;
@@ -460,6 +517,9 @@ impl Skirmish {
         }
         self.recalculate_garrison_owner(carrier);
         self.update_armed_rider_weapons(carrier);
+        if bike {
+            self.bike_dismount(carrier, id);
+        }
     }
 
     fn object_on_removed_from(&mut self, id: usize) {
@@ -490,7 +550,13 @@ impl Skirmish {
         // percentage, then uses OpenContain's literal-list removal callbacks.
         let transport = matches!(
             self.catalog[self.entities[target].type_index].contain_family(),
-            Some("TransportContain" | "InternetHackContain" | "HelixContain" | "OverlordContain")
+            Some(
+                "TransportContain"
+                    | "InternetHackContain"
+                    | "HelixContain"
+                    | "OverlordContain"
+                    | "RiderChangeContain"
+            )
         );
         if transport {
             let death = if self

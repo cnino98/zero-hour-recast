@@ -37,6 +37,9 @@ pub(super) struct GuardState {
     pub(super) center: [f32; 3],
     pub(super) phase: GuardPhase,
     pub(super) area: Option<usize>,
+    pub(super) object: Option<usize>,
+    pub(super) flying_only: bool,
+    guardee_position: [f32; 2],
     pub(super) return_position: [f32; 3],
     pub(super) deadline: u64,
     pub(super) next_scan: u64,
@@ -50,6 +53,9 @@ impl GuardState {
             center: [position[0], position[1], 0.0],
             phase: GuardPhase::Return,
             area: None,
+            object: None,
+            flying_only: false,
+            guardee_position: [0.0; 2],
             return_position: [position[0], position[1], 0.0],
             deadline: 0,
             next_scan: 0,
@@ -189,6 +195,15 @@ impl Skirmish {
     /// # Errors
     /// Rejects unavailable actors and invalid destinations.
     pub fn guard_world(&mut self, id: usize, world: [f32; 3]) -> Result<(), &'static str> {
+        self.guard_world_mode(id, world, false)
+    }
+
+    pub(super) fn guard_world_mode(
+        &mut self,
+        id: usize,
+        world: [f32; 3],
+        flying_only: bool,
+    ) -> Result<(), &'static str> {
         let actor = self.ready_actor(id)?;
         let unit = &self.catalog[actor.type_index];
         if unit.speed <= 0.0
@@ -201,7 +216,7 @@ impl Skirmish {
             return Err("Guard position is not finite");
         }
         self.dozer_player_command(id);
-        self.native_guard_from(id, world, super::ai_goals::COMMAND_FROM_PLAYER);
+        self.native_guard_mode_from(id, world, super::ai_goals::COMMAND_FROM_PLAYER, flying_only);
         self.finish_dozer_player_command(id);
         Ok(())
     }
@@ -212,11 +227,25 @@ impl Skirmish {
         world: [f32; 3],
         source: i32,
     ) {
+        self.native_guard_mode_from(id, world, source, false);
+    }
+
+    pub(in crate::skirmish) fn native_guard_mode_from(
+        &mut self,
+        id: usize,
+        world: [f32; 3],
+        source: i32,
+        flying_only: bool,
+    ) {
         if self.native_subclass_command(
             id,
             super::ai_dispatch::stored_command::Command {
                 source,
-                kind: super::ai_dispatch::stored_command::Kind::Guard(world),
+                kind: if flying_only {
+                    super::ai_dispatch::stored_command::Kind::GuardFlying(world)
+                } else {
+                    super::ai_dispatch::stored_command::Kind::Guard(world)
+                },
             },
         ) || !self.native_ai_command_allowed(id)
         {
@@ -231,12 +260,56 @@ impl Skirmish {
         } else {
             [world[0], world[1]]
         };
-        self.entities[id].ai.guard.center = [center[0], center[1], world[2]];
         self.set_last_command_source(id, source);
         self.refresh_occupancy();
         self.assault_command_from(id, Order::Guard(center), None, source, false);
         self.set_order(id, Order::Guard(center));
+        self.entities[id].ai.guard.center = [center[0], center[1], world[2]];
+        self.entities[id].ai.guard.flying_only = flying_only;
         self.enter_guard_phase(id, GuardPhase::Return);
+    }
+
+    /// `AIUpdateInterface::privateGuardObject` retains the guarded `ObjectID`.
+    pub(in crate::skirmish) fn native_guard_object_from(
+        &mut self,
+        id: usize,
+        target: usize,
+        source: i32,
+    ) {
+        if self.native_subclass_command(
+            id,
+            super::ai_dispatch::stored_command::Command {
+                source,
+                kind: super::ai_dispatch::stored_command::Kind::GuardObject(target),
+            },
+        ) || !self.native_ai_command_allowed(id)
+            || self.catalog[self.entities[id].type_index].immobile()
+            || self.attack_kind(id, "PROJECTILE")
+            || self.object_disabled(id)
+        {
+            return;
+        }
+        let center = self.guard_object_position(target);
+        let point = [center[0], center[1]];
+        self.clear_ai_goal(id);
+        self.set_last_command_source(id, source);
+        self.assault_command_from(id, Order::Guard(point), None, source, false);
+        self.set_order(id, Order::Guard(point));
+        let guard = &mut self.entities[id].ai.guard;
+        guard.object = Some(target);
+        guard.center = center;
+        // AIGuardIdleState retains this sample across Return/Idle transitions.
+        guard.guardee_position = [0.0; 2];
+        self.refresh_occupancy();
+        self.enter_guard_phase(id, GuardPhase::Return);
+    }
+
+    fn guard_object_position(&self, target: usize) -> [f32; 3] {
+        // The object guard has a distinct, zero-initialized position fallback.
+        self.entities
+            .get(target)
+            .filter(|object| object.exists())
+            .map_or([0.0; 3], |_| self.object_position(target))
     }
 
     fn player_guard_position(&self, mut point: [f32; 2]) -> [f32; 2] {
@@ -491,52 +564,79 @@ impl Skirmish {
         }
     }
 
-    fn guard_target(&self, id: usize, center: [f32; 2]) -> Option<usize> {
+    fn guard_target(&mut self, id: usize, center: [f32; 2]) -> Option<usize> {
         let hijacker = self.catalog[self.entities[id].type_index]
             .hijacker
             .is_some();
-        if !hijacker
-            && self.entities[id]
-                .active_weapon(&self.catalog[self.entities[id].type_index])
-                .damage
-                <= 0.0
-        {
+        if !hijacker && !self.object_can_attack(id) {
             return None;
         }
-        let area = self.entities[id]
-            .ai
-            .guard
-            .area
-            .and_then(|area| self.opponent_rules.as_ref()?.map.areas.get(area));
+        if !self.entities[id].ai.guard.retaliating
+            && self.team_attacks_common_target(id)
+            && let Some(target) = self.team_attack_target(id)
+        {
+            return Some(target);
+        }
+        let area = self.entities[id].ai.guard.area;
         if area.is_some()
             && self.tick
                 > self.trigger_state.changed_at + u64::from(self.ai_rules.guard_scan_frames)
         {
             return None;
         }
-        let range = area.map_or_else(
-            || self.guard_range(id, true),
-            |area| super::opponent::map::bounds(area).1,
-        );
-        self.entities
-            .iter()
-            .enumerate()
-            .filter(|(target, entity)| {
-                (if hijacker {
-                    self.can_hijack(id, *target)
-                } else {
-                    self.enemy(id, *target)
-                }) && distance_squared(entity.position, center) <= range * range
-                    && area.is_none_or(|area| super::opponent::map::inside(area, entity.position))
-                    && (!self.entities[id].ai.guard.retaliating
-                        || (self.retaliation_building_target(id, *target)
-                            && self.maintenance_target_visible(self.entities[id].owner, *target)))
-            })
-            .min_by(|(_, left), (_, right)| {
-                distance_squared(left.position, center)
-                    .total_cmp(&distance_squared(right.position, center))
-            })
-            .map(|(target, _)| target)
+        let range = area
+            .and_then(|area| self.opponent_rules.as_ref()?.map.areas.get(area))
+            .map_or_else(
+                || self.guard_range(id, true),
+                |area| super::opponent::map::bounds(area).1,
+            );
+        let mut closest = None;
+        let mut best = range * range;
+        let mut last_ring = f64::INFINITY;
+        for (ring, target) in self.partition.outward_range_rings(center, range) {
+            if ring > last_ring {
+                break;
+            }
+            let actor = &self.entities[id];
+            let victim = &self.entities[target];
+            let distance = distance_squared(victim.position, center);
+            if distance >= best
+                || actor.is_off_map() != victim.is_off_map()
+                || self.object_relationship(id, target) != 0
+                || actor.ai.guard.flying_only
+                    && (victim.ai.registration.is_none()
+                        || !victim.is_using_airborne_locomotor(&self.catalog[victim.type_index]))
+                || area
+                    .and_then(|area| self.opponent_rules.as_ref()?.map.areas.get(area))
+                    .is_some_and(|region| !super::opponent::map::inside(region, victim.position))
+            {
+                continue;
+            }
+            let eligible = if hijacker {
+                self.can_hijack(id, target)
+            } else if actor.ai.guard.retaliating {
+                self.enemy(id, target)
+                    && self.retaliation_building_target(id, target)
+                    && self.maintenance_target_visible(actor.owner, target)
+            } else {
+                matches!(
+                    self.native_weapon_attack_result(
+                        id,
+                        Some(target),
+                        self.object_position(target),
+                        false,
+                        super::ai_goals::COMMAND_FROM_AI,
+                    ),
+                    super::CanAttackResult::Possible | super::CanAttackResult::PossibleAfterMoving
+                )
+            };
+            if eligible {
+                closest = Some(target);
+                best = distance;
+                last_ring = ring;
+            }
+        }
+        closest
     }
 
     pub(super) fn enter_guard_phase(&mut self, id: usize, phase: GuardPhase) {
@@ -548,6 +648,11 @@ impl Skirmish {
         if matches!(phase, GuardPhase::Return)
             && matches!(self.entities[id].ai.order, Order::Guard(_))
         {
+            if let Some(object) = self.entities[id].ai.guard.object {
+                let center = self.guard_object_position(object);
+                self.entities[id].ai.guard.center = center;
+                self.entities[id].ai.order = Order::Guard([center[0], center[1]]);
+            }
             self.entities[id].ai.guard.return_position = self
                 .adjusted_destination_world(id, self.entities[id].ai.guard.center)
                 .unwrap_or(self.entities[id].ai.guard.center);
@@ -615,10 +720,33 @@ impl Skirmish {
                         self.ai_rules.guard_scan_frames
                     };
                     self.entities[id].ai.guard.next_scan = self.tick + u64::from(interval);
-                    if let Some(target) = self.guard_target(id, center) {
+                    let scan_center = self.entities[id].ai.guard.object.map_or(center, |target| {
+                        let position = self.guard_object_position(target);
+                        [position[0], position[1]]
+                    });
+                    if let Some(target) = self.guard_target(id, scan_center) {
+                        let guard = &mut self.entities[id].ai.guard;
+                        guard.center[0] = scan_center[0];
+                        guard.center[1] = scan_center[1];
+                        self.entities[id].ai.order = Order::Guard(scan_center);
                         self.entities[id].ai.ai_target = Some(target);
                         self.enter_guard_phase(id, GuardPhase::Inner);
                         return;
+                    }
+                    if matches!(phase, GuardPhase::Idle)
+                        && let Some(target) = self.entities[id].ai.guard.object
+                        && self.entities.get(target).is_some_and(super::Entity::exists)
+                    {
+                        let guard = &mut self.entities[id].ai.guard;
+                        let [x, y] = guard.guardee_position;
+                        let threshold = 2.0 * super::CELL_SIZE;
+                        if (scan_center[0] - x).abs() > threshold
+                            || (scan_center[1] - y).abs() > threshold
+                        {
+                            guard.guardee_position = scan_center;
+                            self.enter_guard_phase(id, GuardPhase::Return);
+                            return;
+                        }
                     }
                     if matches!(phase, GuardPhase::Idle) && self.entities[id].ai.guard.retaliating {
                         self.set_order(id, Order::Idle);
@@ -638,6 +766,17 @@ impl Skirmish {
                 }
             }
             GuardPhase::Inner | GuardPhase::Outer | GuardPhase::Aggressor => {
+                let center = if let Some(object) = self.entities[id].ai.guard.object
+                    && self.entities.get(object).is_some_and(super::Entity::exists)
+                {
+                    let center = self.object_position(object);
+                    let point = [center[0], center[1]];
+                    self.entities[id].ai.guard.center = center;
+                    self.entities[id].ai.order = Order::Guard(point);
+                    point
+                } else {
+                    center
+                };
                 self.update_guard_attack(id, center, phase);
             }
         }
@@ -688,15 +827,16 @@ impl Skirmish {
         let target = self.entities[id].ai.ai_target;
         if matches!(phase, GuardPhase::Outer)
             && target.is_some_and(|target| {
-                let squared = distance_squared(center, self.entities[target].position);
-                let squared = if retaliating {
-                    let delta_z =
-                        self.entities[id].ai.guard.home_height - self.object_position(target)[2];
-                    let components = [squared, delta_z * delta_z];
-                    components[0] + components[1]
+                let guard = &self.entities[id].ai.guard;
+                let height = if retaliating {
+                    guard.home_height
                 } else {
-                    squared
+                    guard.center[2]
                 };
+                let horizontal = distance_squared(center, self.entities[target].position);
+                let delta_z = height - self.object_position(target)[2];
+                let height_squared = delta_z * delta_z;
+                let squared = horizontal + height_squared;
                 self.enemy(id, target) && squared <= inner * inner
             })
         {

@@ -16,6 +16,8 @@ pub(in crate::skirmish) enum Kind {
     },
     Hunt,
     Guard([f32; 3]),
+    GuardFlying([f32; 3]),
+    GuardObject(usize),
     GuardArea(usize),
     AttackArea(Vec<[f32; 2]>),
     Retaliate {
@@ -31,6 +33,12 @@ pub(in crate::skirmish) enum Kind {
         points: Vec<[f32; 3]>,
         ignore: Option<usize>,
         exit_production: bool,
+    },
+    FollowWaypoint {
+        rules: std::sync::Arc<crate::skirmish::OpponentRules>,
+        waypoint: usize,
+        as_team: bool,
+        attacking: bool,
     },
     AppendPath([f32; 3]),
     Face(Goal),
@@ -82,6 +90,10 @@ impl Skirmish {
             Kind::MoveAside { other, depth } => self.move_away_from(id, other, depth),
             Kind::Hunt => self.native_hunt_from(id, source),
             Kind::Guard(position) => self.native_guard_from(id, position, source),
+            Kind::GuardFlying(position) => {
+                self.native_guard_mode_from(id, position, source, true);
+            }
+            Kind::GuardObject(target) => self.native_guard_object_from(id, target, source),
             Kind::GuardArea(area) => self.native_guard_area_from(id, area, source),
             Kind::AttackArea(points) => self.native_attack_area_from(id, points, source),
             Kind::Retaliate {
@@ -99,6 +111,14 @@ impl Skirmish {
                 ignore,
                 exit_production,
             } => self.native_follow_path_from(id, points, ignore, source, exit_production),
+            Kind::FollowWaypoint {
+                rules,
+                waypoint,
+                as_team,
+                attacking,
+            } => {
+                self.enter_native_waypoint_follow(id, rules, waypoint, as_team, source, attacking);
+            }
             Kind::AppendPath(position) => self.native_append_path_from(id, position, source),
             Kind::Face(goal) => self.native_face_from(id, goal, source),
             Kind::Attack {

@@ -15,8 +15,6 @@ pub struct Rules {
     pub conditions: super::death_callbacks::Conditions,
     pub module: Module,
     pub phases: [Phase; 4],
-    pub transitions: Vec<TransitionRules>,
-    pub damage_thresholds: [f32; 2],
 }
 
 pub enum Module {
@@ -24,15 +22,27 @@ pub enum Module {
     Topple(ToppleRules),
 }
 
+pub const TRANSITION_SLOTS: usize = 12;
+
 pub struct TransitionRules {
     pub suppress_water: bool,
+    pub suppress_water_fx: bool,
     pub particles: [Vec<TransitionParticle>; 4],
+    pub effects: [Vec<TransitionEffect>; 4],
 }
 
 pub struct TransitionParticle {
+    pub slot: usize,
     pub bone: String,
+    pub random_bone: bool,
     pub template: String,
     pub position: [f32; 3],
+}
+
+pub struct TransitionEffect {
+    pub slot: usize,
+    pub template: String,
+    pub local: [f32; 3],
 }
 
 pub struct Phase {
@@ -79,7 +89,7 @@ pub enum VisualAction {
     TransitionParticle {
         module: usize,
         template: String,
-        local: [f32; 3],
+        positions: Vec<[f32; 3]>,
     },
     CollapseShudder {
         height: f32,

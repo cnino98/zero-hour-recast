@@ -32,12 +32,16 @@ fn fake_type() -> super::UnitType {
     let mut unit = fixture_type(Faction::Gla, Kind::TechBuilding);
     unit.name = "FakeGLABarracks".into();
     unit.kind_of.push("FS_FAKE".into());
+    unit.kind_of.push("CAN_ATTACK".into());
     unit.cost = 125;
     unit.build_seconds = 5.0;
     unit.max_health = 125.0;
     unit.initial_health = 125.0;
     unit.weapon = WeaponRules {
         name: "SuicideWeapon".into(),
+        range: 1.0,
+        anti_mask: 2,
+        clip_size: 1,
         damage: 999_999.0,
         damage_type: DamageType::Explosion,
         death_type: DeathType::Suicided,
@@ -260,23 +264,32 @@ fn explicit_detonation_fires_suicide_then_final_blast_once_without_a_hole() {
     );
     assert!(!game.can_detonate_fake(1, fake));
     game.detonate_fake(0, fake).unwrap();
+    assert!(game.entities[fake].alive());
+    assert!(game.presentation.shots.is_empty());
+    assert!(matches!(game.entities[fake].ai.order, Order::FireAt { .. }));
+    game.step();
     assert!(matches!(
         game.entities[fake].damage_state.death_type,
         DeathType::Suicided
     ));
     assert!(!game.entities[fake].alive());
-    assert_eq!(game.presentation.shots.len(), 1);
-    game.step();
+    // INITIAL AI fires first. The normal-phase SlowDeath can run on the
+    // same tick for the authored zero-delay FINAL callback.
     assert!(game.entities[fake].masked());
     assert!(!game.entities[target].alive());
-    assert_eq!(game.presentation.shots.len(), 1);
-    assert_eq!(
-        game.catalog[fake_type]
-            .weapon_template(game.presentation.shots[0].weapon_index)
-            .unwrap()
-            .name,
-        "FakeStructureDetonationWeapon"
-    );
+    let weapons: Vec<_> = game
+        .presentation
+        .shots
+        .iter()
+        .map(|shot| {
+            game.catalog[shot.weapon_type]
+                .weapon_template(shot.weapon_index)
+                .unwrap()
+                .name
+                .as_str()
+        })
+        .collect();
+    assert_eq!(weapons, ["SuicideWeapon", "FakeStructureDetonationWeapon"]);
     assert!(!game.entities[fake].reconstructing());
     assert!(game.detonate_fake(0, fake).is_err());
     game.step();

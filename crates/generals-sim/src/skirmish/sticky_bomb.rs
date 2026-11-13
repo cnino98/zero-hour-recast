@@ -20,6 +20,13 @@ pub(super) struct State {
 }
 
 impl Entity {
+    /// The first native sticky-bomb module supplies the target and clock to its icon.
+    #[must_use]
+    pub fn sticky_bomb_icon(&self) -> Option<(usize, u32)> {
+        let bomb = self.behaviors.sticky_bombs.first()?;
+        Some((bomb.target?, bomb.die_frame))
+    }
+
     #[must_use]
     pub const fn booby_trapped(&self) -> bool {
         self.object_status & (1 << 41) != 0

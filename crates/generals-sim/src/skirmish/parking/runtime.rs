@@ -294,13 +294,16 @@ impl Skirmish {
                 || !setup::allied(&self.slots, owner, other.owner)
                 || !self.attack_kind(producer, "FS_AIRFIELD")
                 || other.parking.is_none()
-                || other.is_off_map() != self.entities[id].is_off_map()
             {
                 continue;
             }
             self.build_parking_info(producer);
             self.purge_parking(producer);
-            if self.reserve_parking_space(producer, id).is_some() {
+            // JetAIUpdate orders the reserving filter before SameMapStatus.
+            // A rejected map-status candidate therefore retains its reservation.
+            if self.reserve_parking_space(producer, id).is_some()
+                && self.entities[producer].is_off_map() == self.entities[id].is_off_map()
+            {
                 nearest = Some(producer);
                 minimum = distance;
                 found_ring = Some(ring);

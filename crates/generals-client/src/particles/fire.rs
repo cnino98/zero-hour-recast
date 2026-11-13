@@ -1,9 +1,8 @@
 //! Invisible fire drawables and native dynamic firestorm particle ownership.
 use super::{Particles, Pose, Template};
 use crate::skirmish_data::{blocks, definition};
-use bevy::prelude::*;
 use generals_assets::{content, virtual_assets::VirtualAssets};
-use generals_sim::skirmish::{Skirmish, UnitType, visibility::Status};
+use generals_sim::skirmish::{Skirmish, UnitType};
 use std::{collections::BTreeMap, error::Error};
 mod instances;
 mod projectiles;
@@ -22,7 +21,7 @@ pub(super) struct Pending {
 }
 
 pub(super) struct Bindings {
-    draw: Vec<usize>,
+    pub(super) draw: Vec<usize>,
 }
 
 struct Active {
@@ -30,9 +29,8 @@ struct Active {
 }
 
 pub(super) struct Fires {
-    bindings: BTreeMap<usize, Bindings>,
+    pub(super) bindings: BTreeMap<usize, Bindings>,
     active: BTreeMap<usize, Active>,
-    frame: Option<u64>,
     projectile_bindings: BTreeMap<(usize, usize, bool), Vec<usize>>,
     projectiles: BTreeMap<u64, bool>,
     instances: instances::Instances,
@@ -44,7 +42,6 @@ impl Fires {
         Self {
             bindings: BTreeMap::new(),
             active: BTreeMap::new(),
-            frame: None,
             projectile_bindings: BTreeMap::new(),
             projectiles: BTreeMap::new(),
             instances: instances::Instances::empty(),
@@ -54,7 +51,6 @@ impl Fires {
 
     pub(super) fn reset(&mut self) {
         self.active.clear();
-        self.frame = None;
         self.projectiles.clear();
         self.instances.reset();
     }
@@ -151,72 +147,83 @@ impl Pending {
 }
 
 impl Particles {
-    pub(super) fn fire_drawables(
+    #[cfg(test)]
+    fn fire_drawables(
         &mut self,
         game: &Skirmish,
         region: [[f32; 2]; 2],
-        paused: bool,
         random: &mut impl FnMut(f32, f32) -> f32,
     ) {
-        if self.fires.bindings.is_empty() && self.fires.projectile_bindings.is_empty() {
+        self.sync_drawables(&BTreeMap::new(), Some((game, region)), random);
+    }
+
+    pub(super) fn fire_object_draws(&self, game: &Skirmish) -> Vec<usize> {
+        game.entities
+            .iter()
+            .enumerate()
+            .filter_map(|(id, actor)| {
+                self.fires
+                    .bindings
+                    .get(&actor.type_index)
+                    .is_some_and(|binding| !binding.draw.is_empty())
+                    .then_some(id)
+            })
+            .collect()
+    }
+
+    pub(super) fn sync_fire_object(
+        &mut self,
+        game: &Skirmish,
+        id: usize,
+        region: [[f32; 2]; 2],
+        hidden: bool,
+        random: &mut impl FnMut(f32, f32) -> f32,
+    ) {
+        let Some(actor) = game.entities.get(id) else {
             return;
-        }
-        self.retire_fire_drawables(game);
-        self.fire_projectile_draws(game, region, random);
-        // Native Drawable list prepends each newly created object.
-        for (id, actor) in game.entities.iter().enumerate().rev() {
-            let Some(bindings) = self.fires.bindings.get(&actor.type_index) else {
-                continue;
-            };
-            if bindings.draw.is_empty() || actor.masked() {
-                continue;
-            }
-            let stopped = !matches!(
-                game.visibility_status(0, id),
-                Status::Clear | Status::Partial
-            );
-            if self
+        };
+        let Some(bindings) = self.fires.bindings.get(&actor.type_index) else {
+            return;
+        };
+        if bindings.draw.is_empty()
+            || actor.masked()
+            || !actor.has_drawable()
+            || self
                 .fires
                 .active
                 .get(&id)
-                .is_none_or(|state| state.draw.is_none())
-                && !stopped
-                && super::model_states::view::contains(region, actor.position)
-            {
-                let templates = bindings.draw.clone();
-                let mut systems = Vec::new();
-                for template in templates {
-                    let system = self.create(template, object_pose(game, id), None, random);
-                    self.emitters
-                        .last_mut()
-                        .expect("fire drawable system")
-                        .fire_attachment = Some(Attachment::Object(id));
-                    systems.push(system);
-                }
-                self.fires.active.entry(id).or_insert_with(active).draw = Some(systems);
-            }
+                .is_some_and(|state| state.draw.is_some())
+            || hidden
+            || !super::model_states::view::contains(region, actor.position)
+        {
+            return;
         }
+        let templates = bindings.draw.clone();
+        let mut systems = Vec::new();
+        for template in templates {
+            let system = self.create(template, object_pose(game, id), None, random);
+            self.emitters
+                .last_mut()
+                .expect("fire drawable system")
+                .fire_attachment = Some(Attachment::Object(id));
+            systems.push(system);
+        }
+        self.fires.active.entry(id).or_insert_with(active).draw = Some(systems);
+    }
+
+    pub(super) fn prepare_fire_drawables(
+        &mut self,
+        game: &Skirmish,
+        hidden: &impl Fn(usize) -> bool,
+    ) {
+        self.retire_fire_drawables(game);
         for emitter in &mut self.emitters {
             if let Some(Attachment::Object(id)) = emitter.fire_attachment
                 && !emitter.lifecycle.destroyed
             {
                 emitter.transform = object_pose(game, id);
-                emitter.shrouded = !matches!(
-                    game.visibility_status(0, id),
-                    Status::Clear | Status::Partial
-                );
+                emitter.shrouded = hidden(id);
             }
-        }
-        if !paused && self.fires.frame != Some(game.tick) {
-            self.fires.frame = Some(game.tick);
-            for index in 0..self.emitters.len() {
-                if self.emitters[index].fire_attachment.is_some() {
-                    self.update_emitter(index, game.tick, random, &|point| {
-                        game.ground_height(point)
-                    });
-                }
-            }
-            self.retire();
         }
     }
 
@@ -229,7 +236,7 @@ impl Particles {
             .filter(|&id| {
                 game.entities
                     .get(id)
-                    .is_none_or(generals_sim::skirmish::Entity::masked)
+                    .is_none_or(|actor| actor.masked() || !actor.has_drawable())
             })
             .collect();
         for id in removed {
@@ -259,35 +266,4 @@ fn object_pose(game: &Skirmish, id: usize) -> Pose {
         position: game.object_position(id),
         axes: [[cosine, sine, 0.0], [-sine, cosine, 0.0], [0.0, 0.0, 1.0]],
     }
-}
-
-type CameraView = (&'static Transform, &'static Projection, &'static Camera);
-
-pub fn update(
-    battle: Res<crate::playtest::Match>,
-    mut particles: ResMut<Particles>,
-    mut animations: ResMut<crate::model_animation::Animations>,
-    camera: Single<CameraView, With<crate::playtest_view::WorldCamera>>,
-    terrain: Res<crate::terrain::Terrain>,
-) {
-    let battle = battle.into_inner();
-    if !battle.started
-        || (particles.fires.bindings.is_empty() && particles.fires.projectile_bindings.is_empty())
-    {
-        return;
-    }
-    let (transform, projection, camera) = camera.into_inner();
-    let region = super::model_states::view::region(
-        transform,
-        projection,
-        camera,
-        terrain.into_inner().draw_region(),
-    );
-    particles.begin(battle.generation, battle.simulation.tick);
-    particles.fire_drawables(
-        &battle.simulation,
-        region,
-        battle.paused,
-        &mut super::random(&mut animations, battle.generation),
-    );
 }

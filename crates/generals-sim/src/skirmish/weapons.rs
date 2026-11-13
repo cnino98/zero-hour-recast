@@ -12,7 +12,7 @@ pub struct WeaponSetRules {
 
 /// Native `PLAYER_UPGRADE`, `CRATEUPGRADE_ONE` and `CRATEUPGRADE_TWO` conditions.
 pub struct WeaponTemplateSet {
-    pub flags: u8,
+    pub flags: u16,
     pub weapons: [Option<usize>; 3],
     pub share_lock: bool,
 }
@@ -20,7 +20,7 @@ pub struct WeaponTemplateSet {
 /// A source weapon instance keeps its authored set and physical slot for art binding.
 pub struct ConditionalWeapon {
     pub rules: WeaponRules,
-    pub flags: u8,
+    pub flags: u16,
     pub slot: usize,
 }
 
@@ -405,7 +405,7 @@ impl UnitType {
     }
 
     #[must_use]
-    pub fn weapon_context(&self, index: usize) -> (usize, u8) {
+    pub fn weapon_context(&self, index: usize) -> (usize, u16) {
         match index {
             _ if index >= self.death_weapon_start() => (0, 0),
             0..=2 => (index, 0),
@@ -568,7 +568,7 @@ impl Skirmish {
     }
 
     pub(super) fn weapon_can_target_mode(&self, id: usize, target: usize, forced: bool) -> bool {
-        let (Some(actor), Some(_)) = (self.entities.get(id), self.entities.get(target)) else {
+        let (Some(actor), Some(victim)) = (self.entities.get(id), self.entities.get(target)) else {
             return false;
         };
         if self.catalog[self.entities[target].type_index]
@@ -578,8 +578,10 @@ impl Skirmish {
         {
             return false;
         }
-        let same_owner_force = forced && actor.owner == self.entities[target].owner;
-        if !same_owner_force && !self.stealth_targetable(id, target) {
+        let force_ignores_stealth = forced
+            && (actor.owner == victim.owner
+                || (self.attack_kind(target, "DISGUISER") && victim.has_native_disguise()));
+        if !force_ignores_stealth && !self.stealth_targetable(id, target) {
             return false;
         }
         if self.uses_spawn_weapons(id) {
@@ -740,7 +742,7 @@ impl Skirmish {
             32
         } else {
             0
-        } | u8::from(actor.weapon_set.upgraded)
+        } | u16::from(actor.weapon_set.upgraded)
             | if actor.weapon_set.mine_clearing {
                 16
             } else {
@@ -751,7 +753,8 @@ impl Skirmish {
                 1 => 2,
                 2 => 4,
                 _ => 0,
-            };
+            }
+            | actor.combat_bike.rider_weapon;
         let replacement = best_set(&unit.weapon_set_rules.replacements, flags);
         if actor.weapon_set.template_set == replacement {
             return;
@@ -853,7 +856,7 @@ impl Skirmish {
 }
 
 // SparseMatchFinder::findBestInfoSlow: most matching flags, fewest extras, first tie.
-fn best_set(sets: &[WeaponTemplateSet], flags: u8) -> Option<usize> {
+fn best_set(sets: &[WeaponTemplateSet], flags: u16) -> Option<usize> {
     let mut result = None;
     let mut best_yes = 0;
     let mut best_extra = u32::MAX;

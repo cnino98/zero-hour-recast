@@ -14,6 +14,7 @@ pub(in crate::skirmish) fn validate(unit: &super::UnitType) -> Result<(), String
                     | "OpenContain"
                     | "HealContain"
                     | "TransportContain"
+                    | "RiderChangeContain"
                     | "GarrisonContain"
                     | "TunnelContain"
                     | "CaveContain"
@@ -106,14 +107,12 @@ impl Skirmish {
                     weapon += 1;
                 }
                 "PhysicsBehavior" => self.physics_contact(id, other),
-                "ParachuteContain" => {
-                    if other.is_none() {
-                        self.parachute_ground_contact(id);
-                    }
-                }
+                "ParachuteContain" if other.is_none() => self.parachute_ground_contact(id),
+                "ParachuteContain" => {}
                 "OpenContain"
                 | "HealContain"
                 | "TransportContain"
+                | "RiderChangeContain"
                 | "GarrisonContain"
                 | "TunnelContain"
                 | "CaveContain"

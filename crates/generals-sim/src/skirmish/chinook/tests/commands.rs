@@ -65,28 +65,51 @@ fn direct_attack_dispatches_out_of_range_infantry_and_separate_portable() {
 
 #[test]
 fn direct_attack_skips_disabled_portable_without_suppressing_infantry() {
-    for paralyzed in [false, true] {
+    for disabled in [1, 2, 4, 10] {
         let (mut game, host, rider, child, target) = armed_helix();
         // This case isolates portable disable dispatch; the held infantry must
         // already be in weapon range so its real Attack state can remain active.
         let rider_type = game.entities[rider].type_index;
         game.catalog[rider_type].weapon.range = game.range_distance(rider, target) + 10.0;
-        if paralyzed {
-            game.entities[child].battle_bonuses.paralyzed_until = game.tick + 30;
-        } else {
-            game.set_hacked_until(
+        match disabled {
+            1 => game.set_hacked_until(
                 child,
                 crate::skirmish::ai_dispatch::native_frame(game.tick + 30),
-            );
+            ),
+            2 => game.entities[child].disabled_status |= 1 << 2,
+            4 => game.entities[child].battle_bonuses.paralyzed_until = game.tick + 30,
+            10 => {
+                let health = game.entities[child].max_health;
+                let child_type = game.entities[child].type_index;
+                game.catalog[child_type].maintenance.subdual =
+                    Some(crate::skirmish::microwave::SubdualRules {
+                        cap: health,
+                        heal_rate: 30,
+                        heal_amount: health,
+                    });
+                game.apply_subdual_damage(child, health);
+                assert!(game.entities[child].subdued());
+            }
+            _ => unreachable!(),
         }
         game.attack(host, target).unwrap();
         assert!(matches!(game.entities[child].ai.order, Order::Idle));
         assert!(matches!(game.entities[rider].ai.order, Order::Attack(id) if id == target));
+        game.entities[child].disabled_status &= !(1 << 2);
         game.entities[child].battle_bonuses.paralyzed_until = 0;
         game.clear_hacked_disable(child);
+        game.apply_subdual_damage(child, -game.entities[child].max_health);
         game.attack(host, target).unwrap();
         assert!(matches!(game.entities[child].ai.order, Order::Attack(id) if id == target));
     }
+}
+
+#[test]
+fn direct_attack_forwards_to_an_unmanned_portable() {
+    let (mut game, host, _, child, target) = armed_helix();
+    game.entities[child].crew.unmanned = true;
+    game.attack(host, target).unwrap();
+    assert_eq!(game.entities[child].ai.command.goal_object, Some(target));
 }
 
 #[test]

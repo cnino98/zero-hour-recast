@@ -429,6 +429,7 @@ pub(in crate::skirmish) fn move_ground(
         return;
     }
     let was_braking = actor.ai.motion.flags & OBJECT_BRAKING != 0;
+    actor.physics_control.wheel_turning = 0;
     match rules.appearance {
         GroundAppearance::Legs => move_legs(actor, unit, goal, distance, desired_speed, &force),
         GroundAppearance::Climber => {
@@ -663,6 +664,7 @@ fn forward_speed(actor: &Entity) -> f32 {
 
 /// Ground `maintainCurrentPositionOther`: stop driven velocity immediately.
 pub(in crate::skirmish) const fn maintain_ground(actor: &mut Entity, frame: u64) {
+    actor.physics_control.wheel_turning = 0;
     let blocked = actor.ai.blocking.begin_locomotor();
     actor.ai.blocking.finish_locomotor(blocked);
     actor.ai.motion.goal = GoalKind::None;
@@ -680,6 +682,9 @@ pub(in crate::skirmish) fn integrate_ground(actor: &mut Entity, unit: &UnitType,
         .ground
         .as_ref()
         .expect("Ground rules were selected");
+    if unit.combat_bike.is_some() || unit.name == "GLAVehicleBombTruck" {
+        actor.physics_control.wheel_acceleration = actor.ai.motion.acceleration;
+    }
     friction(actor, rules, frame);
     for axis in 0..2 {
         actor.ai.motion.velocity[axis] += actor.ai.motion.acceleration[axis];

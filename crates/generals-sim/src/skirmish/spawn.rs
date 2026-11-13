@@ -236,7 +236,7 @@ impl Skirmish {
             state.flags &= !ACTIVE;
             return 1;
         }
-        if actor.under_construction() || actor.sold_model() || actor.owner == neutral {
+        if actor.under_construction() || actor.selling() || actor.owner == neutral {
             return 1;
         }
         let mut index = 0;

@@ -61,7 +61,11 @@ pub fn load_with_position_effects(
     for name in body_particles.names() {
         super::dependencies::append(&mut names, name);
     }
-    for name in model_states.names() {
+    for name in model_states
+        .names()
+        .chain(model_states.wheel_names())
+        .chain(model_states.tank_names())
+    {
         super::dependencies::append(&mut names, name);
     }
     for name in incendiaries.names() {
@@ -107,6 +111,7 @@ pub fn load_with_position_effects(
         generation: 0,
         frame: None,
         processed: None,
+        advanced: None,
         phase: 0.0,
         scale,
         bindings: effects.bindings,

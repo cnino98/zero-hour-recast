@@ -39,6 +39,9 @@ impl RenderOrder {
             sorted: false,
         }
     }
+    pub const fn sorted(self) -> bool {
+        self.sorted
+    }
     pub fn static_level(self) -> Option<u8> {
         (self.static_level != 0).then_some(self.static_level)
     }
@@ -71,6 +74,7 @@ fn render_order(source: &SourceMesh, materials: &Materials) -> Result<RenderOrde
 }
 
 pub struct PartBinding {
+    pub linear_mapper: Option<generals_assets::w3d::material::LinearMapper>,
     pub mesh: usize,
     pub pass: usize,
     pub vertices: Vec<usize>,
@@ -312,6 +316,7 @@ fn part(
         texture,
         texture_extent: None,
         binding: Some(PartBinding {
+            linear_mapper: vertex_material.linear_mapper,
             mesh: mesh_index,
             pass: 0,
             vertices,
@@ -526,6 +531,7 @@ mod tests {
         };
         let mut materials = Materials {
             vertex_materials: vec![VertexMaterial {
+                linear_mapper: None,
                 name: "Glowong windows".into(),
                 attributes: 0,
                 ambient: [1.0; 3],

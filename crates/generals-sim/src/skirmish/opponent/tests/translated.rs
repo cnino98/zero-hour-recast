@@ -42,6 +42,514 @@ fn authored_hacker_command_starts_income_without_replacing_team_sequence() {
 }
 use crate::skirmish::{Kind, Order, ProductionItem, Research};
 
+fn scripted_approach(as_team: bool, aggressive: bool) -> (Skirmish, usize, usize) {
+    use crate::skirmish::{AiWaypoint, GroundAppearance, ground_movement::tests::ground_rules};
+    use std::sync::Arc;
+    let mut game = crate::skirmish::tests::game();
+    let infantry = game.type_for(1, Kind::Infantry).unwrap();
+    game.catalog[infantry].locomotor.ground = Some(ground_rules(GroundAppearance::Legs));
+    game.catalog[infantry].ai.acquisition = 0;
+    let first = game.spawn(infantry, 1, [350.0, 350.0], true);
+    let trailing = game.spawn(infantry, 1, [235.0, 350.0], true);
+    if aggressive {
+        // Keep the starting base outside acquisition range of the whole route.
+        for id in 0..game.entities.len() {
+            if game.entities[id].owner == 0 {
+                let spacing = 30.0 * f32::from(u16::try_from(id).unwrap());
+                game.set_object_position(id, [65.0, 45.0 + spacing, 0.0]);
+            }
+        }
+        game.slots[1].difficulty = Some(OpponentDifficulty::Hard);
+        let enemy_type = game.type_for(0, Kind::Infantry).unwrap();
+        let enemy = game.spawn(enemy_type, 0, [385.0, 320.0], true);
+        game.entities[enemy].health = 1.0;
+        game.catalog[infantry].ai.vision_range = 180.0;
+        game.entities[first].ai.mood.attitude = 2;
+        game.entities[trailing].ai.mood.attitude = 2;
+    }
+    game.update_ground_contacts();
+    let mut rules = rules(Vec::new());
+    rules.factions[0].teams.push(recipe());
+    rules.map.waypoints = vec![
+        AiWaypoint {
+            id: 41,
+            position: [435.0, 350.0],
+            labels: vec!["Attack1".into()],
+            links: vec![42],
+            bidirectional: false,
+        },
+        AiWaypoint {
+            id: 42,
+            position: [620.0, 350.0],
+            labels: Vec::new(),
+            links: Vec::new(),
+            bidirectional: false,
+        },
+    ];
+    let rules = Arc::new(rules);
+    game.opponent_rules = Some(Arc::clone(&rules));
+    let mut state = State::new(&mut game, &rules, 1, OpponentDifficulty::Hard, 0);
+    state.enemy_start = 0;
+    let prototype = game.team_membership.add_prototype(1, "Approach".into());
+    let native = game.team_membership.create_team(prototype);
+    game.team_membership.set_team(trailing, Some(native));
+    game.team_membership.set_team(first, Some(native));
+    state.teams.push(Team::new(Some(0), 0, 0));
+    state.teams[0].native_instance = Some(native);
+    let command = call(
+        "SKIRMISH_FOLLOW_APPROACH_PATH",
+        vec![
+            parameter("<This Team>", 0),
+            parameter("Attack", 0),
+            parameter("", i32::from(as_team)),
+        ],
+    );
+    assert!(teams::action(&mut game, &rules, &mut state, &command, Some(0)).is_some());
+    (game, first, trailing)
+}
+
+#[test]
+fn scripted_approach_waypoints_follow_independently_or_as_a_team() {
+    for (as_team, aggressive) in [(false, false), (true, false), (true, true)] {
+        let (mut game, first, trailing) = scripted_approach(as_team, aggressive);
+        assert!(matches!(game.entities[first].ai.order, Order::FollowPath));
+        assert_eq!(
+            game.entities[first].ai.command.last_command_source,
+            crate::skirmish::ai_goals::COMMAND_FROM_SCRIPT
+        );
+        let goal = |id: usize, game: &Skirmish| game.entities[id].ai.command.move_to.position[0];
+        if as_team {
+            assert!(goal(first, &game) > 435.0 && goal(trailing, &game) < 435.0);
+        } else {
+            assert!((goal(first, &game) - 435.0).abs() < 0.01);
+            assert!((goal(trailing, &game) - 435.0).abs() < 0.01);
+        }
+        let mut completed = [false; 2];
+        let mut step = |game: &mut Skirmish| {
+            game.step();
+            for (seen, id) in completed.iter_mut().zip([first, trailing]) {
+                *seen |= game.entities[id].ai.completed_waypoint == Some(42);
+            }
+            completed == [true; 2]
+        };
+        for _ in 0..300 {
+            if goal(first, &game) > 550.0 {
+                break;
+            }
+            step(&mut game);
+        }
+        assert!(
+            goal(first, &game) > 550.0,
+            "as_team={as_team} aggressive={aggressive} first={}, trailer={}, kills={}, first_pos={:?}, trailer_pos={:?}, follow={}",
+            goal(first, &game),
+            goal(trailing, &game),
+            game.players[1].statistics.units_destroyed,
+            game.entities[first].position,
+            game.entities[trailing].position,
+            game.entities[first].ai.follow_waypoint.is_some()
+        );
+        if as_team {
+            step(&mut game);
+            assert!(goal(trailing, &game) > 550.0);
+        } else {
+            assert!(goal(trailing, &game) < 500.0);
+        }
+        for _ in 0..500 {
+            if step(&mut game) {
+                break;
+            }
+        }
+        assert_eq!(
+            completed,
+            [true; 2],
+            "as_team={as_team} aggressive={aggressive}, members={:?}",
+            [first, trailing].map(|id| {
+                let actor = &game.entities[id];
+                (
+                    actor.position,
+                    actor.health,
+                    actor.ai.command.move_to.position,
+                    actor.ai.follow_waypoint.is_some(),
+                    actor.ai.current_victim,
+                    actor.ai.path_request.pending.is_some(),
+                    actor.ai.ground_path.is_some(),
+                )
+            })
+        );
+        if aggressive {
+            assert!(game.entities[first].last_command_from_ai());
+            assert!(game.players[1].statistics.units_destroyed > 0);
+        }
+    }
+}
+
+#[test]
+fn original_team_button_hunt_captures_neutral_tech_after_research() {
+    use crate::skirmish::{
+        command_button_hunt::{Button, Command, Definitions, Rules},
+        special_ability::{Power, PowerType, capture_fixture},
+        tests::{game, register_update},
+    };
+    let mut game = game();
+    let rules = std::sync::Arc::new(rules(Vec::new()));
+    game.opponent_rules = Some(std::sync::Arc::clone(&rules));
+    game.slots[1].difficulty = Some(OpponentDifficulty::Hard);
+    game.slots[0].team = Some(1);
+    game.slots[1].team = Some(1);
+    let kind = PowerType::SpecialInfantryCaptureBuilding;
+    let button = "Command_AmericaRangerCaptureBuilding";
+    let infantry = game.type_for(1, Kind::Infantry).unwrap();
+    let unit = &mut game.catalog[infantry];
+    unit.ai.acquisition = 0;
+    unit.command_set = "AmericaInfantryRangerCommandSet".into();
+    capture_fixture::bind(unit, kind, [1, 1, 1, 5], true);
+    unit.behavior_modules.last_mut().unwrap().upgrade.triggers =
+        vec!["Upgrade_InfantryCaptureBuilding".into()];
+    unit.behavior.command_button_hunts.push(Rules {
+        scan_frames: 7,
+        scan_range: 250.0,
+    });
+    register_update(unit, "CommandButtonHuntUpdate");
+    let mut slots = [None; 18];
+    slots[17] = Some(0);
+    game.configure_command_buttons(Definitions {
+        buttons: vec![Button {
+            name: button.into(),
+            command: Command::SpecialPower,
+            weapon_slot: 0,
+            power: Some(Power {
+                name: "InfantryCapture".into(),
+                kind,
+            }),
+            needs_object: true,
+            upgrade: None,
+        }],
+        sets: std::collections::BTreeMap::from([("AmericaInfantryRangerCommandSet".into(), slots)]),
+    });
+    let actor = game.spawn(infantry, 1, [400.0, 300.0], true);
+    let provider = game.type_for(0, Kind::Barracks).unwrap();
+    game.catalog[provider]
+        .kind_of
+        .extend(["STRUCTURE".into(), "CAPTURABLE".into()]);
+    let neutral = game.neutral_owner();
+    let target = game.spawn(provider, neutral, [485.0, 300.0], true);
+    let ally = game.spawn(provider, 0, [400.0, 260.0], true);
+    let own = game.spawn(provider, 1, [380.0, 300.0], true);
+    game.update_ground_contacts();
+    let state = State::new(&mut game, &rules, 1, OpponentDifficulty::Hard, 0);
+    let command = call(
+        "TEAM_HUNT_WITH_COMMAND_BUTTON",
+        vec![
+            parameter(&rules.factions[0].default_team, 0),
+            parameter(button, 0),
+        ],
+    );
+    assert!(
+        super::super::commands::button_action(&mut game, &rules, &state, &command, None).is_some()
+    );
+    for _ in 0..20 {
+        game.step();
+    }
+    assert_eq!(game.entities[target].owner, neutral);
+    assert!(!game.native_ability_active(actor, 0));
+
+    game.complete_player_upgrade(1, "Upgrade_InfantryCaptureBuilding");
+    assert!(
+        super::super::commands::button_action(&mut game, &rules, &state, &command, None).is_some()
+    );
+    for _ in 0..300 {
+        if game.entities[target].owner == 1 {
+            break;
+        }
+        game.step();
+    }
+    assert_eq!(game.entities[target].owner, 1);
+    assert_eq!(game.entities[ally].owner, 0);
+    assert_eq!(game.entities[own].owner, 1);
+}
+
+#[test]
+fn original_nearest_tanks_script_disguises_a_bomb_truck() {
+    use crate::skirmish::{
+        command_button_hunt::{Button, Command, Definitions, add_test_power},
+        special_ability::{Power, PowerType},
+        stealth::{DisguiseRules, test_rules},
+        tests::{fixture_type, game, register_update},
+    };
+    let mut game = game();
+    let truck_type = game.catalog.len();
+    let mut truck = fixture_type(crate::skirmish::Faction::Gla, Kind::Tank);
+    truck.name = "GLAVehicleBombTruck".into();
+    truck.kind_of.push("DISGUISER".into());
+    let button = "Command_DisguiseAsVehicle";
+    let power = Power {
+        name: "SpecialAbilityDisguiseAsVehicle".into(),
+        kind: PowerType::SpecialDisguiseAsVehicle,
+    };
+    add_test_power(&mut truck, &power);
+    let ability = &mut truck.behavior.special_abilities[0];
+    ability.approach.start_range = 1_000_000.0;
+    ability.timing.preparation = 0;
+    let mut stealth = test_rules();
+    stealth.disguise = Some(DisguiseRules {
+        transition: 60,
+        reveal_transition: 30,
+        effect: String::new(),
+        reveal_effect: String::new(),
+        sounds: std::array::from_fn(|_| String::new()),
+    });
+    truck.behavior.stealth = Some(stealth);
+    register_update(&mut truck, "StealthUpdate");
+    game.catalog.push(truck);
+    game.configure_command_buttons(Definitions {
+        buttons: vec![Button {
+            name: button.into(),
+            command: Command::SpecialPower,
+            weapon_slot: 0,
+            power: Some(power),
+            needs_object: true,
+            upgrade: None,
+        }],
+        sets: std::collections::BTreeMap::new(),
+    });
+    let tank = game.type_for(0, Kind::Tank).unwrap();
+    game.catalog[tank].name = "ChinaTankBattleMaster".into();
+    game.catalog[tank].kind_of.push("VEHICLE".into());
+    game.catalog[tank].ai.acquisition = 0;
+    game.catalog[truck_type].ai.acquisition = 0;
+    game.spawn(tank, 0, [500.0, 300.0], true);
+    let actor = game.spawn(truck_type, 1, [400.0, 300.0], true);
+    game.update_ground_contacts();
+    let mut rules = rules(Vec::new());
+    rules.factions[0].teams.push(recipe());
+    let mut state = State::new(&mut game, &rules, 1, OpponentDifficulty::Hard, 0);
+    let prototype = game
+        .team_membership
+        .add_prototype(1, "Bomb Truck Rush".into());
+    let native = game.team_membership.create_team(prototype);
+    game.team_membership.set_team(actor, Some(native));
+    state.teams.push(Team::new(Some(0), 0, 0));
+    state.teams[0].native_instance = Some(native);
+    state
+        .object_lists
+        .insert("Tanks".into(), vec!["ChinaTankBattleMaster".into()]);
+    let command = call(
+        "TEAM_ALL_USE_COMMANDBUTTON_ON_NEAREST_OBJECTTYPE",
+        vec![
+            parameter("<This Team>", 0),
+            parameter(button, 0),
+            parameter("Tanks", 0),
+        ],
+    );
+    assert!(
+        super::super::commands::button_action(&mut game, &rules, &state, &command, Some(0))
+            .is_some()
+    );
+    for _ in 0..100 {
+        if game.entities[actor].disguised_appearance().is_some() {
+            break;
+        }
+        game.step();
+    }
+    let appearance = game.entities[actor].disguised_appearance().unwrap();
+    assert_eq!((appearance.type_index, appearance.owner), (tank, 0));
+    assert_eq!(game.entities[actor].owner, 1);
+}
+
+#[test]
+fn scripted_nearest_type_capture_dispatches_named_and_default_teams_in_list_order() {
+    use crate::skirmish::{
+        command_button_hunt::{Button, Command, Definitions},
+        special_ability::{Power, PowerType, capture_fixture},
+    };
+    for named in [false, true] {
+        let mut game = crate::skirmish::tests::game();
+        let infantry = game.type_for(1, Kind::Infantry).unwrap();
+        game.catalog[infantry].ai.acquisition = 0;
+        let kind = PowerType::SpecialInfantryCaptureBuilding;
+        capture_fixture::bind(&mut game.catalog[infantry], kind, [1, 1, 1, 5], false);
+        let power = Power {
+            name: "InfantryCapture".into(),
+            kind,
+        };
+        game.configure_command_buttons(Definitions {
+            buttons: vec![Button {
+                name: "Command_CaptureBuilding".into(),
+                command: Command::SpecialPower,
+                weapon_slot: 0,
+                power: Some(power),
+                needs_object: true,
+                upgrade: None,
+            }],
+            sets: std::collections::BTreeMap::new(),
+        });
+        let left_type = game.type_for(0, Kind::Barracks).unwrap();
+        let right_type = game.type_for(0, Kind::Factory).unwrap();
+        for (index, name) in [(left_type, "Left Provider"), (right_type, "Right Provider")] {
+            game.catalog[index].name = name.into();
+            game.catalog[index].kind_of.push("CAPTURABLE".into());
+            game.catalog[index].ai.update = crate::skirmish::UnitAiUpdate::Absent;
+            game.catalog[index].update_modules.retain(|module| {
+                !matches!(module, crate::skirmish::module_updates::ModuleRegistration::Behavior {family, ..} if family == "AIUpdateInterface")
+            });
+        }
+        let actor = game.spawn(infantry, 1, [400.0, 300.0], true);
+        let held = game.spawn(infantry, 1, [200.0, 300.0], true);
+        game.set_disabled_held(held);
+        let neutral = game.neutral_owner();
+        let left = game.spawn(left_type, neutral, [300.0, 300.0], true);
+        let right = game.spawn(right_type, neutral, [500.0, 300.0], true);
+        let friendly = game.spawn(right_type, 1, [410.0, 260.0], true);
+        let mut rules = rules(Vec::new());
+        rules.factions[0].teams.push(recipe());
+        let mut state = State::new(&mut game, &rules, 1, OpponentDifficulty::Hard, 0);
+        let name = if named {
+            let prototype = game
+                .team_membership
+                .add_prototype(1, "Capture Patrol".into());
+            let native = game.team_membership.create_team(prototype);
+            game.team_membership.set_team(held, Some(native));
+            game.team_membership.set_team(actor, Some(native));
+            state.teams.push(Team::new(Some(0), 0, 0));
+            state.teams[0].native_instance = Some(native);
+            "<This Team>"
+        } else {
+            &rules.factions[0].default_team
+        };
+        game.update_ground_contacts();
+        game.tick = 10;
+        state.object_lists.insert(
+            "Providers".into(),
+            vec!["Right Provider".into(), "Left Provider".into()],
+        );
+        let command = call(
+            "TEAM_ALL_USE_COMMANDBUTTON_ON_NEAREST_OBJECTTYPE",
+            vec![
+                parameter(name, 0),
+                parameter("Command_CaptureBuilding", 0),
+                parameter("Providers", 0),
+            ],
+        );
+        assert!(
+            super::super::commands::button_action(
+                &mut game,
+                &rules,
+                &state,
+                &command,
+                named.then_some(0)
+            )
+            .is_some()
+        );
+        assert!(game.native_ability_active(actor, 0));
+        assert!(!game.native_ability_active(held, 0));
+        for _ in 0..300 {
+            if game.entities[right].owner == 1 {
+                break;
+            }
+            game.step();
+        }
+        assert_eq!(game.entities[right].owner, 1);
+        assert_eq!(game.entities[left].owner, neutral);
+        assert_eq!(game.entities[friendly].owner, 1);
+    }
+}
+
+#[test]
+fn named_team_guard_moves_again_only_when_idle_guardee_axis_exceeds_two_cells() {
+    use crate::skirmish::ai::GuardPhase;
+    let mut game = crate::skirmish::tests::game();
+    let tank = game.type_for(1, Kind::Tank).unwrap();
+    let first = game.spawn(tank, 1, [305.0, 335.0], true);
+    let second = game.spawn(tank, 1, [305.0, 375.0], true);
+    let target = game.spawn(tank, 1, [500.0, 350.0], true);
+    game.map_objects.insert("Mobile Beacon".into(), target);
+    let mut rules = rules(Vec::new());
+    rules.factions[0].teams.push(recipe());
+    let mut state = State::new(&mut game, &rules, 1, OpponentDifficulty::Hard, 0);
+    state.teams.push(Team::new(Some(0), 0, 0));
+    state.teams[0].members = vec![first, second];
+    let prototype = game.team_membership.add_prototype(1, "Escort".into());
+    let native = game.team_membership.create_team(prototype);
+    game.team_membership.set_team(first, Some(native));
+    game.team_membership.set_team(second, Some(native));
+    state.teams[0].native_instance = Some(native);
+    let guard = call(
+        "TEAM_GUARD_OBJECT",
+        vec![parameter("<This Team>", 0), parameter("Mobile Beacon", 0)],
+    );
+    assert!(teams::action(&mut game, &rules, &mut state, &guard, Some(0)).is_some());
+    for id in [first, second] {
+        assert!(matches!(game.entities[id].ai.order, Order::Guard(_)));
+        assert_eq!(game.entities[id].ai.guard.object, Some(target));
+        assert_eq!(
+            game.entities[id].ai.command.last_command_source,
+            crate::skirmish::ai_goals::COMMAND_FROM_SCRIPT
+        );
+        game.enter_guard_phase(id, GuardPhase::Idle);
+        game.entities[id].ai.guard.next_scan = game.tick;
+        game.update_guard(id, [500.0, 350.0]);
+        assert!(matches!(
+            game.entities[id].ai.guard.phase,
+            GuardPhase::Return
+        ));
+        game.enter_guard_phase(id, GuardPhase::Idle);
+    }
+    game.set_object_position(target, [515.0, 365.0, 0.0]);
+    game.entities[first].ai.guard.next_scan = game.tick;
+    game.update_guard(first, [500.0, 350.0]);
+    assert!(matches!(
+        game.entities[first].ai.guard.phase,
+        GuardPhase::Idle
+    ));
+    game.set_object_position(target, [525.0, 365.0, 0.0]);
+    game.entities[first].ai.guard.next_scan = game.tick;
+    game.update_guard(first, [500.0, 350.0]);
+    assert!(matches!(
+        game.entities[first].ai.guard.phase,
+        GuardPhase::Return
+    ));
+    assert_eq!(
+        game.entities[first].ai.guard.center.map(f32::to_bits),
+        [525.0_f32, 365.0, 0.0].map(f32::to_bits)
+    );
+    game.destroy_maintenance_object(target);
+    game.process_update_destruction();
+    game.enter_guard_phase(first, GuardPhase::Return);
+    assert_eq!(
+        game.entities[first].ai.guard.center.map(f32::to_bits),
+        [0; 3]
+    );
+    game.guard(first, [350.0, 350.0]).unwrap();
+    assert!(game.entities[first].ai.guard.object.is_none());
+}
+
+#[test]
+fn object_guard_outer_attack_refreshes_the_leash_and_uses_height_for_deadline_reset() {
+    use crate::skirmish::{ai::GuardPhase, ai_goals::COMMAND_FROM_SCRIPT};
+    let mut game = crate::skirmish::tests::game();
+    let tank = game.type_for(1, Kind::Tank).unwrap();
+    let guard = game.spawn(tank, 1, [405.0, 405.0], true);
+    let protected = game.spawn(tank, 1, [355.0, 405.0], true);
+    let victim = game.spawn(tank, 0, [505.0, 405.0], true);
+    game.native_guard_object_from(guard, protected, COMMAND_FROM_SCRIPT);
+    game.entities[guard].ai.ai_target = Some(victim);
+    game.enter_guard_phase(guard, GuardPhase::Outer);
+    let deadline = game.entities[guard].ai.guard.deadline;
+    game.set_object_position(protected, [450.0, 405.0, 0.0]);
+    game.tick = 1;
+    game.update_guard(guard, [355.0, 405.0]);
+    assert!(matches!(
+        game.entities[guard].ai.guard.phase,
+        GuardPhase::Outer
+    ));
+    let next_deadline = game.entities[guard].ai.guard.deadline;
+    assert!(next_deadline > deadline);
+    game.set_object_position(protected, [450.0, 405.0, 500.0]);
+    game.tick = 2;
+    game.update_guard(guard, [450.0, 405.0]);
+    assert_eq!(game.entities[guard].ai.guard.deadline, next_deadline);
+}
+
 fn region_game() -> (Skirmish, usize, usize, usize) {
     let mut game = crate::skirmish::tests::game();
     let mut rules = rules(Vec::new());
@@ -56,6 +564,7 @@ fn region_game() -> (Skirmish, usize, usize, usize) {
     let guard = game.spawn(tank, 1, [320.0, 300.0], true);
     let outside = game.spawn(tank, 0, [510.0, 450.0], true);
     let inside = game.spawn(tank, 0, [680.0, 300.0], true);
+    game.update_ground_contacts();
     (game, guard, outside, inside)
 }
 
@@ -85,11 +594,11 @@ fn polygon_scan_reopens_after_crossing_but_not_movement_within_the_same_region()
     game.entities[guard].ai.guard.next_scan = game.tick;
     game.update_guard(guard, [450.0, 300.0]);
     assert!(game.entities[guard].ai.ai_target.is_none());
-    game.entities[outside].position = [500.0, 440.0];
-    game.observe_guard_triggers(outside);
+    game.set_object_position(outside, [500.0, 440.0, 0.0]);
+    game.update_ground_contacts();
     assert_eq!(game.trigger_state.changed_at, 0);
-    game.entities[outside].position = [600.0, 300.0];
-    game.observe_guard_triggers(outside);
+    game.set_object_position(outside, [600.0, 300.0, 0.0]);
+    game.update_ground_contacts();
     assert_eq!(game.trigger_state.changed_at, game.tick);
     game.entities[guard].ai.guard.next_scan = game.tick;
     game.update_guard(guard, [450.0, 300.0]);
@@ -463,7 +972,7 @@ fn variation_recruitment_and_reinforcement_preserve_the_authored_team_size() {
 
 #[test]
 fn script_object_count_matches_variations_and_counts_overlapping_list_entries_once() {
-    let (mut game, rules, mut state, builder) = recruitment_fixture();
+    let (mut game, mut rules, mut state, builder) = recruitment_fixture();
     let variant = builder_variation(&mut game, builder);
     game.spawn(variant, 1, [650.0, 400.0], true);
     state.object_lists.insert(
@@ -484,8 +993,10 @@ fn script_object_count_matches_variations_and_counts_overlapping_list_entries_on
             )],
             vec![],
         );
+        rules.factions[0].scripts.push(condition);
+        let index = rules.factions[0].scripts.len() - 1;
         assert_eq!(
-            scripts::conditions(&game, &rules, &mut state, &condition, None),
+            scripts::conditions(&game, &rules, &mut state, index, None),
             Some(true)
         );
     }

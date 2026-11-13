@@ -213,7 +213,7 @@ impl SourceAudio {
                         .clone(),
                 },
             );
-            request.firing = Some(handle);
+            request.handle = Some(handle);
         }
     }
 }

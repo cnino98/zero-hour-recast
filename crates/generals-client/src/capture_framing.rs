@@ -11,6 +11,24 @@ use bevy::{
 };
 use std::error::Error;
 
+pub struct TreadSample {
+    pub model: usize,
+    pub mesh: usize,
+    pub offset: u32,
+}
+
+struct ProjectedBody {
+    bounds: Rect,
+    nearest: f32,
+    farthest: f32,
+}
+
+struct ProjectedPair {
+    viewport: Rect,
+    carrier: ProjectedBody,
+    actor: ProjectedBody,
+}
+
 #[derive(SystemParam)]
 pub struct AircraftFrame<'w, 's> {
     terrain: Res<'w, Terrain>,
@@ -144,6 +162,55 @@ impl AircraftFrame<'_, '_> {
                 .is_some_and(|bounds| contained(viewport, bounds)))
     }
 
+    pub fn tread_offset(
+        &self,
+        battle: &Match,
+        id: usize,
+        animations: &crate::model_animation::Animations,
+    ) -> Result<Option<TreadSample>, Box<dyn Error>> {
+        let Some((_, children, _)) = self
+            .roots
+            .iter()
+            .find(|(visual, _, _)| visual.index == id && visual.generation == battle.generation)
+        else {
+            return Ok(None);
+        };
+        for child in children {
+            let Ok(part) = self.animated.get(*child) else {
+                continue;
+            };
+            let Some(mapper) = part.binding.linear_mapper else {
+                continue;
+            };
+            let Some(name) = animations.mesh_name(part.model, part.binding.mesh) else {
+                continue;
+            };
+            if !name
+                .split_once('.')
+                .is_some_and(|(_, name)| name.to_ascii_uppercase().starts_with("TREADS"))
+            {
+                continue;
+            }
+            let (_, _, _, _, handle) = self.parts.get(*child)?;
+            let material = self
+                .materials
+                .get(&handle.0)
+                .ok_or("borrowed tread material missing")?;
+            let uv = material.parameters.uv_transform;
+            if uv.z != 0.0
+                && [uv.x, uv.y].map(f32::to_bits) == mapper.scale.map(f32::to_bits)
+                && self.visible_mesh(battle, id, animations, name)?
+            {
+                return Ok(Some(TreadSample {
+                    model: part.model,
+                    mesh: part.binding.mesh,
+                    offset: uv.z.to_bits(),
+                }));
+            }
+        }
+        Ok(None)
+    }
+
     /// Project only the named original mesh for diagnostic camera fitting.
     /// Culled geometry is measurable here; `visible_mesh` still requires its
     /// actual render visibility and unchanged body/payload pixel gates.
@@ -192,8 +259,8 @@ impl AircraftFrame<'_, '_> {
         let bounds = self.child_bounds(children)?;
         let viewport = self.uncovered_viewport();
         let mut parts = Vec::new();
-        for child in children.iter().take(8) {
-            let Ok((mesh, world, inherited, visible, material)) = self.parts.get(child) else {
+        for child in children {
+            let Ok((mesh, world, inherited, visible, material)) = self.parts.get(*child) else {
                 parts.push(format!("part={child:?} mesh_query=missing"));
                 continue;
             };
@@ -236,6 +303,31 @@ impl AircraftFrame<'_, '_> {
         carrier: usize,
         actor: usize,
     ) -> Result<bool, Box<dyn Error>> {
+        let Some(pair) = self.actor_pair(battle, carrier, actor)? else {
+            return Ok(false);
+        };
+        Ok(contained(pair.viewport, pair.actor.bounds)
+            && separated_bomb(pair.viewport, pair.carrier.bounds, pair.actor.bounds))
+    }
+
+    /// Overlap is safe only when the entire actor is nearer than the carrier.
+    pub fn unobscured_actor(
+        &self,
+        battle: &Match,
+        carrier: usize,
+        actor: usize,
+    ) -> Result<bool, Box<dyn Error>> {
+        Ok(self
+            .actor_pair(battle, carrier, actor)?
+            .is_some_and(|pair| unobscured(pair.viewport, &pair.carrier, &pair.actor)))
+    }
+
+    fn actor_pair(
+        &self,
+        battle: &Match,
+        carrier: usize,
+        actor: usize,
+    ) -> Result<Option<ProjectedPair>, Box<dyn Error>> {
         let children = |id| {
             self.roots.iter().find_map(|(visual, children, _)| {
                 (visual.index == id && visual.generation == battle.generation).then_some(children)
@@ -246,15 +338,19 @@ impl AircraftFrame<'_, '_> {
             children(actor),
             self.uncovered_viewport(),
         ) else {
-            return Ok(false);
+            return Ok(None);
         };
-        let Some(carrier) = self.child_bounds_matching(carrier, |_| true, false)? else {
-            return Ok(false);
+        let Some(carrier) = self.project_children(carrier, |_| true, false)? else {
+            return Ok(None);
         };
-        let Some(actor) = self.child_bounds(actor)? else {
-            return Ok(false);
+        let Some(actor) = self.project_children(actor, |_| true, true)? else {
+            return Ok(None);
         };
-        Ok(contained(viewport, actor) && separated_bomb(viewport, carrier, actor))
+        Ok(Some(ProjectedPair {
+            viewport,
+            carrier,
+            actor,
+        }))
     }
 
     pub fn separated_projectile(
@@ -335,7 +431,18 @@ impl AircraftFrame<'_, '_> {
         matches: impl Fn(Entity) -> bool,
         require_view: bool,
     ) -> Result<Option<Rect>, Box<dyn Error>> {
-        let mut bounds: Option<Rect> = None;
+        Ok(self
+            .project_children(children, matches, require_view)?
+            .map(|body| body.bounds))
+    }
+
+    fn project_children(
+        &self,
+        children: &Children,
+        matches: impl Fn(Entity) -> bool,
+        require_view: bool,
+    ) -> Result<Option<ProjectedBody>, Box<dyn Error>> {
+        let mut body: Option<ProjectedBody> = None;
         for child in children {
             if !matches(*child) {
                 continue;
@@ -373,15 +480,29 @@ impl AircraftFrame<'_, '_> {
                 if !point.is_finite() {
                     return Err("aircraft body has nonfinite world geometry".into());
                 }
-                let Ok(point) = self.camera.0.world_to_viewport(self.camera.1, point) else {
+                let Ok(point) = self
+                    .camera
+                    .0
+                    .world_to_viewport_with_depth(self.camera.1, point)
+                else {
                     return Ok(None);
                 };
-                let bounds = bounds.get_or_insert_with(|| Rect::from_corners(point, point));
-                bounds.min = bounds.min.min(point);
-                bounds.max = bounds.max.max(point);
+                if !point.is_finite() || point.z <= 0.0 {
+                    return Err("aircraft body has invalid projected geometry".into());
+                }
+                let screen = point.truncate();
+                let body = body.get_or_insert_with(|| ProjectedBody {
+                    bounds: Rect::from_corners(screen, screen),
+                    nearest: point.z,
+                    farthest: point.z,
+                });
+                body.bounds.min = body.bounds.min.min(screen);
+                body.bounds.max = body.bounds.max.max(screen);
+                body.nearest = body.nearest.min(point.z);
+                body.farthest = body.farthest.max(point.z);
             }
         }
-        Ok(bounds)
+        Ok(body)
     }
 
     pub fn uncovered_viewport(&self) -> Option<Rect> {
@@ -478,6 +599,12 @@ fn contained(viewport: Rect, bounds: Rect) -> bool {
         && bounds.size().cmpge(Vec2::new(16.0, 12.0)).all()
 }
 
+fn unobscured(viewport: Rect, carrier: &ProjectedBody, actor: &ProjectedBody) -> bool {
+    contained(viewport, actor.bounds)
+        && (separated_bomb(viewport, carrier.bounds, actor.bounds)
+            || actor.farthest < carrier.nearest)
+}
+
 pub fn focus_on(rig: &mut CameraRig, terrain: &Terrain, position: [f32; 3]) {
     let point = Vec2::new(position[0], position[1]) * 0.1;
     let height = position[2] * 0.1;
@@ -504,6 +631,33 @@ fn elevated_focus(point: Vec2, height: f32, pitch: f32, yaw: f32) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_body_must_clear_carrier_depth_and_uncovered_viewport() {
+        let viewport = Rect::new(0.0, 0.0, 1200.0, 700.0);
+        let carrier = ProjectedBody {
+            bounds: Rect::new(400.0, 200.0, 650.0, 370.0),
+            nearest: 26.0,
+            farthest: 32.0,
+        };
+        let mut rider = ProjectedBody {
+            bounds: Rect::new(500.0, 290.0, 525.0, 320.0),
+            nearest: 22.0,
+            farthest: 24.0,
+        };
+        assert!(unobscured(viewport, &carrier, &rider));
+        let hud_viewport = above_hud(viewport, 630.0, 2.0);
+        assert!(!unobscured(hud_viewport, &carrier, &rider));
+        rider.farthest = 26.0;
+        assert!(!unobscured(viewport, &carrier, &rider));
+        rider.farthest = 28.0;
+        assert!(!unobscured(viewport, &carrier, &rider));
+        rider.nearest = 33.0;
+        rider.farthest = 36.0;
+        assert!(!unobscured(viewport, &carrier, &rider));
+        rider.bounds = Rect::new(675.0, 290.0, 700.0, 320.0);
+        assert!(unobscured(viewport, &carrier, &rider));
+    }
 
     #[test]
     fn missile_clear_of_aircraft_but_hidden_by_target_is_not_visual_evidence() {

@@ -3,8 +3,11 @@ use super::{Skirmish, ai_goals::COMMAND_FROM_AI, module_updates::FOREVER, specia
 use std::collections::BTreeMap;
 mod actions;
 mod scan;
+mod script;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(in crate::skirmish) use tests::add_power as add_test_power;
 
 pub struct Rules {
     pub scan_frames: u32,
@@ -27,6 +30,7 @@ pub struct Button {
     pub command: Command,
     pub weapon_slot: usize,
     pub power: Option<Power>,
+    pub upgrade: Option<String>,
     pub needs_object: bool,
 }
 

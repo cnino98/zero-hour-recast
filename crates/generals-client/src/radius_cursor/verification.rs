@@ -288,6 +288,7 @@ fn accepted(scene: &Scene, scenario: &Scenario) -> Result<(), &'static str> {
     let pending = match scene.mouse.pending_command {
         CommandMode::Normal => "Normal",
         CommandMode::Guard => "Guard",
+        CommandMode::GuardFlying => "GuardFlying",
         CommandMode::Rally => "Rally",
         CommandMode::AttackMove => "AttackMove",
         CommandMode::CombatDrop => "CombatDrop",
@@ -303,6 +304,8 @@ fn accepted(scene: &Scene, scenario: &Scenario) -> Result<(), &'static str> {
         CommandMode::CarBomb => "CarBomb",
         CommandMode::Sabotage => "Sabotage",
         CommandMode::SnipeVehicle(_) => "SnipeVehicle",
+        CommandMode::Burton(_) => "Burton",
+        CommandMode::BombTruckDisguise => "BombTruckDisguise",
         CommandMode::Power { .. } => "Power",
     };
     let (name, destination) = match order {

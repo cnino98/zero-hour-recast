@@ -10,6 +10,7 @@ use crate::{Cell, Grid};
 
 mod ai;
 mod ai_goals;
+mod ai_repair;
 pub mod aircraft;
 pub mod aircraft_death;
 mod assault_transport;
@@ -171,6 +172,7 @@ mod tunnel;
 pub use bridges::RegularBridge;
 pub use setup::{NeutralObject, PlayerSlot, ResolvedSlots, resolve_player_slots};
 pub mod cleanup;
+pub mod combat_bike;
 pub mod containment;
 pub mod contamination;
 pub mod fire;
@@ -365,6 +367,7 @@ pub struct BehaviorData {
     pub bridges: Vec<bridge_behavior::Rules>,
     pub neutron_blast: Vec<neutron_blast::Rules>,
     pub bone_fx: Vec<bone_fx::Rules>,
+    pub damage_transitions: Vec<structure_death::TransitionRules>,
     pub command_button_hunts: Vec<command_button_hunt::Rules>,
     pub collision_weapons: Vec<fire::collide::Rules>,
     pub toppling: Vec<toppling::Rules>,
@@ -444,6 +447,7 @@ pub struct UnitType {
     pub neutral_tech: NeutralTechRules,
     pub minimum_health: f32,
     pub battle_bus: Option<battle_bus::Rules>,
+    pub combat_bike: Option<combat_bike::Rules>,
     pub live_physics: Option<physical_ocl::LiveRules>,
     pub aircraft: Option<aircraft::Rules>,
     pub hijacker: Option<hijacker::Rules>,
@@ -855,6 +859,7 @@ pub struct Entity {
     production_doors: parking::doors::State,
     health_box_offset: [f32; 3],
     battle_bus: Option<battle_bus::State>,
+    combat_bike: combat_bike::State,
     live_physics: Option<physical_ocl::LiveState>,
     producer: Option<usize>,
     pub construction_percent: f32,
@@ -911,6 +916,7 @@ pub enum TerrainDecal {
 
 // The logic-to-drawable adapter retains the last notified pose and model state.
 struct DrawableState {
+    birth: u64,
     present: bool,
     selected: u8,
     hidden: bool,
@@ -935,6 +941,7 @@ struct DrawableState {
 impl DrawableState {
     const fn for_construction(complete: bool) -> Self {
         Self {
+            birth: 0,
             present: true,
             selected: 0,
             hidden: false,
@@ -1327,6 +1334,7 @@ pub struct PresentationEvents {
     pub battle_plan_events: Vec<battle_plan::Event>,
     pub research_events: Vec<ResearchEvent>,
     pub replacement_events: Vec<fake_buildings::ReplacementEvent>,
+    pub bike_selection_events: Vec<combat_bike::Selection>,
     pub promotion_events: Vec<PromotionEvent>,
     pub salvage_events: Vec<salvage::Event>,
     pub money_crate_events: Vec<map_crates::Event>,
@@ -1370,6 +1378,7 @@ impl PresentationEvents {
             battle_plan_events: Vec::new(),
             research_events: Vec::new(),
             replacement_events: Vec::new(),
+            bike_selection_events: Vec::new(),
             promotion_events: Vec::new(),
             salvage_events: Vec::new(),
             money_crate_events: Vec::new(),
@@ -1451,6 +1460,7 @@ pub struct Skirmish {
     pub projectiles: Vec<Projectile>,
     projectile_terrain: Option<projectiles::Terrain>,
     projectile_serial: u64,
+    next_drawable_birth: u64,
     pub tick: u64,
     pub outcome: Option<usize>,
     pub ended_at: Option<u64>,
@@ -1583,6 +1593,7 @@ impl Skirmish {
             projectiles: Vec::new(),
             projectile_terrain: layout.take_terrain(extent)?,
             projectile_serial: 0,
+            next_drawable_birth: 0,
             tick: 0,
             outcome: None,
             ended_at: None,
@@ -1698,6 +1709,7 @@ impl Skirmish {
         self.path_service = path_service::Service::new();
         self.next_formation_id = 1;
         self.next_ai_group_id = 0;
+        self.next_drawable_birth = 0;
         self.presentation.promotion_events.clear();
         self.presentation.car_bomb_events.clear();
         self.presentation.sabotage_events.clear();
@@ -1713,6 +1725,7 @@ impl Skirmish {
         self.presentation.battle_plan_events.clear();
         self.presentation.research_events.clear();
         self.presentation.replacement_events.clear();
+        self.presentation.bike_selection_events.clear();
         self.presentation.salvage_events.clear();
         self.presentation.money_crate_events.clear();
         self.presentation.container_sounds.clear();
@@ -2321,6 +2334,9 @@ impl Skirmish {
         self.stop_garrison(id);
         let result = self.stop_actor(id);
         self.finish_dozer_player_command(id);
+        if result.is_ok() {
+            self.delay_group_stealth_acquisition(id);
+        }
         self.group_spawn_idle(id, ai_goals::COMMAND_FROM_PLAYER);
         result
     }
@@ -2901,8 +2917,17 @@ impl Skirmish {
         let entity = self.create_entity(&self.catalog[type_index], type_index, owner, complete);
         let id = self.entities.len();
         self.entities.push(entity);
+        self.renew_drawable_birth(id);
         self.update_objects.push(module_updates::Object::new(id));
         id
+    }
+
+    pub(in crate::skirmish) fn renew_drawable_birth(&mut self, id: usize) {
+        self.entities[id].drawable.birth = self.next_drawable_birth;
+        self.next_drawable_birth = self
+            .next_drawable_birth
+            .checked_add(1)
+            .expect("drawable creation order exhausted");
     }
 
     fn spawn_native_projectile(
@@ -3023,6 +3048,7 @@ impl Skirmish {
             production_doors: parking::doors::State::new(),
             health_box_offset: [0.0; 3],
             battle_bus: unit.battle_bus.as_ref().map(|_| battle_bus::State::new()),
+            combat_bike: combat_bike::State::new(),
             live_physics: None,
             producer: None,
             construction_percent: if complete { 100.0 } else { 0.0 },
@@ -3293,6 +3319,8 @@ impl Entity {
         actor.ai.command.main_state = ai_goals::MainState::Active;
         actor.weapon_set.weapons[actor.weapon_set.current].max_shots = None;
         actor.ai.guard.area = None;
+        actor.ai.guard.object = None;
+        actor.ai.guard.flying_only = false;
         if !ground_move {
             actor.ai.path.clear();
             actor.ai.path_goal = None;

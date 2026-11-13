@@ -1,4 +1,4 @@
-//! Authored original Reinforcement Pad module and contained `DeliverPayload` lists.
+//! Authored OCL timers and contained `DeliverPayload` lists.
 use super::{blocks, definition, duration_frames, field, scalar};
 use generals_assets::content::{ContentFile, ContentLine, Declaration};
 use generals_sim::skirmish::{deliver_payload, reinforcement_timer};
@@ -26,8 +26,10 @@ pub(super) fn timer(
             "multiple OCLUpdate instances are not represented by this template data".into(),
         );
     }
-    // Other OCLUpdate users remain outside this bounded consumer admission.
-    if object.name != "TechReinforcementPad" {
+    if !matches!(
+        object.name.as_str(),
+        "TechReinforcementPad" | "AmericaSupplyDropZone"
+    ) {
         return Err(format!("unsupported timed OCLUpdate object {}", object.name).into());
     }
     for line in module.iter().filter(|line| line.depth == Some(1)) {
@@ -76,28 +78,37 @@ pub(super) fn timer(
     }))
 }
 
-// The currently selectable base-side closure; all twelve authored timer entries
-// remain intact. General-side catalogs are a separate P05 prerequisite.
 pub(super) fn lists(
     files: &[ContentFile],
     selected: &[&str],
 ) -> Result<Vec<deliver_payload::Rules>, Box<dyn Error>> {
-    if !selected.contains(&"TechReinforcementPad") {
-        return Ok(Vec::new());
+    let mut lists = Vec::new();
+    if selected.contains(&"TechReinforcementPad") {
+        let pad = definition(files, "Object", "TechReinforcementPad")?;
+        let timer = timer(pad)?.ok_or("pad lacks original timer")?;
+        for entry in timer.faction_ocl {
+            let list = delivery(files, &entry.ocl)?;
+            // The playable catalog admits the three base sides. Bind a general's
+            // original list when its actual payload templates are admitted.
+            if matches!(entry.faction.as_str(), "America" | "China" | "GLA")
+                || list
+                    .payload
+                    .iter()
+                    .all(|payload| selected.contains(&payload.object.as_str()))
+            {
+                lists.push(list);
+            }
+        }
     }
-    let pad = definition(files, "Object", "TechReinforcementPad")?;
-    let timer = timer(pad)?.ok_or("pad lacks original timer")?;
-    ["America", "China", "GLA"]
-        .into_iter()
-        .map(|side| {
-            let entry = timer
-                .faction_ocl
-                .iter()
-                .find(|entry| entry.faction == side)
-                .ok_or("pad lacks selected native side OCL")?;
-            delivery(files, &entry.ocl)
-        })
-        .collect()
+    if selected.contains(&"AmericaSupplyDropZone") {
+        let zone = definition(files, "Object", "AmericaSupplyDropZone")?;
+        let timer = timer(zone)?.ok_or("Supply Drop Zone lacks original timer")?;
+        let ocl = timer
+            .ocl
+            .ok_or("Supply Drop Zone lacks original delivery OCL")?;
+        lists.push(delivery(files, &ocl)?);
+    }
+    Ok(lists)
 }
 
 pub(super) fn dependencies<'a>(
@@ -444,16 +455,37 @@ mod tests {
         assert_eq!(loaded[0].payload[0].object, "AmericaTankCrusader");
         assert_eq!(loaded[1].payload[0].object, "ChinaTankBattleMaster");
         assert_eq!(loaded[2].payload[0].object, "GLATankScorpion");
+
+        let mut selected = vec!["TechReinforcementPad", "AmericaSupplyDropZone"];
+        selected.extend(PAD_DELIVERIES.map(|(_, _, payload, _)| payload));
+        let loaded = lists(&files, &selected).unwrap();
+        assert_eq!(loaded.len(), 13);
+        for (list, (_, ocl, object, count)) in loaded.iter().zip(PAD_DELIVERIES) {
+            assert_eq!(list.name, ocl);
+            assert_eq!(list.payload[0].object, object);
+            assert_eq!(list.payload[0].count, count);
+        }
+        let supply = loaded.last().unwrap();
+        assert_eq!(supply.name, "OCL_AmericaSupplyDropZoneCrateDrop");
+        assert_eq!(supply.transport, "AmericaJetCargoPlane");
+        assert_eq!(supply.container, "AmericaCrateParachute");
+        assert_eq!(supply.payload[0].object, "SupplyDropZoneCrate");
+        assert_eq!(supply.payload[0].count, 6);
+        assert_eq!(supply.drop_delay, 11);
+        assert_eq!(supply.delivery_distance.to_bits(), 410.0_f32.to_bits());
     }
 
     #[test]
-    fn unsupported_supply_drop_zone_timer_is_rejected_until_its_real_crate_chain_exists() {
+    fn supply_drop_zone_timer_reads_non_faction_ocl() {
         let files=[generals_assets::content::scan(generals_assets::virtual_assets::Asset {path:"supply.ini".into(),origin:"native non-faction timer dependency".into(),bytes:b"Object AmericaSupplyDropZone\nBehavior = OCLUpdate Timer\nOCL=OCL_AmericaSupplyDropZoneCrateDrop\nMinDelay=120000\nMaxDelay=120000\nCreateAtEdge=Yes\nEnd\nEnd\n".to_vec()}).unwrap()];
         let object = definition(&files, "Object", "AmericaSupplyDropZone").unwrap();
-        assert!(
-            timer(object)
-                .is_err_and(|error| error.to_string().contains("unsupported timed OCLUpdate"))
+        let rules = timer(object).unwrap().unwrap();
+        assert_eq!(
+            rules.ocl.as_deref(),
+            Some("OCL_AmericaSupplyDropZoneCrateDrop")
         );
+        assert_eq!([rules.min_delay, rules.max_delay], [3600, 3600]);
+        assert!(rules.create_at_edge && !rules.faction_triggered);
     }
 
     #[ignore = "requires original game installation"]

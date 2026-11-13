@@ -12,10 +12,13 @@ pub(super) use collision::collision_rules;
 #[cfg(test)]
 pub mod tests;
 
-pub(super) const OBJECTS: [&str; 36] = [
+pub(super) const OBJECTS: [&str; 39] = [
     "GenericDebris",
     "AmericaDeadDozerHulk",
     "DeadBattleBusHulk",
+    "DeadBombTruckHulk",
+    "GLACombatBikeFullDebris",
+    "GLACombatBikeToppledHulk",
     "DeadCrusaderHulk",
     "HelixRubbleHull",
     "NapalmBomb",

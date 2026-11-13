@@ -293,6 +293,7 @@ fn hidden_hacker_payment_keeps_emission_visibility_after_reveal() {
         black_market_frames: 0,
         friendly_opacity: [0.5, 1.0],
         pulse_frames: 30,
+        disguise: None,
     });
     crate::skirmish::tests::register_update(&mut game.catalog[index], "StealthUpdate");
     let id = game.spawn(index, 1, [350.0, 200.0], true);

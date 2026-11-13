@@ -1,5 +1,7 @@
 //! Native `SpecialAbilityUpdate` intent, phases and object lifetime ownership.
 use super::{Entity, Skirmish, module_updates::FOREVER};
+mod burton;
+pub use burton::BurtonCharge;
 mod capture;
 mod effects;
 #[cfg(test)]
@@ -293,13 +295,18 @@ impl Skirmish {
     }
 }
 
-/// Reject the remaining drawable-replacement dependency before any live command.
+/// Require the native `StealthUpdate` consumer for an authored vehicle disguise.
 pub(in crate::skirmish) fn validate(unit: &super::UnitType) -> Result<(), String> {
     for (ordinal, ability) in unit.behavior.special_abilities.iter().enumerate() {
         if ability
             .power
             .as_ref()
             .is_some_and(|power| power.kind == PowerType::SpecialDisguiseAsVehicle)
+            && unit
+                .behavior
+                .stealth
+                .as_ref()
+                .is_none_or(|rules| rules.disguise.is_none())
         {
             let module = unit
                 .behavior_modules

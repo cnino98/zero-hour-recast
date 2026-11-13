@@ -557,6 +557,7 @@ impl Skirmish {
                 | "ParachuteContain"
                 | "HealContain"
                 | "TransportContain"
+                | "RiderChangeContain"
                 | "GarrisonContain"
                 | "InternetHackContain" => self.destroy_container_contents(id),
                 "HelixContain" => self.delete_helix_containment(id),

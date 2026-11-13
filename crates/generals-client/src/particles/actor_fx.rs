@@ -40,6 +40,13 @@ pub(super) fn names(types: &[UnitType]) -> BTreeSet<&str> {
                 .iter()
                 .filter_map(|rules| rules.geometry_fx.as_deref()),
         );
+        names.extend(unit.behavior.damage_transitions.iter().flat_map(|rules| {
+            rules
+                .effects
+                .iter()
+                .flatten()
+                .map(|effect| effect.template.as_str())
+        }));
         names.extend(
             unit.behavior_modules
                 .iter()
@@ -75,6 +82,14 @@ pub(super) fn names(types: &[UnitType]) -> BTreeSet<&str> {
         }
         if let Some(rules) = &unit.behavior.car_bomb_converter {
             names.insert(rules.effect.as_str());
+        }
+        if let Some(rules) = unit
+            .behavior
+            .stealth
+            .as_ref()
+            .and_then(|rules| rules.disguise.as_ref())
+        {
+            names.extend([rules.effect.as_str(), rules.reveal_effect.as_str()]);
         }
         names.extend(
             unit.damage_fx
@@ -396,7 +411,7 @@ impl Particles {
         battle: &crate::playtest::Match,
         event: &generals_sim::skirmish::object_fx::Event,
         template: &str,
-        local: [f32; 3],
+        positions: &[[f32; 3]],
         animations: &mut crate::model_animation::Animations,
     ) -> u64 {
         self.begin(battle.generation, event.frame);
@@ -409,18 +424,28 @@ impl Particles {
             position: event.position,
             axes: std::array::from_fn(|column| std::array::from_fn(|row| event.basis[row][column])),
         };
-        let local = Pose::at(local);
-        let pose = super::model_states::compose(&parent, &local);
         let system = self.create(
             template,
-            pose,
+            parent.clone(),
             None,
             &mut super::random(animations, battle.generation),
         );
+        // With retail CRC disabled, only the client selects the bone after emitter creation.
+        let position = match positions {
+            [] => [0.0; 3],
+            [only] => *only,
+            _ => {
+                let last = u32::try_from(positions.len() - 1).expect("32 transition bones");
+                let pick = animations.effect_integer(battle.generation, [0, last]);
+                positions[usize::try_from(pick).expect("transition bone index")]
+            }
+        };
+        let local = Pose::at(position);
         let emitter = self
             .emitters
             .last_mut()
             .expect("created structure particle");
+        emitter.transform = super::model_states::compose(&parent, &local);
         emitter.object_attachment = Some((event.object, local));
         system
     }
@@ -1292,7 +1317,7 @@ mod tests {
             &battle,
             &snapshot,
             "Trail",
-            [2.0, 0.0, 3.0],
+            &[[2.0, 0.0, 3.0]],
             &mut animations,
         );
         assert_eq!(particles.emitters.len(), 1);

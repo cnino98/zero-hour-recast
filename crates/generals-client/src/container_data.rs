@@ -147,6 +147,7 @@ fn container_module(object: &Declaration) -> Result<Option<&[ContentLine]>, Box<
                 name.as_str(),
                 "OpenContain"
                     | "TransportContain"
+                    | "RiderChangeContain"
                     | "OverlordContain"
                     | "HelixContain"
                     | "ParachuteContain"
@@ -176,7 +177,11 @@ fn validate_fields(
         && !module[0].tokens.get(1).is_some_and(|family| {
             matches!(
                 family.as_str(),
-                "TransportContain" | "InternetHackContain" | "OverlordContain" | "HelixContain"
+                "TransportContain"
+                    | "InternetHackContain"
+                    | "OverlordContain"
+                    | "HelixContain"
+                    | "RiderChangeContain"
             )
         })
     {

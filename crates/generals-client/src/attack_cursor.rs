@@ -19,7 +19,7 @@ pub mod verification;
 
 #[derive(Resource)]
 pub struct AttackCursor {
-    cursors: [Cursor; 15],
+    cursors: [Cursor; 21],
     current: Option<usize>,
     started: Option<Duration>,
 }
@@ -98,6 +98,12 @@ pub fn load(assets: &VirtualAssets) -> Result<AttackCursor, Box<dyn Error>> {
             load("ForceAttackGround")?,
             load("ForceAttackObj")?,
             load("ParticleUplinkCannon")?,
+            load("StabAttack")?,
+            load("StabAttackInvalid")?,
+            load("PlaceTimedCharge")?,
+            load("PlaceRemoteCharge")?,
+            load("PlaceChargeInvalid")?,
+            load("DisguiseAsVehicle")?,
         ],
         current: None,
         started: None,
@@ -361,7 +367,10 @@ fn targeted(battle: &mut Match, mouse: &Mouse) -> Option<usize> {
             },
         ),
         // Mouse::CROSS maps to the "Target" INI name, shared by both commands.
-        CommandMode::Guard | CommandMode::FireWeapon(_) | CommandMode::ClearMines(_) => Some(5),
+        CommandMode::Guard
+        | CommandMode::GuardFlying
+        | CommandMode::FireWeapon(_)
+        | CommandMode::ClearMines(_) => Some(5),
         CommandMode::Rally => Some(8),
         CommandMode::Cleanup => Some(
             if battle.selected.iter().any(|&id| {
@@ -462,6 +471,30 @@ fn targeted_object(battle: &mut Match, mouse: &Mouse) -> Option<usize> {
                 .is_some_and(|target| crate::input::sabotage::can_target(battle, target))
             {
                 10
+            } else {
+                3
+            },
+        ),
+        CommandMode::Burton(command) => {
+            use crate::input::burton::TargetCommand;
+            use generals_sim::skirmish::special_ability::BurtonCharge;
+            let valid = mouse
+                .hovered
+                .is_some_and(|target| crate::input::burton::can_target(battle, command, target));
+            Some(match (command, valid) {
+                (TargetCommand::Knife, true) => 15,
+                (TargetCommand::Knife, false) => 16,
+                (TargetCommand::Charge(BurtonCharge::Timed), true) => 17,
+                (TargetCommand::Charge(BurtonCharge::Remote), true) => 18,
+                (TargetCommand::Charge(_), false) => 19,
+            })
+        }
+        CommandMode::BombTruckDisguise => Some(
+            if mouse
+                .hovered
+                .is_some_and(|target| crate::input::bomb_truck::can_target(battle, target))
+            {
+                20
             } else {
                 3
             },

@@ -80,7 +80,7 @@ impl Skirmish {
                 "PowerPlantUpgrade" => self.on_capture_power_upgrade(id, index, previous, owner),
                 "CostModifierUpgrade" => self.capture_cost_modifier(id, index, previous),
                 "OverchargeBehavior" => self.on_capture_overcharge(id, ordinal, previous, owner),
-                "TransportContain" | "InternetHackContain" => {
+                "TransportContain" | "InternetHackContain" | "RiderChangeContain" => {
                     self.capture_transport_contain(id, previous, owner);
                 }
                 "OverlordContain" => self.capture_overlord_contain(id, owner),

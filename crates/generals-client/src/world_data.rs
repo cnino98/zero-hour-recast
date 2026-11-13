@@ -186,6 +186,7 @@ fn load_with_admission(
         let z = ground + record.position[2];
         for draw in &model_indices[&record.template] {
             placed.push(WorldObject {
+                terrain_bridge: false,
                 animation: draw.animation.as_ref().map(Arc::clone),
                 model_index: draw.index,
                 position: [xy[0], xy[1], z],

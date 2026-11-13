@@ -10,6 +10,68 @@ pub struct VertexMaterial {
     pub emissive: [f32; 3],
     pub shininess: f32,
     pub opacity: f32,
+    pub linear_mapper: Option<LinearMapper>,
+}
+
+/// Stage-zero `LinearOffsetTextureMapperClass` constructor arguments.
+// Render instances retain their own mapper parameters.
+#[derive(Clone, Copy)]
+pub struct LinearMapper {
+    pub scale: [f32; 2],
+    pub offset: [f32; 2],
+    pub per_second: [f32; 2],
+    pub clamp: bool,
+}
+
+fn linear_mapper(attributes: u32, bytes: &[u8]) -> Result<Option<LinearMapper>, Error> {
+    if attributes & 0x00ff_0000 != 0x0004_0000 {
+        return Ok(None);
+    }
+    let text = std::str::from_utf8(bytes.split(|byte| *byte == 0).next().unwrap_or_default())
+        .map_err(|_| Error::InvalidChunk("mapper arguments encoding"))?;
+    let mut result = LinearMapper {
+        scale: [1.0; 2],
+        offset: [0.0; 2],
+        per_second: [0.0; 2],
+        clamp: false,
+    };
+    for line in text.lines() {
+        let line = line.split(';').next().unwrap_or_default().trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let target = match key.trim().to_ascii_lowercase().as_str() {
+            "uscale" => &mut result.scale[0],
+            "vscale" => &mut result.scale[1],
+            "uoffset" => &mut result.offset[0],
+            "voffset" => &mut result.offset[1],
+            "upersec" => &mut result.per_second[0],
+            "vpersec" => &mut result.per_second[1],
+            "clampfix" => {
+                result.clamp = matches!(
+                    value.as_bytes().first().map(u8::to_ascii_uppercase),
+                    Some(b'Y' | b'T' | b'1')
+                );
+                continue;
+            }
+            _ => continue,
+        };
+        *target = value
+            .split('%')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .parse()
+            .map_err(|_| Error::InvalidChunk("linear mapper number"))?;
+        if value.contains('%') {
+            *target /= 100.0;
+        }
+        if !target.is_finite() {
+            return Err(Error::InvalidChunk("nonfinite linear mapper"));
+        }
+    }
+    Ok(Some(result))
 }
 
 pub struct Texture {
@@ -127,12 +189,13 @@ fn parse_vertex_materials(bytes: &[u8]) -> Result<Vec<VertexMaterial>, Error> {
         if chunk.id != 0x2b {
             return Err(Error::Unsupported("vertex material child"));
         }
-        let (mut name, mut info) = (None, None);
+        let (mut name, mut info, mut mapper) = (None, None, None);
         for field in Chunks::new(chunk.body) {
             let field = field?;
             match field.id {
                 0x2c => set_once(&mut name, field.body)?,
                 0x2d => set_once(&mut info, field.body)?,
+                0x2e => set_once(&mut mapper, field.body)?,
                 _ => {}
             }
         }
@@ -149,6 +212,7 @@ fn parse_vertex_materials(bytes: &[u8]) -> Result<Vec<VertexMaterial>, Error> {
         materials.push(VertexMaterial {
             name: read_name(name.unwrap_or(&[]))?,
             attributes: read_u32(info, 0)?,
+            linear_mapper: linear_mapper(read_u32(info, 0)?, mapper.unwrap_or_default())?,
             ambient: color(4),
             diffuse: color(8),
             specular: color(12),
@@ -359,6 +423,39 @@ mod tests {
         );
         result.extend_from_slice(bytes);
         result
+    }
+
+    #[test]
+    fn linear_mapper_retains_native_scale_start_rate_and_clamp_defaults() {
+        let mapper = super::linear_mapper(0x40000, b"UScale=2\nVScale=0.5\nUOffset=-0.25\nVOffset=0.75\nUPerSec=3\nVPerSec=-2\nClampFix=Yes\0ignored").unwrap().unwrap();
+        assert_eq!(
+            mapper.scale.map(f32::to_bits),
+            [2.0_f32, 0.5].map(f32::to_bits)
+        );
+        assert_eq!(
+            mapper.offset.map(f32::to_bits),
+            [-0.25_f32, 0.75].map(f32::to_bits)
+        );
+        assert_eq!(
+            mapper.per_second.map(f32::to_bits),
+            [3.0_f32, -2.0].map(f32::to_bits)
+        );
+        assert!(mapper.clamp);
+        let default = super::linear_mapper(0x40000, b"").unwrap().unwrap();
+        assert_eq!(
+            default.scale.map(f32::to_bits),
+            [1.0_f32; 2].map(f32::to_bits)
+        );
+        assert_eq!(
+            default.offset.map(f32::to_bits),
+            [0.0_f32; 2].map(f32::to_bits)
+        );
+        assert_eq!(
+            default.per_second.map(f32::to_bits),
+            [0.0_f32; 2].map(f32::to_bits)
+        );
+        assert!(!default.clamp);
+        assert!(super::linear_mapper(0, b"UScale=2").unwrap().is_none());
     }
 
     #[test]

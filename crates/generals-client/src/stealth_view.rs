@@ -11,6 +11,7 @@ pub use render::{HeatPart, render};
 #[derive(PartialEq)]
 enum Look {
     Normal,
+    Disguise,
     Friendly,
     FriendlyDetected,
     Detected,
@@ -86,10 +87,20 @@ impl Cloaks {
             frame: None,
         }
     }
+    #[cfg(test)]
+    pub(crate) fn fixture_opacity(id: usize, opacity: f32) -> Self {
+        let mut result = Self::new();
+        let mut state = State::new(0.0);
+        state.look = Look::Disguise;
+        state.opacity = opacity;
+        result.states.insert(id, state);
+        result
+    }
+
     pub fn base_opacity(&self, id: usize) -> Option<f32> {
         let state = self.states.get(&id)?;
         match state.look {
-            Look::Friendly | Look::FriendlyDetected => Some(state.opacity),
+            Look::Friendly | Look::FriendlyDetected | Look::Disguise => Some(state.opacity),
             Look::Detected | Look::Invisible => Some(0.0),
             Look::Normal => None,
         }
@@ -123,8 +134,10 @@ pub fn record(
     }
     for index in 0..game.presentation.stealth_events.len() {
         let event = &game.presentation.stealth_events[index];
-        let (Event::Pulse { object } | Event::Look { object, .. } | Event::Heat { object }) =
-            *event
+        let (Event::Pulse { object }
+        | Event::Look { object, .. }
+        | Event::DisguiseOpacity { object, .. }
+        | Event::Heat { object }) = *event
         else {
             continue;
         };
@@ -134,6 +147,25 @@ pub fn record(
         let actor = &game.entities[object];
         let unit = &game.catalog[actor.type_index];
         let mine = unit.kind_of.iter().any(|kind| kind == "MINE");
+        if unit
+            .behavior
+            .stealth
+            .as_ref()
+            .is_some_and(|rules| rules.disguise.is_some())
+        {
+            if actor.alive() {
+                match *event {
+                    Event::DisguiseOpacity { opacity, .. } => {
+                        state.minimum = if opacity < 1.0 { 0.0 } else { 1.0 };
+                        state.opacity = opacity;
+                    }
+                    Event::Pulse { .. } => state.pulse(false),
+                    _ => continue,
+                }
+                state.look = Look::Disguise;
+            }
+            continue;
+        }
         match *event {
             Event::Pulse { .. } => state.pulse(mine),
             Event::Heat { .. } => state.heat = 1.0,

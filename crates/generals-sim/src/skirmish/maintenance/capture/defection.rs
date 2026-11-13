@@ -13,7 +13,7 @@ impl Skirmish {
         if actor.contained_by().is_some()
             || self.team_membership.default_team(old_owner) == team
             || actor.under_construction()
-            || actor.sold_model()
+            || actor.selling()
         {
             return;
         }

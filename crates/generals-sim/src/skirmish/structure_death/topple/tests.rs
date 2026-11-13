@@ -21,8 +21,6 @@ fn fixture() -> (Skirmish, usize, State) {
     });
     unit.structure_death = Some(Rules {
         conditions: crate::skirmish::tests::death_conditions(),
-        transitions: Vec::new(),
-        damage_thresholds: [0.5, 0.1],
         module: Module::Topple(ToppleRules {
             delay: [1, 1],
             burst_delay: [0, 0],

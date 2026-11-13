@@ -1,6 +1,7 @@
 use super::*;
 
 mod idle;
+mod tech;
 mod translated;
 
 fn parameter(text: &str, integer: i32) -> AiParameter {
@@ -36,6 +37,7 @@ pub(in crate::skirmish) fn rules(scripts: Vec<AiScript>) -> OpponentRules {
         defense_extra_distance: 20.0,
         max_recruit_distance: 500.0,
         attack_priority_distance: 10.0,
+        skirmish_group_fudge: 0.0,
         alert_range_modifier: 1.1,
         aggressive_range_modifier: 1.5,
         build_facilities: vec!["Fixture".into()],
@@ -377,7 +379,7 @@ fn initial_supply_overlap_test_does_not_apply_the_fine_scans_terrain_option() {
     assert!(!game.can_place_at_angle(supply, building.position, building.angle, true));
 }
 
-fn recipe() -> AiTeam {
+pub(super) fn recipe() -> AiTeam {
     AiTeam {
         recruitment: 0,
         home: None,

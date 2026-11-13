@@ -318,4 +318,42 @@ mod tests {
             [90.0_f32, 0.0, 37.0].map(f32::to_bits)
         );
     }
+
+    #[test]
+    fn aircraft_route_jogs_around_a_registered_tower_and_can_ignore_its_drop_target() {
+        use crate::skirmish::{Kind, flight, tests::game};
+
+        let mut game = game();
+        let kind = game.type_for(0, Kind::Tank).unwrap();
+        let unit = &mut game.catalog[kind];
+        unit.kind_of.push("AIRCRAFT".into());
+        unit.locomotor.flight = Some(flight::tests::rules(flight::Appearance::Hover));
+        unit.locomotor.legal_surfaces = 8;
+        let aircraft = game.spawn(kind, 0, [200.0, 300.0], true);
+        game.set_object_position(aircraft, [200.0, 300.0, 100.0]);
+
+        let kind = game.type_for(1, Kind::Barracks).unwrap();
+        let tower = &mut game.catalog[kind];
+        tower.kind_of.push("AIRCRAFT_PATH_AROUND".into());
+        tower.geometry.height = 110.0;
+        let tower = game.spawn(kind, 1, [300.0, 300.0], true);
+        game.rebuild_navigation();
+
+        let destination = [400.0, 300.0, 90.0];
+        let detour = game.native_aircraft_path(aircraft, destination, None);
+        let route: Vec<_> = detour
+            .positions()
+            .map(|point| point.map(f32::to_bits))
+            .collect();
+        assert_eq!(route.len(), 5);
+        assert_eq!(route[2], [300.0_f32, 345.0].map(f32::to_bits));
+        assert_eq!(
+            detour.last_position().unwrap().map(f32::to_bits),
+            destination.map(f32::to_bits)
+        );
+        assert!(
+            game.native_aircraft_path(aircraft, destination, Some(Identity::Actor(tower)))
+                .is_direct()
+        );
+    }
 }

@@ -94,6 +94,7 @@ pub(super) const fn left_gui_command(command: &super::CommandMode) -> bool {
             | super::CommandMode::FireWeapon(_)
             | super::CommandMode::ClearMines(_)
             | super::CommandMode::SnipeVehicle(_)
+            | super::CommandMode::Burton(_)
             | super::CommandMode::HelixBomb
             | super::CommandMode::CombatDrop
             | super::CommandMode::Hijack

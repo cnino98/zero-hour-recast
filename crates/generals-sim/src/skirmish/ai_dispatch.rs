@@ -11,6 +11,7 @@ mod entry;
 mod exit;
 mod face;
 mod follow_path;
+mod follow_waypoint;
 mod hunt;
 mod move_object;
 mod move_position;

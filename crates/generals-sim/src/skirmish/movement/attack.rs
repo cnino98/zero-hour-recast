@@ -13,7 +13,7 @@ impl Skirmish {
         let victim = self
             .entities
             .get(target)
-            .filter(|actor| actor.alive())
+            .filter(|actor| actor.exists())
             .map(|_| target);
         let from = self.object_position(id);
         let to = victim.map_or(requested, |target| self.object_position(target));
@@ -53,7 +53,7 @@ impl Skirmish {
         let victim = self
             .entities
             .get(target)
-            .filter(|actor| actor.alive())
+            .filter(|actor| actor.exists())
             .map(|_| target);
         let contact = self.entities[id]
             .active_weapon(&self.catalog[self.entities[id].type_index])
@@ -72,14 +72,19 @@ impl Skirmish {
         }
         self.entities[id].ai.path_request.attack_path = false;
         let requested = victim.map_or(snapshot, |target| self.object_position(target));
-        let layer = self
-            .movement_terrain
-            .get_layer_for_destination(requested, self.ground_height([requested[0], requested[1]]));
-        let point = self.possible_attack_destination(id, [requested[0], requested[1]], layer);
-        let goal = [point[0], point[1], requested[2]];
-        if let Some(target) = victim {
+        let goal = if let Some(target) = victim {
+            let layer = self.movement_terrain.get_layer_for_destination(
+                requested,
+                self.ground_height([requested[0], requested[1]]),
+            );
+            let point = self.possible_attack_destination(id, [requested[0], requested[1]], layer);
             self.entities[id].ai.ignored_producer = Some(target);
-        }
+            [point[0], point[1], requested[2]]
+        } else {
+            // doPathfind adjusts only a live victim's location. Ground fire
+            // and a deleted victim retain the exact queued coordinate.
+            requested
+        };
         let position = self.entities[id].position;
         let next = self.movement_path_world(id, position, goal);
         result.cells += next.cells;
@@ -122,6 +127,23 @@ impl Skirmish {
         let from = self.entities[id].position;
         if crate::skirmish::movement::distance_squared(from, endpoint) < 100.0 {
             result.route = None;
+        }
+    }
+
+    pub(in crate::skirmish) fn adjust_to_possible_destination(
+        &self,
+        id: usize,
+        requested: [f32; 3],
+    ) -> [f32; 3] {
+        let [x, y, _] = requested;
+        let layer = self
+            .movement_terrain
+            .get_layer_for_destination(requested, self.ground_height([x, y]));
+        let point = self.possible_attack_destination(id, [x, y], layer);
+        if point.map(f32::to_bits) == [x, y].map(f32::to_bits) {
+            requested
+        } else {
+            [point[0], point[1], self.movement_layer_height(layer, point)]
         }
     }
 
@@ -213,8 +235,9 @@ impl Skirmish {
         victim: Option<usize>,
         requested: [f32; 3],
     ) -> SearchResult {
-        let quick = self.search_attack_path_for(id, victim, requested, None, true);
+        let mut quick = self.search_attack_path_for(id, victim, requested, None, true);
         if quick.route.is_some() {
+            self.unstack_short_attack_path(id, victim, requested, &mut quick);
             return quick;
         }
         let (mut destination, _) = self.attack_destination(id, victim, requested);
@@ -230,7 +253,45 @@ impl Skirmish {
         let mut result =
             self.search_attack_path_for(id, victim, requested, hierarchy.blocks.as_ref(), false);
         result.cells += hierarchy.search.cells;
-        self.finish_path_search(result)
+        let mut result = self.finish_path_search(result);
+        self.unstack_short_attack_path(id, victim, requested, &mut result);
+        result
+    }
+
+    fn unstack_short_attack_path(
+        &mut self,
+        id: usize,
+        victim: Option<usize>,
+        requested: [f32; 3],
+        result: &mut SearchResult,
+    ) {
+        let Some(route) = &result.route else { return };
+        let end = route.optimized.back().expect("attack route endpoint");
+        let goal = route.exact_endpoint.unwrap_or_else(|| {
+            let point = self.path_position(id, end.cell);
+            [
+                point[0],
+                point[1],
+                self.movement_layer_height(end.layer, point),
+            ]
+        });
+        if self.weapon_goal_in_range(id, goal, victim, requested) {
+            return;
+        }
+        let origin = self.object_position(id);
+        let delta: [f32; 3] = std::array::from_fn(|axis| goal[axis] - origin[axis]);
+        let squared = delta.map(|value| value * value);
+        let length = (squared[0] + squared[1] + squared[2]).sqrt();
+        if length < 3.0 * CELL_SIZE {
+            // computeAttackPath: a stripped short tail outside weapon range
+            // falls back to an adjusted near-self route to unstack allies.
+            let adjusted = self
+                .adjusted_destination_world(id, origin)
+                .unwrap_or(origin);
+            let replacement = self.closest_queued_path(id, adjusted, 0.2);
+            result.cells += replacement.cells;
+            result.route = replacement.route;
+        }
     }
 
     fn attack_destination(
@@ -388,5 +449,61 @@ impl Skirmish {
             [point.position[0], point.position[1], height],
             victim_position,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::skirmish::{Kind, ground_movement::tests::moving_tank};
+
+    #[test]
+    fn attack_position_routes_around_an_opaque_obstacle_and_shortcuts_when_clear() {
+        let (mut game, actor) = moving_tank();
+        let tank = game.entities[actor].type_index;
+        game.catalog[tank]
+            .kind_of
+            .push("ATTACK_NEEDS_LINE_OF_SIGHT".into());
+        game.ai_rules.attack_uses_line_of_sight = true;
+        let building = game.type_for(0, Kind::Factory).unwrap();
+        let obstacle = game.spawn(building, 0, [355.0, 150.0], true);
+        let target = game.spawn(tank, 1, [420.0, 150.0], true);
+        game.rebuild_navigation();
+        game.refresh_occupancy();
+        let destination = game.object_position(target);
+        assert!(!game.attack_path_satisfied(actor, target, destination));
+        let result = game.attack_approach_path_counted(actor, target, destination);
+        assert!(game.entities[actor].ai.path_request.attack_path);
+        let route = result.route.expect("firing position beyond the obstacle");
+        let endpoint = route.optimized.back().unwrap();
+        let goal = route.exact_endpoint.unwrap_or_else(|| {
+            let point = game.path_position(actor, endpoint.cell);
+            [
+                point[0],
+                point[1],
+                game.movement_layer_height(endpoint.layer, point),
+            ]
+        });
+        assert!(!game.attack_view_blocked(actor, Some(target), goal, destination));
+        game.destroy_maintenance_object(obstacle);
+        game.process_update_destruction();
+        game.rebuild_navigation();
+        assert!(game.attack_path_satisfied(actor, target, destination));
+    }
+
+    #[test]
+    fn queued_attack_target_distinguishes_retained_corpse_from_removed_object() {
+        let (mut game, actor) = moving_tank();
+        let kind = game.entities[actor].type_index;
+        let target = game.spawn(kind, 1, [350.0, 150.0], true);
+        let snapshot = [750.0, 150.0, 0.0];
+        game.entities[target].health = 0.0;
+        game.entities[target].set_effectively_dead(true);
+        assert!(game.entities[target].exists());
+        assert!(!game.entities[target].alive());
+        assert!(game.attack_path_satisfied(actor, target, snapshot));
+        game.destroy_maintenance_object(target);
+        game.process_update_destruction();
+        assert!(!game.entities[target].exists());
+        assert!(!game.attack_path_satisfied(actor, target, snapshot));
     }
 }

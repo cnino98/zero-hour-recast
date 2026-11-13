@@ -167,4 +167,40 @@ mod tests {
         );
         assert!(parse("MiscAudio\nDefectorTimerDingSound =\nEnd").is_err());
     }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_neutral_capture_queues_the_original_tick_once_across_render_updates() {
+        let (assets, mut battle, _) =
+            crate::cleanup_verification::tests::installed_with_animations();
+        let (target, _) =
+            crate::neutral_expanded_verification::prepare(&mut battle.simulation, "TechOilDerrick")
+                .unwrap();
+        assert!(
+            battle
+                .simulation
+                .presentation
+                .capture_events
+                .iter()
+                .any(|event| {
+                    event.target == target && matches!(event.effect, CaptureEffect::Captured)
+                })
+        );
+        let options = generals_assets::game_root()
+            .unwrap()
+            .join("UserData/Options.ini");
+        let mut audio = super::super::load(&assets, &battle.simulation.catalog, &options).unwrap();
+        let tick = audio.capture.sounds[0].clone();
+        assert_eq!(tick, "DefectorTimerTick");
+        audio.update_capture(&battle);
+        audio.update_capture(&battle);
+        let requests: Vec<_> = audio
+            .requests
+            .iter()
+            .filter(|request| request.event == tick)
+            .collect();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].object, Some(target));
+        assert_eq!(battle.simulation.entities[target].owner, 0);
+    }
 }

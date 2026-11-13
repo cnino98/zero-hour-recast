@@ -1,6 +1,8 @@
-//! Fixed-bone particle slots used by the installed collapse/topple structures.
+//! Authored transition particle slots and positional FX callbacks.
 use super::{ContentLine, Error, blocks};
-use generals_sim::skirmish::structure_death::{TransitionParticle, TransitionRules};
+use generals_sim::skirmish::structure_death::{
+    TRANSITION_SLOTS, TransitionEffect, TransitionParticle, TransitionRules,
+};
 
 pub(super) fn load(lines: &[ContentLine]) -> Result<Vec<TransitionRules>, Box<dyn Error>> {
     let mut result = Vec::new();
@@ -12,9 +14,10 @@ pub(super) fn load(lines: &[ContentLine]) -> Result<Vec<TransitionRules>, Box<dy
     }) {
         let mut rules = TransitionRules {
             suppress_water: false,
+            suppress_water_fx: false,
             particles: std::array::from_fn(|_| Vec::new()),
+            effects: std::array::from_fn(|_| Vec::new()),
         };
-        let mut slots = Vec::new();
         for line in module.iter().filter(|line| line.depth == Some(1)) {
             let key = &line.tokens[0];
             if matches!(
@@ -32,6 +35,8 @@ pub(super) fn load(lines: &[ContentLine]) -> Result<Vec<TransitionRules>, Box<dy
                 };
                 if key == "DamageParticleTypes" {
                     rules.suppress_water = suppress;
+                } else if key == "DamageFXTypes" {
+                    rules.suppress_water_fx = suppress;
                 }
                 continue;
             }
@@ -40,41 +45,82 @@ pub(super) fn load(lines: &[ContentLine]) -> Result<Vec<TransitionRules>, Box<dy
                 .enumerate()
                 .find_map(|(index, prefix)| key.strip_prefix(prefix).map(|suffix| (index, suffix)))
                 .ok_or("unknown structure transition field")?;
-            let slot: usize = suffix
-                .strip_prefix("ParticleSystem")
-                .ok_or("structure transition FX/OCL requires original callback adapter")?
-                .parse()?;
-            if !(1..=8).contains(&slot) {
-                return Err("invalid transition particle slot".into());
+            if let Some(slot) = suffix.strip_prefix("ParticleSystem") {
+                let slot = slot_index(slot)?;
+                rules.particles[state].retain(|particle| particle.slot != slot);
+                rules.particles[state].push(particle(line, slot)?);
+            } else if let Some(slot) = suffix.strip_prefix("FXList") {
+                let slot = slot_index(slot)?;
+                rules.effects[state].retain(|effect| effect.slot != slot);
+                rules.effects[state].push(effect(line, slot)?);
+            } else {
+                return Err("unsupported structure transition callback".into());
             }
-            let [_, bone, random, template] = line.tokens.as_slice() else {
-                return Err("invalid structure transition particle".into());
-            };
-            if random != "RandomBone:No" {
-                return Err("random transition bone requires source client-index adapter".into());
-            }
-            slots.push((
-                state,
-                slot,
-                TransitionParticle {
-                    bone: bone
-                        .strip_prefix("Bone:")
-                        .ok_or("invalid transition bone")?
-                        .into(),
-                    template: template
-                        .strip_prefix("PSys:")
-                        .ok_or("invalid transition particle name")?
-                        .into(),
-                    position: [0.0; 3],
-                },
-            ));
         }
         // Native field offsets define slot order, independent of INI line order.
-        slots.sort_by_key(|(state, slot, _)| (*state, *slot));
-        for (state, _, particle) in slots {
-            rules.particles[state].push(particle);
+        for particles in &mut rules.particles {
+            particles.sort_by_key(|particle| particle.slot);
+        }
+        for effects in &mut rules.effects {
+            effects.sort_by_key(|effect| effect.slot);
         }
         result.push(rules);
     }
     Ok(result)
+}
+
+fn slot_index(slot: &str) -> Result<usize, Box<dyn Error>> {
+    let slot: usize = slot.parse()?;
+    if !(1..=TRANSITION_SLOTS).contains(&slot) {
+        return Err("invalid transition slot".into());
+    }
+    Ok(slot)
+}
+
+fn particle(line: &ContentLine, slot: usize) -> Result<TransitionParticle, Box<dyn Error>> {
+    let [_, bone, random, template] = line.tokens.as_slice() else {
+        return Err("invalid transition particle".into());
+    };
+    let random_bone = match random.as_str() {
+        "RandomBone:No" => false,
+        "RandomBone:Yes" => true,
+        _ => return Err("invalid transition random bone field".into()),
+    };
+    Ok(TransitionParticle {
+        slot,
+        bone: bone
+            .strip_prefix("Bone:")
+            .ok_or("invalid transition bone")?
+            .into(),
+        random_bone,
+        template: template
+            .strip_prefix("PSys:")
+            .ok_or("invalid transition particle name")?
+            .into(),
+        position: [0.0; 3],
+    })
+}
+
+fn effect(line: &ContentLine, slot: usize) -> Result<TransitionEffect, Box<dyn Error>> {
+    let [_, location, x, y, z, template] = line.tokens.as_slice() else {
+        return Err("invalid transition FX location".into());
+    };
+    if location != "Loc:" {
+        return Err("unsupported transition FX bone location".into());
+    }
+    let coordinate = |value: &str, axis| {
+        super::super::source_real(value.strip_prefix(axis).ok_or("invalid transition axis")?)
+    };
+    Ok(TransitionEffect {
+        slot,
+        template: template
+            .strip_prefix("FXList:")
+            .ok_or("invalid transition FX name")?
+            .into(),
+        local: [
+            coordinate(x, "X:")?,
+            coordinate(y, "Y:")?,
+            coordinate(z, "Z:")?,
+        ],
+    })
 }

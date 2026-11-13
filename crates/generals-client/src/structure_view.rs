@@ -112,11 +112,11 @@ impl Structures {
             VisualAction::TransitionParticle {
                 module,
                 ref template,
-                local,
+                ref positions,
             } => {
                 if let Some(snapshot) = &event.effect {
-                    let system =
-                        particles.structure_particle(battle, snapshot, template, local, animations);
+                    let system = particles
+                        .structure_particle(battle, snapshot, template, positions, animations);
                     self.transitions
                         .entry((event.object, module))
                         .or_default()

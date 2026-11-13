@@ -1,5 +1,5 @@
 use super::*;
-use crate::skirmish::DamageType;
+use crate::skirmish::{DamageType, partition::Identity};
 
 fn scene() -> (Skirmish, usize, usize, usize) {
     let (mut game, jet) = fixture();
@@ -99,7 +99,10 @@ fn nonbuilding_crash_keeps_jet_and_tree_contact_triggers_hit_ground_on_next_norm
         game.entities[bystander].health.to_bits(),
         neighbor.to_bits()
     );
-    assert_eq!(game.entities[jet].physics_last_collidee(), Some(tree));
+    assert_eq!(
+        game.entities[jet].physics_last_collidee(),
+        Some(Identity::Actor(tree))
+    );
     assert_eq!(
         game.presentation.object_fx_events.last().unwrap().effect,
         "Crash1Vet0"
@@ -125,7 +128,10 @@ fn force_disabled_still_records_contact_without_damage_and_mobile_ai_contact_is_
         .allow_force = false;
     let before = game.entities[target].health;
     game.update_ground_contacts();
-    assert_eq!(game.entities[jet].physics_last_collidee(), Some(target));
+    assert_eq!(
+        game.entities[jet].physics_last_collidee(),
+        Some(Identity::Actor(target))
+    );
     assert!(game.entities[jet].jet_corpse());
     assert_eq!(game.entities[target].health.to_bits(), before.to_bits());
     let kind = game.entities[target].type_index;
@@ -158,13 +164,158 @@ fn ordinary_physics_tree_contact_survives_the_jet_death_constructor() {
     let tree = game.spawn(tree_kind, 1, [300.0, 300.0], true);
     game.set_flight_position(jet, [300.0, 300.0, 65.0]);
     game.physical_contact(jet, tree);
-    assert_eq!(game.entities[jet].physics_last_collidee(), Some(tree));
+    assert_eq!(
+        game.entities[jet].physics_last_collidee(),
+        Some(Identity::Actor(tree))
+    );
     game.apply_typed_hit(jet, jet, 999_999.0, DeathType::Normal);
-    assert_eq!(game.entities[jet].physics_last_collidee(), Some(tree));
+    assert_eq!(
+        game.entities[jet].physics_last_collidee(),
+        Some(Identity::Actor(tree))
+    );
     game.update_jet_slow_death(jet, 0);
     assert_eq!(
         game.presentation.object_fx_events.last().unwrap().effect,
         "JetPhase3"
     );
     assert!(game.object_position(jet)[2] > game.ground_height(game.entities[jet].position));
+}
+
+#[test]
+fn jet_crash_uses_destination_layer_and_bridge_slop_instead_of_terrain_height() {
+    for (height, hit_bridge) in [(80.5, true), (40.0, false)] {
+        let (mut game, jet) = fixture();
+        let layer = game
+            .movement_terrain
+            .add_bridge(
+                crate::terrain::BridgeGeometry {
+                    from: [250.0, 300.0, 80.0],
+                    to: [350.0, 300.0, 80.0],
+                    corners: [
+                        [250.0, 325.0, 80.0],
+                        [250.0, 275.0, 80.0],
+                        [350.0, 325.0, 80.0],
+                        [350.0, 275.0, 80.0],
+                    ],
+                },
+                |_| 0.0,
+            )
+            .unwrap();
+        game.apply_typed_hit(jet, jet, 999_999.0, DeathType::Normal);
+        game.set_object_position(jet, [300.0, 300.0, height]);
+        game.update_jet_slow_death(jet, 0);
+        assert_eq!(game.entities[jet].layer, if hit_bridge { layer } else { 1 });
+        assert_eq!(
+            game.presentation
+                .object_fx_events
+                .iter()
+                .any(|event| event.effect == "JetPhase3"),
+            hit_bridge
+        );
+        assert!(game.entities[jet].jet_corpse());
+    }
+}
+
+#[test]
+fn dying_jet_hits_logical_map_shrubbery_above_terrain_but_respects_no_collide_and_height() {
+    use crate::{
+        collision_geometry::{Geometry, Shape},
+        skirmish::MapWorldObject,
+    };
+
+    for (height, no_collide, impact) in [
+        (10.0, false, true),
+        (30.0, false, false),
+        (10.0, true, false),
+    ] {
+        let (mut game, jet) = fixture();
+        let mut kinds = vec!["IMMOBILE".into(), "SHRUBBERY".into()];
+        if no_collide {
+            kinds.push("NO_COLLIDE".into());
+        }
+        game.layout.world_objects.push(MapWorldObject {
+            template: "MapShrubbery".into(),
+            kind_of: kinds,
+            position: [300.0, 300.0, 0.0],
+            angle: 0.0,
+            geometry: Geometry {
+                shape: Shape::Cylinder,
+                is_small: true,
+                major: 4.0,
+                minor: 4.0,
+                height: 15.0,
+            },
+            original_team: "teamCivilian".into(),
+        });
+        game.observe_map_partition(0);
+        game.update_ground_contacts();
+        game.set_object_position(jet, [300.0, 300.0, 10.0]);
+        game.update_ground_contacts();
+        assert_eq!(game.entities[jet].physics_last_collidee(), None);
+
+        game.set_object_position(jet, [300.0, 300.0, 100.0]);
+        game.apply_typed_hit(jet, jet, 999_999.0, DeathType::Normal);
+        game.set_object_position(jet, [300.0, 300.0, height]);
+        game.update_ground_contacts();
+        game.tick += 1;
+        game.update_jet_slow_death(jet, 0);
+        assert_eq!(
+            game.entities[jet].physics_last_collidee(),
+            impact.then_some(Identity::Map(0))
+        );
+        assert_eq!(
+            game.presentation
+                .object_fx_events
+                .iter()
+                .any(|event| event.effect == "JetPhase3"),
+            impact
+        );
+        assert!(game.object_position(jet)[2] > game.ground_height([300.0, 300.0]));
+    }
+}
+
+#[test]
+fn ai_physics_uses_effective_death_for_contacts_with_both_immobile_identities() {
+    use crate::{
+        collision_geometry::{Geometry, Shape},
+        skirmish::MapWorldObject,
+    };
+
+    for effective_dead in [false, true] {
+        let (mut game, jet) = fixture();
+        game.entities[jet].health = if effective_dead { 50.0 } else { 0.0 };
+        game.entities[jet].set_effectively_dead(effective_dead);
+        let geometry = || Geometry {
+            shape: Shape::Cylinder,
+            is_small: true,
+            major: 4.0,
+            minor: 4.0,
+            height: 15.0,
+        };
+        let kind = game.type_for(1, Kind::Barracks).unwrap();
+        game.catalog[kind].kind_of = vec!["IMMOBILE".into(), "SHRUBBERY".into()];
+        game.catalog[kind].geometry = geometry();
+        let tree = game.spawn(kind, 1, [300.0, 300.0], true);
+        game.layout.world_objects.push(MapWorldObject {
+            template: "MapShrubbery".into(),
+            kind_of: vec!["IMMOBILE".into(), "SHRUBBERY".into()],
+            position: [400.0, 300.0, 0.0],
+            angle: 0.0,
+            geometry: geometry(),
+            original_team: "teamCivilian".into(),
+        });
+        game.observe_map_partition(0);
+        game.update_ground_contacts();
+        for (position, expected) in [
+            ([300.0, 300.0, 10.0], Identity::Actor(tree)),
+            ([400.0, 300.0, 10.0], Identity::Map(0)),
+        ] {
+            game.set_object_position(jet, position);
+            game.update_ground_contacts();
+            assert_eq!(
+                game.entities[jet].physics_last_collidee(),
+                effective_dead.then_some(expected)
+            );
+        }
+    }
 }

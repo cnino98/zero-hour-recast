@@ -1,10 +1,13 @@
 //! Original stealth status masks and independently scheduled detector modules.
 use super::{blocks, duration_frames, field, scalar, text};
-use generals_assets::content::{ContentLine, Declaration};
+use generals_assets::content::{ContentFile, ContentLine, Declaration};
 use generals_sim::skirmish::stealth::{self, Detector, Rules};
 use std::error::Error;
 
-pub(super) fn load(object: &Declaration) -> Result<Option<Rules>, Box<dyn Error>> {
+pub(super) fn load(
+    files: &[ContentFile],
+    object: &Declaration,
+) -> Result<Option<Rules>, Box<dyn Error>> {
     let modules = blocks(&object.lines, 0, "Behavior")?;
     let Some((order, module)) = modules.iter().enumerate().find(|(_, module)| {
         module[0]
@@ -14,9 +17,6 @@ pub(super) fn load(object: &Declaration) -> Result<Option<Rules>, Box<dyn Error>
     }) else {
         return Ok(None);
     };
-    if boolean(module, "DisguisesAsTeam", false)? {
-        return Err("visual disguise module still requires its source consumer".into());
-    }
     let mut upgrades = Vec::new();
     for upgrade in &modules {
         if upgrade[0]
@@ -52,6 +52,48 @@ pub(super) fn load(object: &Declaration) -> Result<Option<Rules>, Box<dyn Error>
             percent(module, "FriendlyOpacityMax", 1.0)?,
         ],
         pulse_frames: field(module, 1, "PulseFrequency").map_or(Ok(30), duration_frames)?,
+        disguise: disguise(files, module, object)?,
+    }))
+}
+
+fn disguise(
+    files: &[ContentFile],
+    module: &[ContentLine],
+    object: &Declaration,
+) -> Result<Option<stealth::DisguiseRules>, Box<dyn Error>> {
+    if !boolean(module, "DisguisesAsTeam", false)? {
+        return Ok(None);
+    }
+    let effect = |key| -> Result<String, Box<dyn Error>> {
+        let name = field(module, 1, key)
+            .map(scalar)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(super::instant_death::nullable(files, "FXList", name)?
+            .map_or_else(String::new, |fx| fx.name.clone()))
+    };
+    let sounds = blocks(&object.lines, 0, "UnitSpecificSounds")?;
+    let sound = |key| -> Result<String, Box<dyn Error>> {
+        Ok(sounds
+            .iter()
+            .rev()
+            .find_map(|block| field(block, 1, key))
+            .map(scalar)
+            .transpose()?
+            .unwrap_or_default()
+            .into())
+    };
+    Ok(Some(stealth::DisguiseRules {
+        transition: field(module, 1, "DisguiseTransitionTime").map_or(Ok(0), duration_frames)?,
+        reveal_transition: field(module, 1, "DisguiseRevealTransitionTime")
+            .map_or(Ok(0), duration_frames)?,
+        effect: effect("DisguiseFX")?,
+        reveal_effect: effect("DisguiseRevealFX")?,
+        sounds: [
+            sound("DisguiseStarted")?,
+            sound("DisguiseRevealedSuccess")?,
+            sound("DisguiseRevealedFailure")?,
+        ],
     }))
 }
 
@@ -205,7 +247,7 @@ mod tests {
         let file = fixture(b"Object Pathfinder\nBehavior = StealthDetectorUpdate Scan\nDetectionRate = 500\nEnd\nBehavior = StealthUpdate Cloak\nStealthDelay = 0\nStealthForbiddenConditions = MOVING\nMoveThresholdSpeed = 3\nFriendlyOpacityMin = 30%\nFriendlyOpacityMax = 80%\nPulseFrequency = 500\nEnd\nEnd\n");
         let files = [file];
         let object = super::super::definition(&files, "Object", "Pathfinder").unwrap();
-        let stealth = load(object).unwrap().unwrap();
+        let stealth = load(&files, object).unwrap().unwrap();
         assert_eq!(stealth.delay, 0);
         assert_eq!(stealth.forbidden, stealth::MOVING);
         assert_eq!(
@@ -228,7 +270,7 @@ mod tests {
         let file = fixture(b"Object Rebel\nBehavior = StealthUpdate Cloak\nStealthDelay = 2500\nStealthForbiddenConditions = ATTACKING USING_ABILITY\nForbiddenStatus = SOLD UNDER_CONSTRUCTION\nInnateStealth = No\nEnd\nBehavior = StealthUpgrade Upgrade\nTriggeredBy = Upgrade_GLACamouflage\nEnd\nEnd\n");
         let files = [file];
         let object = super::super::definition(&files, "Object", "Rebel").unwrap();
-        let stealth = load(object).unwrap().unwrap();
+        let stealth = load(&files, object).unwrap().unwrap();
         assert!(!stealth.innate);
         assert_eq!(stealth.delay, 75);
         assert_eq!(stealth.upgrades, ["Upgrade_GLACamouflage"]);

@@ -78,6 +78,14 @@ pub(super) fn names(catalog: &[UnitType]) -> impl Iterator<Item = &str> {
                     rules.feedback.capture_tick.as_str(),
                 ])
             }))
+            .chain(
+                unit.behavior
+                    .stealth
+                    .as_ref()
+                    .and_then(|rules| rules.disguise.as_ref())
+                    .into_iter()
+                    .flat_map(|rules| rules.sounds.iter().map(String::as_str)),
+            )
             .chain(helicopter_loops)
             .chain(bounces)
             .chain(deployment)

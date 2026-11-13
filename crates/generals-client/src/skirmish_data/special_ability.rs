@@ -260,3 +260,7 @@ mod tests {
         assert!(rules[1].approach.face_target);
     }
 }
+
+#[cfg(test)]
+#[path = "burton.rs"]
+mod burton_tests;

@@ -158,6 +158,10 @@ fn update(
             resources.meshes.remove(&mesh.0);
         }
         for index in 0..water.materials.len() {
+            // BaseHeightMapRenderObjClass::renderShoreLinesSorted skips zero shoreline tiles.
+            if index == 1 && water.shoreline.count_vertices() == 0 {
+                continue;
+            }
             let mut mesh = match index {
                 0 => shore::screen(),
                 1 => water.shoreline.clone(),

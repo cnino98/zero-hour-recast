@@ -34,14 +34,24 @@ HEADERS = {
 }
 AUDIO_COMPLETE = "Audio verification PASSED: original click/voice/weapon events and all three authored initial music tracks reached advancing output sinks."
 SCALING_TEST = "skirmish::tests::performance::simulation_scaling"
-COUNTS = {"installed": 31, "native": 110, "benchmarks": 3, "profiles": 3}
+COUNTS = {"installed": 31, "native": 121, "benchmarks": 3, "profiles": 3}
 REQUIRED_IMAGES = {
+    "native-parachute-terrain-capture": ("parachute-bridge-canopy.png", "parachute-bridge-landed.png", "parachute-water-canopy.png", "parachute-water-destruction.png"),
+    "native-neutral-damage-capture": ("neutral-tech-damaged.png", "neutral-tech-death.png"),
+    "native-hijacker-airborne-capture": ("hijacker-airborne-canopy.png", "hijacker-airborne-landed.png"),
+    "native-pilot-ejection-capture": ("ejected-pilot-canopy.png", "ejected-pilot-landed.png"),
+    "native-comanche-countermeasures-capture": ("comanche-countermeasures.png",),
+    "native-mig-crash-capture": ("mig-crash-falling.png", "mig-crash-hulk.png"),
+    "native-burton-capture": ("burton-knife.png", "burton-c4.png", "burton-c4-detonation.png"),
+    "native-bomb-truck-capture": ("bomb-truck-payload.png", "bomb-truck-disguise.png", "bomb-truck-tank-treads.png", "bomb-truck-halftrack-treads.png", "bomb-truck-detonation.png"),
+    "native-combat-bike-capture": ("combat-bike-rebel.png", "combat-bike-tracks.png", "combat-bike-terrorist.png", "combat-bike-hulk.png"),
     "native-smoke-shell-flow": ("shell-flow-menu.png", "shell-flow-options.png", "shell-flow-setup.png", "shell-flow-error.png", "shell-flow-selected.png", "shell-flow-loading.png", "shell-flow-paid-build.png", "shell-flow.png"),
     "native-lightpulse-capture": ("lightpulse-before.png", "lightpulse-active.png", "lightpulse.png"),
     "native-bridge-destruction-capture": ("bridge-intact-radar.png", "bridge-hydrant-water.png", "bridge-hydrant-tail.png", "bridge-hydrant-retired.png", "bridge-rubble-radar-retained.png", "bridge-destroyed.png"),
     "native-reinforcement-pad-usa-capture": ("reinforcement-pad-plane.png", "reinforcement-pad-descent.png", "reinforcement-pad.png"),
     "native-reinforcement-pad-china-capture": ("reinforcement-pad-plane.png", "reinforcement-pad-descent.png", "reinforcement-pad.png"),
     "native-reinforcement-pad-gla-capture": ("reinforcement-pad-plane.png", "reinforcement-pad-descent.png", "reinforcement-pad.png"),
+    "native-supply-drop-zone-capture": ("supply-drop-zone-countdown.png", "supply-drop-zone.png"),
     "native-world-rain-capture": ("world-rain-initial.png", "world-rain-lightning.png", "world-rain-restarted.png", "world-rain.png", "world-tree-before.png", "world-tree-after.png", "world-tree-initial-fogged.png", "world-tree-fogged.png", "world-tree-revealed.png"),
     "native-world-bridge-capture": ("world-bridge-crossing.png", "world-bridge.png"),
     "native-structure-collapse-capture": ("structure-collapse-falling.png", "structure-collapse.png"),
@@ -50,6 +60,7 @@ REQUIRED_IMAGES = {
     "native-microwave-capture": ("microwave-disabled-building.png", "microwave-garrison-cleared.png",
                                  "microwave-emitter-first.png", "microwave-emitter.png"),
     "native-repair-bay-capture": ("repair-bay.png",),
+    "native-repair-pad-capture": ("repair-pad.png",),
     "native-angry-mob-capture": ("angry-mob-paid-original-bodies.png", "angry-mob-normal-weapons.png", "angry-mob-normal-rock.png", "angry-mob-normal-molotov.png", "angry-mob-upgraded-molotov.png", "angry-mob.png"),
     "native-battle-bus-capture": ("battle-bus-loaded.png", "battle-bus-thrown.png", "battle-bus-held.png", "battle-bus.png"),
     "native-stealth-fighter-capture": ("stealth-fighter-parked.png", "stealth-fighter-airborne.png", "stealth-fighter.png"),
@@ -66,8 +77,9 @@ REQUIRED_IMAGES = {
     "native-map-selection-six-capture": ("map-selection.png", "map-selection-six.png"),
     "native-map-selection-eight-capture": ("map-selection.png", "map-selection-eight.png"),
 
-    "native-sabotage-capture": ("sabotage-before-command.png", "sabotage.png"),
+    "native-sabotage-capture": ("sabotage-cliff.png", "sabotage-before-command.png", "sabotage.png"),
     "native-smoke-barracks-healing": ("barracks-healing-entry.png", "barracks-healing-contained.png", "barracks-healing.png"),
+    "native-smoke-chinook": ("chinook-landing.png", "chinook.png"),
     "native-smoke-scout": ("scout-body.png", "scout.png"),
     "native-smoke-disarm": ("disarm-dig.png", "disarm-cleared.png", "disarm.png"),
     "native-smoke-aircraft-crash": (
@@ -187,7 +199,8 @@ def source_identity(project):
     configuration = project / ".cargo/config.toml"
     if configuration.is_file():
         paths.add(configuration)
-    files = {str(path.relative_to(project)): digest(path) for path in sorted(paths)}
+    files = {str(path.relative_to(project)): digest(path) for path in sorted(paths)
+             if path.name != ".DS_Store" and not path.name.startswith("._")}
     combined = hashlib.sha256()
     for name, identity in files.items():
         combined.update(name.encode() + b"\0" + identity.encode() + b"\n")

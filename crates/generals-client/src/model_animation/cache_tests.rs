@@ -7,6 +7,7 @@ fn visibility_only_pose_updates_without_mesh_modified_event() {
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
         .init_asset::<Mesh>();
     let binding = Arc::new(model_render::PartBinding {
+        linear_mapper: None,
         pass: 0,
         mesh: 0,
         vertices: vec![0, 1, 2],
@@ -95,6 +96,7 @@ fn repeated_pose_does_not_mark_mesh_modified_but_changed_pose_does() {
         AnimatedPart {
             model: 0,
             binding: Arc::new(model_render::PartBinding {
+                linear_mapper: None,
                 pass: 0,
                 mesh: 0,
                 vertices: vec![0, 1, 2],

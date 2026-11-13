@@ -47,6 +47,7 @@ mod sabotage;
 mod salvage;
 mod strategy;
 mod verification;
+mod wheels;
 pub use capture::CaptureAudioInspection;
 pub use contain::record as container_tick;
 pub use drones::repair_sound;
@@ -132,6 +133,13 @@ pub enum Voice {
     Disarm,
     SpecialPower(usize),
     CombatDrop,
+    BurtonKnifeMode,
+    BurtonTimedMode,
+    BurtonRemoteMode,
+    BurtonKnifeAttack,
+    BombTruckDisguiseMode,
+    BombTruckBioBombMode,
+    BombTruckHighExplosiveMode,
 }
 
 impl Voice {
@@ -169,6 +177,13 @@ impl Voice {
             Self::Disarm => 29,
             Self::SpecialPower(module) => data::VOICE_KEYS.len() + module,
             Self::CombatDrop => 30,
+            Self::BurtonKnifeMode => 31,
+            Self::BurtonTimedMode => 32,
+            Self::BurtonRemoteMode => 33,
+            Self::BurtonKnifeAttack => 34,
+            Self::BombTruckDisguiseMode => 35,
+            Self::BombTruckBioBombMode => 36,
+            Self::BombTruckHighExplosiveMode => 37,
         }
     }
 }
@@ -242,6 +257,23 @@ impl VoiceRequest {
                         && unit.behavior.contamination.is_empty())
                     || (matches!(voice, Voice::FlameMode | Voice::FlameLocation)
                         && unit.name != "ChinaTankDragon")
+                    || (matches!(
+                        voice,
+                        Voice::BurtonKnifeMode
+                            | Voice::BurtonTimedMode
+                            | Voice::BurtonRemoteMode
+                            | Voice::BurtonKnifeAttack
+                    ) && unit.name != "AmericaInfantryColonelBurton")
+                    || (matches!(
+                        voice,
+                        Voice::BombTruckDisguiseMode
+                            | Voice::BombTruckBioBombMode
+                            | Voice::BombTruckHighExplosiveMode
+                    ) && unit
+                        .behavior
+                        .stealth
+                        .as_ref()
+                        .is_none_or(|rules| rules.disguise.is_none()))
                     || (matches!(voice, Voice::RocketPodMode)
                         && unit.name != "AmericaVehicleComanche")
                     || (matches!(voice, Voice::Move | Voice::Salvage)
@@ -273,6 +305,7 @@ struct UnitAudio {
     weapon: Vec<String>,
     weapon_loops: Vec<u32>,
     rapid_fire: String,
+    wheels: [String; 2],
     hacker: [String; 3],
     capture: [String; 2],
     lotus: Vec<[String; 6]>,
@@ -284,7 +317,7 @@ struct UnitAudio {
 
 struct Request {
     uninterruptible: bool,
-    firing: Option<Arc<()>>,
+    handle: Option<Arc<()>>,
     event: String,
     object: Option<usize>,
     projectile: Option<u64>,
@@ -308,6 +341,7 @@ pub struct SourceAudio {
     random: Arc<Mutex<random::Random>>,
     aircraft: aircraft::State,
     firing: firing::State,
+    wheels: wheels::State,
     hazards: hazards::State,
     fires: fire::State,
     capture: capture::State,
@@ -411,6 +445,7 @@ pub fn load(
         random: Arc::new(Mutex::new(random::Random::new(seed))),
         aircraft,
         firing: firing::State::new(),
+        wheels: wheels::State::new(),
         hazards: hazards::State::new(),
         fires,
         capture,
@@ -460,6 +495,7 @@ pub fn load_shell(assets: &VirtualAssets, options: &Path) -> Result<SourceAudio,
         random: Arc::new(Mutex::new(random::Random::new(0))),
         aircraft: aircraft::State::new(),
         firing: firing::State::new(),
+        wheels: wheels::State::new(),
         hazards: hazards::State::new(),
         fires: fire::State::new(),
         capture: capture::State::new(std::array::from_fn(|_| String::new())),
@@ -508,6 +544,7 @@ impl UnitAudio {
             .map(|binding| binding.name.as_str())
             .chain(self.weapon.iter().map(String::as_str))
             .chain(std::iter::once(self.rapid_fire.as_str()))
+            .chain(self.wheels.iter().map(String::as_str))
             .chain(self.hacker.iter().map(String::as_str))
             .chain(self.capture.iter().map(String::as_str))
             .chain(self.lotus.iter().flatten().map(String::as_str))
@@ -586,6 +623,9 @@ impl SourceAudio {
                 | Voice::LotusCaptureMode
                 | Voice::LotusVehicleMode
                 | Voice::LotusCashMode
+                | Voice::BombTruckDisguiseMode
+                | Voice::BombTruckBioBombMode
+                | Voice::BombTruckHighExplosiveMode
         ))
         .then_some(object);
         self.units[unit].voices[index].previous = self.queue(&name, object, None, previous, false);
@@ -643,7 +683,7 @@ impl SourceAudio {
         drop(random);
         self.requests.push(Request {
             uninterruptible,
-            firing: None,
+            handle: None,
             event: name.to_owned(),
             object,
             projectile: None,

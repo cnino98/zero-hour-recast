@@ -9,7 +9,7 @@ use super::{
 #[derive(Component)]
 pub(super) struct Playing {
     pub(super) event: String,
-    firing: Option<std::sync::Arc<()>>,
+    handle: Option<std::sync::Arc<()>>,
     pub(super) sample_names: Vec<String>,
     pub(super) object: Option<usize>,
     projectile: Option<u64>,
@@ -37,7 +37,7 @@ impl Playing {
         let delay_ms = looping.take_continuation()?;
         Some(Request {
             uninterruptible: false,
-            firing: self.firing.clone(),
+            handle: self.handle.clone(),
             event: self.event.clone(),
             object: self.object,
             projectile: self.projectile,
@@ -64,11 +64,20 @@ impl Playing {
             }
         } else if self.position.is_some()
             && let Some(id) = self.object
-            && game.entities.get(id).is_some_and(|unit| {
-                unit.alive() || unit.physical_present() || unit.corpse_present()
-            })
         {
-            self.position = Some(playtest_view::unit_position(game, id) * 10.0);
+            if game
+                .entities
+                .get(id)
+                .is_some_and(generals_sim::skirmish::Entity::exists)
+            {
+                self.position = Some(playtest_view::unit_position(game, id) * 10.0);
+            } else if let Some(looping) = &self.looping {
+                // AudioEventRTS retains the last position and marks its missing
+                // owner dead; Miles then requests stop at the next completion.
+                looping
+                    .stop
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
         }
     }
 }
@@ -139,6 +148,9 @@ pub(super) fn update(
             audio.voice(&request);
         }
     }
+    if let Some(battle) = battle {
+        stop_deleted_owners(&audio.requests, &battle.simulation);
+    }
     let mut active = Vec::new();
     let mut continuations = Vec::new();
     let mut streams = Vec::new();
@@ -202,6 +214,24 @@ pub(super) fn update(
     // Miles processes requests before the playing list. A completion observed
     // this update cannot spend its first delay quantum until the next update.
     audio.requests.extend(continuations);
+}
+
+fn stop_deleted_owners(requests: &[Request], game: &generals_sim::skirmish::Skirmish) {
+    for request in requests {
+        if request.position.is_some()
+            && request.object.is_some_and(|id| {
+                !game
+                    .entities
+                    .get(id)
+                    .is_some_and(generals_sim::skirmish::Entity::exists)
+            })
+            && let Some(looping) = &request.looping
+        {
+            looping
+                .stop
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
 }
 
 fn play_requests(
@@ -320,7 +350,7 @@ pub(super) fn retire_failed_audio(
     // sources are already decoded/in Assets, so no sink means opening failed.
     // Native protection and firing handles survive only successful output.
     for (entity, sound) in &playing {
-        if audio.events[&sound.event].speech || sound.firing.is_some() {
+        if audio.events[&sound.event].speech || sound.handle.is_some() {
             commands.entity(entity).despawn();
             if audio.events[&sound.event].speech {
                 audio.speech_disallowed = false;
@@ -415,7 +445,7 @@ fn spawn(
                 .with_volume(Volume::Linear(volume))
                 .with_speed(request.pitch),
             Playing {
-                firing: request.firing,
+                handle: request.handle,
                 event: request.event,
                 sample_names: request.sample_names,
                 object: request.object,
@@ -453,6 +483,7 @@ fn reset_generation(
         audio.aircraft.reset();
         audio.object_sounds.reset();
         audio.firing.reset();
+        audio.wheels.reset();
         audio.hazards.reset();
         audio.fires.reset();
         audio.capture.reset();
@@ -963,7 +994,7 @@ mod tests {
 
     fn request() -> Request {
         Request {
-            firing: None,
+            handle: None,
             uninterruptible: false,
             event: "voice".to_owned(),
             object: Some(7),

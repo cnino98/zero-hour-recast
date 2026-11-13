@@ -36,7 +36,7 @@ fn zero_health_physical_contacts_deliver_both_callbacks_and_clear_only_immobile_
         let actor = &game.entities[id];
         assert!(!actor.alive() && actor.physical_present());
         let state = actor.physical.as_ref().unwrap();
-        assert_eq!(state.last_collidee, Some(other));
+        assert_eq!(state.last_collidee, Some(Identity::Actor(other)));
         let expected = if id == ids[0] {
             [1.0_f32, 2.0, 3.0]
         } else {
@@ -85,7 +85,7 @@ fn static_side_contact_zeroes_old_velocity_and_applies_native_stiffness_force() 
         [0.0_f32; 3].map(f32::to_bits)
     );
     assert_eq!(state.motion.acceleration[0].to_bits(), (-1.0_f32).to_bits());
-    assert_eq!(state.last_collidee, Some(target));
+    assert_eq!(state.last_collidee, Some(Identity::Actor(target)));
     assert!(game.entities[id].physical_present());
 }
 
@@ -110,6 +110,12 @@ fn ocl_primary_ignore_survives_ai_goal_changes_and_suppresses_reverse_physics() 
     game.entities[child].set_physics_ignored_object(None);
     game.physical_contact(child, source);
     game.physical_contact(source, child);
-    assert_eq!(game.entities[child].physics_last_collidee(), Some(source));
-    assert_eq!(game.entities[source].physics_last_collidee(), Some(child));
+    assert_eq!(
+        game.entities[child].physics_last_collidee(),
+        Some(Identity::Actor(source))
+    );
+    assert_eq!(
+        game.entities[source].physics_last_collidee(),
+        Some(Identity::Actor(child))
+    );
 }

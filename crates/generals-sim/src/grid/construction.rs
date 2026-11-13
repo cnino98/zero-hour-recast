@@ -401,3 +401,44 @@ impl BuiltPath {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{CellNode, LineCheck, prepend_cells};
+
+    #[test]
+    fn unpinched_cliff_allows_a_bent_shortcut_without_losing_ground_anchors() {
+        let raw = [
+            ([1, 2], [15.0, 25.0, 0.0], false),
+            ([2, 2], [25.0, 25.0, 0.0], false),
+            ([3, 2], [35.0, 25.0, 8.0], true),
+            ([4, 3], [45.0, 35.0, 19.0], true),
+            ([5, 3], [55.0, 35.0, 25.0], false),
+            ([6, 3], [65.0, 35.0, 25.0], false),
+        ];
+        for pinched in [false, true] {
+            let cells = raw.map(|(cell, position, cliff)| CellNode {
+                cell,
+                position,
+                layer: 1,
+                cliff,
+                pinched: pinched && cell == [4, 3],
+                blocked_by_ally: false,
+            });
+            let mut path = prepend_cells(&cells, raw[0].1).unwrap();
+            path.optimize(|layer, from, to| {
+                assert_eq!(layer, 1);
+                LineCheck {
+                    passable: from[0] > 25.0,
+                    unpinched_cliff: !pinched && to.map(f32::to_bits) == raw[3].1.map(f32::to_bits),
+                }
+            });
+            let expected: &[usize] = if pinched {
+                &[0, 1, 2, 4, 5]
+            } else {
+                &[0, 1, 3, 4, 5]
+            };
+            assert_eq!(path.optimized, expected);
+        }
+    }
+}

@@ -41,6 +41,7 @@ pub struct DropRules {
     pub wait_for_ropes: bool,
 }
 
+#[derive(Debug)]
 pub(super) enum Flight {
     Flying,
     Landing([f32; 3]),
@@ -49,6 +50,7 @@ pub(super) enum Flight {
     CombatDrop,
 }
 
+#[derive(Debug)]
 pub(in crate::skirmish) enum Phase {
     Takeoff,
     Land,
@@ -146,6 +148,21 @@ impl Entity {
             state.height = height;
             state.velocity = velocity;
         }
+    }
+
+    /// Read-only Chinook flight state for native capture diagnostics.
+    #[must_use]
+    pub fn chinook_diagnostic(&self) -> String {
+        self.chinook.as_ref().map_or_else(String::new, |state| {
+            format!(
+                "flight={:?} flight_phase={:?} pending={} combat_destination_z={:.3} attached_ropes={}",
+                state.flight,
+                state.phase,
+                state.pending.is_some(),
+                state.combat_destination_z,
+                state.ropes.len()
+            )
+        })
     }
 
     #[must_use]

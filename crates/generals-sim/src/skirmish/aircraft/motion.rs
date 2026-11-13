@@ -124,14 +124,9 @@ impl Skirmish {
         id: usize,
         point: [f32; 3],
     ) {
-        let position = self.object_position(id);
-        let dx = position[0] - point[0];
-        let dy = position[1] - point[1];
-        let xx = dx * dx;
-        let yy = dy * dy;
         let actor = &self.entities[id];
         let speed = locomotor::speed(actor, &self.catalog[actor.type_index]) * (1.0 / 30.0);
-        self.set_explicit_flight_goal(id, point, (xx + yy).sqrt(), speed, false);
+        self.set_explicit_flight_goal(id, point, speed);
     }
 }
 

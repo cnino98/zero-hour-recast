@@ -75,7 +75,7 @@ impl Skirmish {
         let money = rules.money.wrapping_add_signed(boost);
         let owner = actor.owner;
         let position = self.object_position(item);
-        self.players[owner].cash = self.players[owner].cash.wrapping_add(money);
+        self.deposit_native_money(owner, money);
         self.players[owner].statistics.money_earned = self.players[owner]
             .statistics
             .money_earned
@@ -141,6 +141,8 @@ mod tests {
         assert!(!game.money_crate_contact(collector, item));
         assert_eq!(game.players[0].cash, cash + 1500);
         assert_eq!(game.presentation.money_crate_events.len(), 1);
+        assert_eq!(game.presentation.money_deposit_events.len(), 1);
+        assert_eq!(game.presentation.money_deposit_events[0].owner, 0);
     }
 
     #[test]

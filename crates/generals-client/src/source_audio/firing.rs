@@ -123,7 +123,7 @@ impl SourceAudio {
                     let handle = Arc::new(());
                     entry.handle = Arc::downgrade(&handle);
                     entry.stop = request.looping.as_ref().map(|looping| looping.stop.clone());
-                    request.firing = Some(handle);
+                    request.handle = Some(handle);
                 }
                 self.firing.active.insert(object, entry);
             }

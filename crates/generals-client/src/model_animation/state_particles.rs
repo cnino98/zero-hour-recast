@@ -68,14 +68,14 @@ impl super::Animations {
         module: usize,
         name: &str,
     ) -> Result<Option<generals_assets::w3d::BoneControl>, generals_assets::w3d::Error> {
-        let Some(draw) = self
-            .draws
-            .get(unit.type_index)
-            .and_then(|draws| draws.get(module))
-        else {
+        let Some(player) = players.0.get(module) else {
             return Ok(None);
         };
-        let Some(player) = players.0.get(module) else {
+        let Some(draw) = self
+            .draws
+            .get(player.draw_type(unit.type_index))
+            .and_then(|draws| draws.get(module))
+        else {
             return Ok(None);
         };
         let Some(state) = draw.states.get(player.state) else {
@@ -103,6 +103,12 @@ impl super::Animations {
 }
 
 impl Players {
+    pub(crate) fn has_render_object(&self, module: usize) -> bool {
+        self.0
+            .get(module)
+            .is_some_and(|player| player.model.is_some())
+    }
+
     pub fn particle_states(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.0
             .iter()

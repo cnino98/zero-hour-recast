@@ -24,7 +24,14 @@ impl Skirmish {
         if !self.can_sell(owner, id) {
             return Err("This structure cannot be sold");
         }
-        self.set_order(id, Order::Idle);
+        self.deselect_dead_object(id);
+        let actor = &mut self.entities[id];
+        actor.maintenance.selling = Some(self.tick);
+        actor.maintenance.instance_flags |= super::INSTANCE_UNSELECTABLE;
+        actor.construction_percent = 99.9;
+        actor.build_progress = actor.construction_percent / 100.0;
+        actor.drawable.model_conditions.construction = ConstructionState::Active;
+        actor.maintenance.animation_duration = Some((self.tick, 45, false));
         self.refund_production_on_death(id);
         self.remove_garrison_contents(id);
         self.sell_tunnel(id);
@@ -34,12 +41,21 @@ impl Skirmish {
                 self.set_order(rider, Order::ExitContainer);
             }
         }
-        let actor = &mut self.entities[id];
-        actor.maintenance.selling = Some(self.tick);
-        actor.maintenance.instance_flags |= super::INSTANCE_UNSELECTABLE;
-        actor.construction_percent = 99.9;
-        actor.build_progress = actor.construction_percent / 100.0;
-        actor.drawable.model_conditions.construction = ConstructionState::Active;
+        if self.entities[id].ai.registration.is_some() {
+            self.ai_idle_from_ai(id);
+        }
+        if self.entities[id].parking.is_some() {
+            self.parking_death(id);
+        }
+        // GameLogic's object list visits the newest mines first.
+        for mine in (0..self.entities.len()).rev() {
+            if self.entities[mine].exists()
+                && self.entities[mine].producer == Some(id)
+                && self.attack_kind(mine, "MINE")
+            {
+                self.destroy_maintenance_object(mine);
+            }
+        }
         Ok(())
     }
 
@@ -53,7 +69,7 @@ impl Skirmish {
             .collect();
         sales.sort_unstable_by(|a, b| b.cmp(a));
         for (frame, id) in sales {
-            if !self.entities[id].alive() {
+            if !self.entities[id].exists() {
                 self.entities[id].maintenance.selling = None;
                 continue;
             }
@@ -83,7 +99,8 @@ impl Skirmish {
             } else {
                 unit.maintenance.refund
             };
-            self.players[owner].cash = self.players[owner].cash.wrapping_add(refund);
+            self.deposit_sale_refund(owner, refund);
+            self.refund_production_on_death(id);
             self.destroy_maintenance_object(id);
             self.entities[id].maintenance.selling = None;
         }
@@ -92,6 +109,34 @@ impl Skirmish {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selling_retires_its_own_mines_without_triggering_death() {
+        use crate::skirmish::{Faction, Kind, tests};
+
+        let mut game = tests::game();
+        let building = game.spawn(3, 0, [355.0, 205.0], true);
+        let other = game.spawn(3, 0, [455.0, 205.0], true);
+        let mut unit = tests::fixture_type(Faction::China, Kind::Vehicle);
+        unit.kind_of.push("MINE".into());
+        let kind = game.catalog.len();
+        game.catalog.push(unit);
+        let mine = game.spawn(kind, 0, [355.0, 255.0], true);
+        let foreign_mine = game.spawn(kind, 0, [455.0, 255.0], true);
+        let tank = game.type_for(0, Kind::Tank).unwrap();
+        let non_mine = game.spawn(tank, 0, [355.0, 300.0], true);
+        game.entities[mine].producer = Some(building);
+        game.entities[foreign_mine].producer = Some(other);
+        game.entities[non_mine].producer = Some(building);
+
+        game.sell(0, building).unwrap();
+        game.process_update_destruction();
+
+        assert!(!game.entities[mine].exists());
+        assert!(!game.entities[mine].is_effectively_dead());
+        assert!(game.entities[foreign_mine].exists());
+        assert!(game.entities[non_mine].exists());
+    }
+
     #[test]
     fn authored_unsellable_property_survives_capture_without_changing_selection() {
         let mut game = crate::skirmish::tests::game();

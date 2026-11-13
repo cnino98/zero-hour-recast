@@ -26,6 +26,7 @@ fn deformation_reuses_storage_preserves_uv_color_and_separates_instances() {
     let unchanged = mesh.clone();
     let pointer = float3(&mesh, Mesh::ATTRIBUTE_POSITION).as_ptr();
     let binding = PartBinding {
+        linear_mapper: None,
         pass: 0,
         mesh: 0,
         vertices: vec![2, 0, 1],
@@ -68,6 +69,7 @@ fn normal_less_pose_matches_bevy_flat_normals_including_degenerate_faces() {
     ] {
         let mut mesh = triangle();
         let binding = PartBinding {
+            linear_mapper: None,
             pass: 0,
             mesh: 0,
             vertices: vec![0, 1, 2],
@@ -98,6 +100,7 @@ fn invalid_source_binding_does_not_partially_deform_live_mesh() {
     let mut mesh = triangle();
     let original = mesh.clone();
     let binding = PartBinding {
+        linear_mapper: None,
         pass: 0,
         mesh: 0,
         vertices: vec![0, 1, 2],
@@ -120,6 +123,7 @@ fn invalid_source_binding_does_not_partially_deform_live_mesh() {
 fn exact_comparison_separates_visibility_normal_changes_and_signed_zero() {
     let mut mesh = triangle();
     let binding = PartBinding {
+        linear_mapper: None,
         pass: 0,
         mesh: 0,
         vertices: vec![0, 1, 2],

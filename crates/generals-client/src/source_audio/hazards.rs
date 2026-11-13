@@ -138,7 +138,7 @@ impl SourceAudio {
             };
             // Share the backend's retained request/playing token, without
             // attributing this separate drawable to its launching vehicle.
-            request.firing = Some(handle);
+            request.handle = Some(handle);
             self.hazards.active.insert(id, entry);
         }
     }

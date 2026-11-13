@@ -9,6 +9,9 @@ use generals_sim::skirmish::chinook::{RopeDrawable, VisualEvent};
 use num_traits::ToPrimitive;
 use std::{collections::BTreeMap, f32::consts::TAU};
 
+#[derive(Component)]
+pub struct RopeSegment(pub u64);
+
 struct Drawable {
     axes: Vec<[f32; 2]>,
     phase: f32,
@@ -219,6 +222,7 @@ pub fn update(
                     );
                     let entity = commands
                         .spawn((
+                            RopeSegment(*id),
                             Mesh3d(mesh.clone()),
                             MeshMaterial3d(materials.add(material)),
                             transform,

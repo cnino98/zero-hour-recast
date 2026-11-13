@@ -88,6 +88,10 @@ pub(super) fn available(battle: &Match, action: CommandAction) -> Option<bool> {
                     && actor.owner == 0
                     && !actor.masked()
                     && !battle.simulation.passengers(id).is_empty()
+                    && (battle.simulation.catalog[actor.type_index]
+                        .combat_bike
+                        .is_none()
+                        || battle.simulation.can_scuttle_combat_bike(id))
             })
         })),
         _ => None,
@@ -114,12 +118,14 @@ pub(super) fn dispatch(battle: &mut Match, mouse: &mut Mouse, action: CommandAct
                 VoiceRequest::new(&battle.simulation, &battle.selected, Voice::Unload, false);
             let mut issued = false;
             for id in battle.command_message_members() {
-                if battle
-                    .simulation
-                    .entities
-                    .get(id)
-                    .is_none_or(|actor| actor.owner != 0 || !actor.complete())
-                {
+                if battle.simulation.entities.get(id).is_none_or(|actor| {
+                    actor.owner != 0
+                        || !actor.complete()
+                        || battle.simulation.catalog[actor.type_index]
+                            .combat_bike
+                            .is_some()
+                            && !battle.simulation.can_scuttle_combat_bike(id)
+                }) {
                     continue;
                 }
                 if !battle.simulation.passengers(id).is_empty() {

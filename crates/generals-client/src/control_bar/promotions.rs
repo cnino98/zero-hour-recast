@@ -137,6 +137,9 @@ pub(super) fn special_power(
             | "SpecialAbilityHackerDisableBuilding"
             | "SpecialAbilityChangeBattlePlans"
             | "SpecialAbilityAmbulanceCleanupArea"
+            | "SpecialAbilityColonelBurtonTimedCharges"
+            | "SpecialAbilityColonelBurtonRemoteCharges"
+            | "SpecialAbilityDisguiseAsVehicle"
     )
     .then_some(name))
 }

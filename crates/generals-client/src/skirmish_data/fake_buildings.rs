@@ -4,6 +4,14 @@ use generals_assets::content::{ContentFile, Declaration};
 use generals_sim::skirmish::{Research, UnitType, fake_buildings::Replacement};
 use std::error::Error;
 
+pub const REAL_TEMPLATES: [&str; 5] = [
+    "GLACommandCenter",
+    "GLABarracks",
+    "GLASupplyStash",
+    "GLAArmsDealer",
+    "GLABlackMarket",
+];
+
 pub(super) fn load(
     files: &[ContentFile],
     object: &Declaration,

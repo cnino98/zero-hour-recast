@@ -145,7 +145,10 @@ pub fn status(line: &ContentLine, mut mask: u64) -> Result<u64, Box<dyn Error>> 
             "SOLD" => 19,
             "MASKED" => 22,
             "DISGUISED" => 43,
-            _ => return Err(format!("unbound DieMux status producer {token}").into()),
+            name => match generals_sim::skirmish::combat_bike::rider_status_bit(name) {
+                Some(bit) => bit.trailing_zeros(),
+                None => return Err(format!("unbound DieMux status producer {token}").into()),
+            },
         };
         if signed {
             incremental = true;

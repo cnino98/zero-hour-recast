@@ -1,4 +1,7 @@
 //! Paid USA airfield and aircraft orders on the original Fallen Empire map.
+pub mod comanche_trial;
+#[cfg(test)]
+mod countermeasures;
 pub mod crash;
 use crate::{
     playtest::MAP_NAME,
@@ -277,6 +280,65 @@ mod tests {
     use crate::input::{self, PickTarget};
     use bevy::math::Vec2;
     use generals_sim::skirmish::{Order, diagnostics};
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_killing_fields_raptor_takes_off_aligned_and_resumes_move() {
+        let root = generals_assets::game_root().unwrap();
+        let map = crate::radar::bridge_destruction_capture::map_name();
+        let mut game = crate::playtest::map_fixture::Fixture::load(&root, map)
+            .unwrap()
+            .into_simulation()
+            .unwrap();
+        let (setup, _) = super::crash::prepare_veteran_raptor(&mut game).unwrap();
+        let id = setup.raptor;
+        assert_eq!(game.entities[id].aircraft_phase(), Some("idle"));
+        assert_eq!(game.entities[id].producer(), Some(setup.airfield));
+        let destination = [208.0_f32, 2145.0];
+        game.move_to(id, destination).unwrap();
+
+        let mut saw_taxi = false;
+        let mut runway_axis = None;
+        let mut prior_position = Vec2::from_array(game.entities[id].position);
+        let mut roll_frames = 0;
+        let mut resumed_move = false;
+        for _ in 0..900 {
+            game.step();
+            let actor = &game.entities[id];
+            assert!(actor.alive());
+            let point = Vec2::from_array(actor.position);
+            let phase = actor.aircraft_phase();
+            if phase == Some("taxi to takeoff") {
+                saw_taxi = true;
+            } else if phase == Some("pause before takeoff") && runway_axis.is_none() {
+                let [x, y, _] = actor.ai_goal_position();
+                runway_axis = (Vec2::new(x, y) - point).try_normalize();
+            } else if phase == Some("takeoff") && game.height_above_ground(id) < 0.1 {
+                let axis = runway_axis.expect("original runway has distinct start and end");
+                // AIFaceState admits takeoff within 0.035 radians of runway end.
+                let heading_error = axis.angle_to(Vec2::from_angle(actor.facing)).abs();
+                assert!(
+                    heading_error < 0.035,
+                    "runway heading error {heading_error}"
+                );
+                let displacement = point - prior_position;
+                if displacement.length_squared() > 0.0 {
+                    assert!(displacement.dot(axis) > 0.0, "jet reversed on the runway");
+                    roll_frames += 1;
+                }
+            } else if roll_frames > 0
+                && let Order::Move(goal) = actor.ai.order
+            {
+                assert_eq!(goal.map(f32::to_bits), destination.map(f32::to_bits));
+                resumed_move = true;
+                break;
+            }
+            prior_position = point;
+        }
+        assert!(saw_taxi && runway_axis.is_some() && roll_frames > 1);
+        assert!(resumed_move, "takeoff did not replay the original Move");
+        assert!(game.height_above_ground(id) > 0.1);
+    }
 
     #[ignore = "requires original game installation"]
     #[test]

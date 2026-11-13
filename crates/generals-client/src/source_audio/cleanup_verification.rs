@@ -102,6 +102,7 @@ pub mod tests {
             weapon: Vec::new(),
             weapon_loops: Vec::new(),
             rapid_fire: String::new(),
+            wheels: std::array::from_fn(|_| String::new()),
             hacker: std::array::from_fn(|_| String::new()),
             lotus: Vec::new(),
             stealth: std::array::from_fn(|_| String::new()),

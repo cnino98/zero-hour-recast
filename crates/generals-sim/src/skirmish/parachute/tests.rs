@@ -95,6 +95,183 @@ fn dry_ground_parachute_freefalls_opens_after_authored_distance_and_releases_liv
 }
 
 #[test]
+fn destroyed_airborne_canopy_damages_rider_then_leaves_it_in_physical_freefall() {
+    let (mut game, kind) = fixture_catalog();
+    install_rider_physics(&mut game.catalog[5]);
+    let point = [355.0, 255.0];
+    let chute = game.spawn(kind, 0, point, true);
+    let rider = game.spawn(5, 0, point, true);
+    let attacker = game.spawn(5, 1, [650.0, 500.0], true);
+    game.set_object_position(chute, [point[0], point[1], 90.0]);
+    game.board_parachute(rider, chute);
+    game.update_parachute(chute);
+    game.set_flight_position(chute, [point[0], point[1], 60.0]);
+    game.update_parachute(chute);
+    assert!(game.entities[chute].parachute_opened());
+
+    let health = game.entities[rider].max_health;
+    game.apply_native_damage(chute, Some(attacker), 100_000.0, DeathType::Normal);
+    let altitude = game.height_above_ground(rider);
+    assert!(altitude > 0.0 && game.entities[rider].alive());
+    assert_eq!(game.entities[rider].contained_by(), None);
+    assert!(!game.entities[rider].parachute_rider());
+    assert_eq!(
+        game.entities[rider].health.to_bits(),
+        (health * 0.5).to_bits()
+    );
+    assert!(matches!(
+        game.entities[rider].damage_state.damage_type,
+        super::super::DamageType::Falling
+    ));
+    assert_eq!(game.entities[rider].last_attacker(), Some(attacker));
+    for _ in 0..10 {
+        game.step();
+    }
+    assert!(game.entities[rider].physics_velocity()[2] < 0.0);
+    assert!(game.height_above_ground(rider) < altitude);
+}
+
+#[test]
+fn canopy_over_water_releases_rider_with_flooded_damage_before_ground_contact() {
+    let (mut game, chute, rider) = fixture(35.0);
+    let water = crate::terrain::WaterPolygon::new(vec![
+        [300, 200, 20],
+        [400, 200, 20],
+        [400, 300, 20],
+        [300, 300, 20],
+    ])
+    .unwrap();
+    game.movement_terrain.set_water_polygons(vec![water]);
+    game.tick = 1;
+    game.update_parachute(chute);
+    assert!(game.entities[chute].alive());
+    assert_eq!(game.entities[rider].contained_by(), Some(chute));
+
+    game.set_flight_position(chute, [355.0, 255.0, 29.0]);
+    game.tick += 1;
+    game.update_parachute(chute);
+    assert!(!game.entities[chute].alive());
+    assert!(!game.entities[rider].alive());
+    assert_eq!(game.entities[rider].contained_by(), None);
+    assert!(game.height_above_ground(rider) > 0.0);
+    assert!(matches!(
+        game.entities[rider].damage_state.damage_type,
+        super::super::DamageType::Water
+    ));
+    assert!(matches!(
+        game.entities[rider].damage_state.death_type,
+        DeathType::Flooded
+    ));
+}
+
+#[test]
+fn active_bridge_deck_keeps_the_descending_rider_out_of_water() {
+    use crate::terrain::{BridgeGeometry, WaterPolygon};
+
+    let (mut game, chute, rider) = fixture(100.0);
+    let layer = game
+        .movement_terrain
+        .add_bridge(
+            BridgeGeometry {
+                from: [300.0, 255.0, 40.0],
+                to: [410.0, 255.0, 40.0],
+                corners: [
+                    [300.0, 280.0, 40.0],
+                    [300.0, 230.0, 40.0],
+                    [410.0, 280.0, 40.0],
+                    [410.0, 230.0, 40.0],
+                ],
+            },
+            |_| 0.0,
+        )
+        .unwrap();
+    let water = WaterPolygon::new(vec![
+        [320, 235, 37],
+        [390, 235, 37],
+        [390, 275, 37],
+        [320, 275, 37],
+    ])
+    .unwrap();
+    game.movement_terrain.set_water_polygons(vec![water]);
+    for _ in 0..600 {
+        game.step();
+        if game.entities[rider].contained_by().is_none() {
+            break;
+        }
+    }
+    assert_eq!(game.entities[rider].contained_by(), None);
+    assert!(game.entities[rider].alive());
+    assert!(!game.entities[rider].parachute_rider());
+    assert!(!game.entities[chute].alive());
+    assert_eq!(game.entities[rider].layer, layer);
+    assert_eq!(game.object_position(rider)[2].to_bits(), 40.0_f32.to_bits());
+}
+
+#[test]
+fn airborne_delivery_release_follows_ai_hunt_or_the_live_human_producers_rally() {
+    use crate::skirmish::{
+        OpponentDifficulty, ProductionExit, ground_movement::tests::ground_rules,
+        locomotor::GroundAppearance,
+    };
+
+    for computer in [false, true] {
+        let (mut game, canopy_type) = fixture_catalog();
+        game.catalog[5].locomotor.ground = Some(ground_rules(GroundAppearance::Legs));
+        let chute = game.spawn(canopy_type, 0, [355.0, 255.0], true);
+        game.set_object_position(chute, [355.0, 255.0, 120.0]);
+        let rider = game.spawn(5, 0, [355.0, 255.0], true);
+        game.board_parachute(rider, chute);
+        game.slots[0].difficulty = computer.then_some(OpponentDifficulty::Normal);
+        let producer = game.spawn(3, 0, [520.0, 390.0], true);
+        let producer_type = game.entities[producer].type_index;
+        game.catalog[producer_type].behavior.production_exit = Some(ProductionExit {
+            use_spawn_rally_point: true,
+            create: [35.0, 0.0, 0.0],
+            rally: [65.0, 0.0, 0.0],
+            snap_rally: false,
+            extend_rally: false,
+            queue: None,
+        });
+        game.set_rally_point(producer, [650.0, 390.0, 0.0]).unwrap();
+        game.entities[chute].producer = Some(producer);
+        game.entities[rider].producer = Some(chute);
+        let mut last_airborne = game.object_position(rider);
+        for _ in 0..600 {
+            game.step();
+            if game.entities[rider].contained_by().is_none() {
+                break;
+            }
+            last_airborne = game.object_position(rider);
+        }
+        let actor = &game.entities[rider];
+        assert!(actor.alive() && !actor.parachute_rider());
+        assert_eq!(actor.contained_by(), None);
+        if computer {
+            assert!(actor.ai.hunt.is_some());
+            assert!(
+                (actor.position[0] - last_airborne[0]).hypot(actor.position[1] - last_airborne[1])
+                    < 2.0,
+                "AI must Hunt from actual chute landing {last_airborne:?}, got {:?}",
+                actor.position
+            );
+        } else {
+            assert!(actor.ai.hunt.is_none());
+            assert!((actor.position[0] - 555.0).abs() < 2.0);
+            assert!(game.attack_ground_movement(rider));
+            assert_eq!(actor.ai.waypoints.points.len(), 2);
+            for _ in 0..180 {
+                game.step();
+            }
+            assert!(
+                (game.entities[rider].position[0] - 650.0).abs() < 15.0,
+                "human rider did not arrive at the ordered rally: {}",
+                crate::skirmish::diagnostics::movement_details(&game, rider)
+            );
+        }
+    }
+}
+
+#[test]
 fn low_ejection_uses_native_start_height_floor_and_opens_immediately() {
     let (mut game, chute, rider) = fixture(20.0);
     game.update_parachute(chute);
@@ -375,7 +552,29 @@ fn hijacker_ejection_creates_on_actual_team_then_sets_full_world_position() {
 #[test]
 fn held_rider_physics_forwards_its_landing_to_the_actual_parachute() {
     let (mut game, kind) = fixture_catalog();
-    game.catalog[5].live_physics = Some(super::super::physical_ocl::LiveRules {
+    install_rider_physics(&mut game.catalog[5]);
+    let chute = game.spawn(kind, 0, [355.0, 255.0], true);
+    game.set_object_position(chute, [355.0, 255.0, 20.0]);
+    let rider = game.spawn(5, 0, [355.0, 255.0], true);
+    game.board_parachute(rider, chute);
+    game.update_parachute(chute);
+    assert!(game.entities[rider].disabled_held());
+    assert!(game.height_above_ground(rider) > 0.0);
+    game.update_object_physics(rider);
+    // Containment updates the rider's real Object position before HELD Physics
+    // sees the airborne-to-ground edge; the leaf Parachute callback does not forward it.
+    game.set_object_position(rider, [355.0, 255.0, 0.0]);
+    game.tick += 1;
+    game.update_object_physics(rider);
+    assert_eq!(game.entities[rider].contained_by(), None);
+    assert!(!game.entities[rider].parachute_rider());
+    assert!(!game.entities[rider].disabled_held());
+    assert!(game.entities[rider].alive());
+    assert!(!game.entities[chute].alive());
+}
+
+fn install_rider_physics(unit: &mut super::super::UnitType) {
+    unit.live_physics = Some(super::super::physical_ocl::LiveRules {
         motion: super::super::physical_ocl::MotionRules {
             center_of_mass_offset: 0.0,
             mass: 50.0,
@@ -399,25 +598,7 @@ fn held_rider_physics_forwards_its_landing_to_the_actual_parachute() {
         min_fall_speed: 999.0,
         fall_damage_factor: 1.0,
     });
-    crate::skirmish::tests::register_update(&mut game.catalog[5], "PhysicsBehavior");
-    let chute = game.spawn(kind, 0, [355.0, 255.0], true);
-    game.set_object_position(chute, [355.0, 255.0, 20.0]);
-    let rider = game.spawn(5, 0, [355.0, 255.0], true);
-    game.board_parachute(rider, chute);
-    game.update_parachute(chute);
-    assert!(game.entities[rider].disabled_held());
-    assert!(game.height_above_ground(rider) > 0.0);
-    game.update_object_physics(rider);
-    // Containment updates the rider's real Object position before HELD Physics
-    // sees the airborne-to-ground edge; the leaf Parachute callback does not forward it.
-    game.set_object_position(rider, [355.0, 255.0, 0.0]);
-    game.tick += 1;
-    game.update_object_physics(rider);
-    assert_eq!(game.entities[rider].contained_by(), None);
-    assert!(!game.entities[rider].parachute_rider());
-    assert!(!game.entities[rider].disabled_held());
-    assert!(game.entities[rider].alive());
-    assert!(!game.entities[chute].alive());
+    crate::skirmish::tests::register_update(unit, "PhysicsBehavior");
 }
 
 #[test]

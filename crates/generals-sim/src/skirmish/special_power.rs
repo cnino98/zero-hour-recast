@@ -381,7 +381,7 @@ impl Skirmish {
         self.native_special_power(id, name, Some(target), None, false)
     }
 
-    fn native_special_power(
+    pub(in crate::skirmish) fn native_special_power(
         &mut self,
         id: usize,
         name: &str,

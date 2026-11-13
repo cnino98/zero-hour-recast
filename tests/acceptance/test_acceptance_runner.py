@@ -52,10 +52,10 @@ class AcceptanceInventoryTests(unittest.TestCase):
         cases = RUNNER.inventory(help_fixture(), SOURCE)
         self.assertEqual(RUNNER.counts(cases), {
             "validation": 1, "installed": 31, "benchmarks": 3, "scaling": 1,
-            "native": 110, "profiles": 3, "total": 149, "cases_requiring_images": 112,
+            "native": 121, "profiles": 3, "total": 160, "cases_requiring_images": 123,
         })
         native = [case for case in cases if case["group"] == "native"]
-        self.assertEqual(sum(case["requires_image"] for case in native), 109)
+        self.assertEqual(sum(case["requires_image"] for case in native), 120)
         self.assertTrue(all(len(case["arguments"]) == 1 for case in native))
         audio = next(case for case in native if case["arguments"] == ["--verify-audio"])
         self.assertFalse(audio["requires_image"])
@@ -685,7 +685,7 @@ print('exact accepted child output')
         self.assertIn("Source changed during acceptance", manifest["results"][0]["errors"][0])
         self.assertIn("Cargo.lock", manifest["source"]["files"])
 
-    def test_source_identity_covers_shaders_and_scripts_but_not_generated_bytecode(self):
+    def test_source_identity_covers_shaders_and_scripts_but_ignores_local_metadata(self):
         crate = self.project / "crates/example"
         scripts = self.project / "tests"
         crate.mkdir(parents=True)
@@ -696,6 +696,9 @@ print('exact accepted child output')
         bytecode = scripts / "__pycache__"
         bytecode.mkdir()
         (bytecode / "generated.pyc").write_bytes(b"cache")
+        (scripts / ".DS_Store").write_bytes(b"Finder metadata")
+        (scripts / "._validate.sh").write_bytes(b"AppleDouble metadata")
+        (crate / "._source_material.wgsl").write_bytes(b"AppleDouble metadata")
         self.assertEqual(RUNNER.source_identity(self.project), before)
         (crate / "source_material.wgsl").write_text("changed shader")
         changed_shader = RUNNER.source_identity(self.project)

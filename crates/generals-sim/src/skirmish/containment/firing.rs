@@ -97,7 +97,10 @@ impl Skirmish {
         ) {
             return self.open_fire_allowed(carrier);
         }
-        if matches!(family, "TransportContain" | "InternetHackContain") {
+        if matches!(
+            family,
+            "TransportContain" | "InternetHackContain" | "RiderChangeContain"
+        ) {
             return self.transport_fire_allowed(carrier, rider);
         }
         false

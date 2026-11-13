@@ -1,4 +1,198 @@
-use crate::skirmish::{Skirmish, tests::game};
+use crate::skirmish::{
+    GroupKind, Kind, Order, Skirmish, ground_movement::tests::ground_rules,
+    locomotor::GroundAppearance, tests::game, weapons::Lock,
+};
+
+#[test]
+fn mixed_group_attack_move_sends_the_unarmed_worker_on_an_ordinary_move() {
+    let mut game = game();
+    let worker_type = game.type_for(0, Kind::Builder).unwrap();
+    let tank_type = game.type_for(0, Kind::Tank).unwrap();
+    game.catalog[worker_type]
+        .weapon_set_rules
+        .replacements
+        .push(crate::skirmish::weapons::WeaponTemplateSet {
+            flags: 0,
+            weapons: [None; 3],
+            share_lock: false,
+        });
+    game.catalog[worker_type].locomotor.ground = Some(ground_rules(GroundAppearance::Legs));
+    game.catalog[tank_type].locomotor.ground = Some(ground_rules(GroundAppearance::Treads));
+    let worker = game.spawn(worker_type, 0, [305.0, 435.0], true);
+    let tank = game.spawn(tank_type, 0, [305.0, 375.0], true);
+    let victim = game.spawn(tank_type, 1, [445.0, 375.0], true);
+    let destination = [605.0, 405.0, 0.0];
+    assert!(!game.object_can_attack(worker));
+    assert!(game.object_can_attack(tank));
+    game.entities[worker].weapon_set.lock = Lock::Temporary;
+    game.entities[tank].weapon_set.lock = Lock::Permanent;
+    game.group_attack_move_world(&[tank, worker], destination)
+        .unwrap();
+    assert!(matches!(game.entities[worker].ai.order, Order::Move(_)));
+    assert!(matches!(game.entities[tank].ai.order, Order::AttackMove(_)));
+    assert!(matches!(game.entities[worker].weapon_set.lock, Lock::None));
+    assert!(matches!(
+        game.entities[tank].weapon_set.lock,
+        Lock::Permanent
+    ));
+    for _ in 0..45 {
+        game.step();
+    }
+    assert!(game.entities[worker].position[0] > 305.0);
+    assert_ne!(game.entities[worker].ai.current_victim, Some(victim));
+}
+
+#[test]
+fn fixed_wing_group_admission_uses_the_current_ground_movement_query() {
+    let mut game = game();
+    let kind = game.type_for(0, Kind::Tank).unwrap();
+    game.catalog[kind].group_kind = GroupKind::Aircraft;
+    game.catalog[kind].locomotor.ground = Some(ground_rules(GroundAppearance::Treads));
+    let actor = game.spawn(kind, 0, [305.0, 405.0], true);
+    assert!(game.attack_ground_movement(actor));
+    assert!(game.allows_group_formation(actor));
+    let mut alternate =
+        crate::skirmish::tests::fixture_type(crate::skirmish::Faction::Gla, Kind::Tank);
+    alternate.group_kind = GroupKind::Aircraft;
+    alternate.locomotor.legal_surfaces = 8;
+    alternate.locomotor.flight = Some(crate::skirmish::flight::tests::rules(
+        crate::skirmish::flight::Appearance::Wings,
+    ));
+    let kind = game.catalog.len();
+    game.catalog.push(alternate);
+    let actor = game.spawn(kind, 0, [305.0, 455.0], true);
+    assert!(!game.attack_ground_movement(actor));
+    assert!(!game.allows_group_formation(actor));
+}
+
+#[test]
+fn group_margin_clamp_resamples_slope_height_and_keeps_unclipped_picked_z() {
+    let (game, _) = slope();
+    let picked = [5.0, 405.0, 137.0];
+    let clamped = game.clamp_group_destination(picked, 40.0);
+    assert_eq!(
+        clamped.map(f32::to_bits),
+        [40.0, 405.0, game.ground_height([40.0, 405.0])].map(f32::to_bits)
+    );
+    let picked = [503.25, 405.75, 137.0];
+    assert_eq!(
+        game.clamp_group_destination(picked, 40.0).map(f32::to_bits),
+        picked.map(f32::to_bits)
+    );
+}
+
+#[test]
+fn individual_group_keeps_blocked_ground_goal_and_flight_offset() {
+    use crate::{grid::Cell, terrain::TerrainMap};
+    let mut game = game();
+    let cliffs = (30..=70).flat_map(|x| (20..=59).map(move |y| Cell { x, y }));
+    game.configure_movement_terrain(TerrainMap::classify(80, 60, cliffs, []).unwrap())
+        .unwrap();
+    game.ai_rules.min_distance_for_group = 10_000.0;
+    let tank_type = game.type_for(0, Kind::Tank).unwrap();
+    game.catalog[tank_type].locomotor.ground = Some(ground_rules(GroundAppearance::Treads));
+    let mut plane = crate::skirmish::tests::fixture_type(crate::skirmish::Faction::Gla, Kind::Tank);
+    plane.group_kind = GroupKind::Aircraft;
+    plane.kind_of.push("AIRCRAFT".into());
+    plane.locomotor.legal_surfaces = 8;
+    plane.locomotor.flight = Some(crate::skirmish::flight::tests::rules(
+        crate::skirmish::flight::Appearance::Wings,
+    ));
+    let plane_type = game.catalog.len();
+    game.catalog.push(plane);
+    let tank = game.spawn(tank_type, 0, [200.0, 400.0], true);
+    let plane = game.spawn(plane_type, 0, [200.0, 430.0], true);
+    let click = [500.25, 400.75, 90.0];
+    assert!(game.adjusted_destination_world(tank, click).is_none());
+    game.group_move_to_world(&[tank, plane], click, false)
+        .unwrap();
+    assert_eq!(
+        game.entities[tank].ai_goal_position().map(f32::to_bits),
+        [click[0], click[1], 0.0].map(f32::to_bits)
+    );
+    assert_eq!(
+        game.entities[plane].ai_goal_position().map(f32::to_bits),
+        [click[0], click[1] + 30.0, 0.0].map(f32::to_bits)
+    );
+}
+
+#[test]
+fn flying_only_group_guard_uses_active_locomotor_instead_of_aircraft_kind() {
+    let mut game = game();
+    let infantry = game.type_for(0, Kind::Infantry).unwrap();
+    game.catalog[infantry].locomotor.ground = Some(ground_rules(GroundAppearance::Legs));
+    game.catalog[infantry].ai.vision_range = 300.0;
+    game.catalog[infantry].weapon.anti_mask = u8::MAX;
+    let tank = game.type_for(1, Kind::Tank).unwrap();
+    let mut aircraft =
+        crate::skirmish::tests::fixture_type(crate::skirmish::Faction::Gla, Kind::Tank);
+    aircraft.kind_of.push("AIRCRAFT".into());
+    let taxiing = game.catalog.len();
+    game.catalog.push(aircraft);
+    let mut flyer = crate::skirmish::tests::fixture_type(crate::skirmish::Faction::Gla, Kind::Tank);
+    flyer.locomotor.legal_surfaces = 8;
+    flyer.locomotor.flight = Some(crate::skirmish::flight::tests::rules(
+        crate::skirmish::flight::Appearance::Wings,
+    ));
+    let flying = game.catalog.len();
+    game.catalog.push(flyer);
+    let guard = game.spawn(infantry, 0, [400.0, 300.0], true);
+    let ground = game.spawn(tank, 1, [425.0, 300.0], true);
+    let parked = game.spawn(taxiing, 1, [450.0, 300.0], true);
+    let airborne = game.spawn(flying, 1, [500.0, 300.0], true);
+    game.update_ground_contacts();
+    let center = [400.0, 300.0, 0.0];
+    assert!(!game.entities[parked].is_using_airborne_locomotor(&game.catalog[taxiing]));
+    assert!(game.entities[airborne].is_using_airborne_locomotor(&game.catalog[flying]));
+    game.group_guard_world(&[guard], center, true).unwrap();
+    game.entities[guard].ai.guard.next_scan = game.tick;
+    game.update_guard(guard, [center[0], center[1]]);
+    assert_eq!(game.entities[guard].ai.ai_target, Some(airborne));
+    game.group_guard_world(&[guard], center, false).unwrap();
+    game.entities[guard].ai.guard.next_scan = game.tick;
+    game.update_guard(guard, [center[0], center[1]]);
+    assert_eq!(game.entities[guard].ai.ai_target, Some(ground));
+}
+
+#[test]
+fn immobile_ai_in_group_expands_gather_bounds_without_receiving_a_move() {
+    let mut game = game();
+    let infantry = game.type_for(0, Kind::Infantry).unwrap();
+    game.catalog[infantry].locomotor.ground = Some(ground_rules(GroundAppearance::Legs));
+    let static_ai = game.type_for(0, Kind::Barracks).unwrap();
+    assert!(game.catalog[static_ai].immobile());
+    game.ai_rules.group_move_gather_factor = 1.0;
+    game.ai_rules.min_distance_for_group = 10_000.0;
+    let a = game.spawn(infantry, 0, [300.0, 350.0], true);
+    let b = game.spawn(infantry, 0, [300.0, 410.0], true);
+    let fixed = game.spawn(static_ai, 0, [600.0, 380.0], true);
+    assert!(game.entities[fixed].ai.registration.is_some());
+    game.group_move_to(&[a, b, fixed], [450.0, 380.0], false)
+        .unwrap();
+    assert!(matches!(game.entities[fixed].ai.order, Order::Idle));
+    assert!(
+        game.entities[a]
+            .ai
+            .path_request
+            .pending
+            .as_ref()
+            .is_some_and(|request| matches!(
+                request.kind,
+                crate::skirmish::path_service::Kind::Tighten
+            ))
+    );
+    assert!(
+        game.entities[b]
+            .ai
+            .path_request
+            .pending
+            .as_ref()
+            .is_some_and(|request| matches!(
+                request.kind,
+                crate::skirmish::path_service::Kind::Tighten
+            ))
+    );
+}
 
 fn slope() -> (Skirmish, usize) {
     let mut game = game();
@@ -88,7 +282,13 @@ fn final_waypoint_readjustment_and_formation_keep_fresh_height() {
     game.stop(id).unwrap();
     game.group_create_formation(&[id]).unwrap();
     let route = [first, [385.0, 405.0, 77.0], [425.0, 405.0, 85.0], original];
-    game.move_formation(&[id], original, Some(&route)).unwrap();
+    game.move_formation(
+        &[id],
+        original,
+        Some(&route),
+        crate::skirmish::ai_goals::COMMAND_FROM_PLAYER,
+    )
+    .unwrap();
     let actual = *game.entities[id].ai.waypoints.points.last().unwrap();
     assert_adjusted_height(&game, actual, original);
 }
@@ -210,12 +410,26 @@ fn infantry_columns_reselect_priority_after_actual_locomotor_upgrade() {
         [500.0, 300.0, 0.0],
         [650.0, 300.0, 0.0],
     ];
-    assert!(game.move_columns(&members, [300.0, 300.0], route[3], &route, true));
+    assert!(game.move_columns(
+        &members,
+        [300.0, 300.0],
+        route[3],
+        &route,
+        true,
+        crate::skirmish::ai_goals::COMMAND_FROM_PLAYER
+    ));
     let previous = *game.entities[pilot].ai.waypoints.points.last().unwrap();
     game.entities[pilot].veterancy_upgrades |= 1 << 3;
     game.activate_upgrade_modules(pilot);
     assert!(game.native_upgrade_executed(pilot, "LocomotorSetUpgrade", 0));
-    assert!(game.move_columns(&members, [300.0, 300.0], route[3], &route, true));
+    assert!(game.move_columns(
+        &members,
+        [300.0, 300.0],
+        route[3],
+        &route,
+        true,
+        crate::skirmish::ai_goals::COMMAND_FROM_PLAYER
+    ));
     let current = *game.entities[pilot].ai.waypoints.points.last().unwrap();
     assert!(
         current[0] > previous[0],

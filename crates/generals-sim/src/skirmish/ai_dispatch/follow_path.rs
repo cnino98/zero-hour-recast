@@ -104,7 +104,9 @@ impl Skirmish {
         {
             return;
         }
-        if matches!(self.entities[id].ai.order, Order::FollowPath) {
+        if matches!(self.entities[id].ai.order, Order::FollowPath)
+            && self.entities[id].ai.follow_waypoint.is_none()
+        {
             self.entities[id].ai.waypoints.points.push(position);
             return;
         }
@@ -238,6 +240,9 @@ impl Skirmish {
             return;
         }
         self.entities[id].ai.motion.end_move();
+        if self.exit_native_waypoint_follow(id) {
+            self.entities[id].ai.motion.set_ultra_accurate(false);
+        }
         self.entities[id].ai.blocking.path_through_units = false;
         if let Some(flight) = &mut self.entities[id].flight {
             flight.set_precise_z(false);

@@ -29,7 +29,8 @@ pub(super) fn load(
     }
     unit.weapon.auto_choose = auto_choose;
     unit.weapon.preferred_against = preferred(normal, "PRIMARY");
-    if !unit.demo_trap.is_empty()
+    if unit.combat_bike.is_some()
+        || !unit.demo_trap.is_empty()
         || unit.kind == generals_sim::skirmish::Kind::Builder
         || !unit.behavior.mobs.is_empty()
         || unit
@@ -56,6 +57,7 @@ pub(super) fn load(
     if !matches!(
         unit.name.as_str(),
         "AmericaInfantryRanger"
+            | "AmericaInfantryColonelBurton"
             | "AmericaTankMicrowave"
             | "GLADemoTrap"
             | "AmericaInfantryMissileDefender"
@@ -151,6 +153,10 @@ fn load_research_sets(
                 "CRATEUPGRADE_ONE" => 2,
                 "CRATEUPGRADE_TWO" => 4,
                 "MINE_CLEARING_DETAIL" if unit.kind == generals_sim::skirmish::Kind::Builder => 16,
+                name if unit.combat_bike.is_some() => {
+                    generals_sim::skirmish::combat_bike::rider_weapon_flag(name)
+                        .ok_or_else(|| format!("untranslated bike weapon condition {name}"))?
+                }
                 _ => return Err(format!("untranslated research weapon condition {name}").into()),
             };
         }

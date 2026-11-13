@@ -164,14 +164,13 @@ fn attached_particles(types: &[UnitType], names: &mut Vec<String>) {
         {
             append(names, &particle.name);
         }
-        if let Some(rules) = &unit.structure_death {
-            for particle in rules
-                .transitions
-                .iter()
-                .flat_map(|rules| rules.particles.iter().flatten())
-            {
-                append(names, &particle.template);
-            }
+        for particle in unit
+            .behavior
+            .damage_transitions
+            .iter()
+            .flat_map(|rules| rules.particles.iter().flatten())
+        {
+            append(names, &particle.template);
         }
         for helicopter in unit.helicopter_death_rules() {
             append(names, &helicopter.particle);

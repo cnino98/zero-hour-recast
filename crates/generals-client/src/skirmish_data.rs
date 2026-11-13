@@ -10,6 +10,7 @@ mod behavior_data;
 mod body_admission_tests;
 mod bone_fx;
 mod bridge_behavior;
+mod combat_bike;
 mod create_object_die;
 mod creation;
 mod eject_pilot;
@@ -59,6 +60,7 @@ mod demo_trap;
 mod deployment;
 mod drones;
 mod fake_buildings;
+pub use fake_buildings::REAL_TEMPLATES as REAL_FAKE_REPLACEMENTS;
 mod fire;
 mod garrisons;
 #[cfg(test)]
@@ -307,8 +309,12 @@ const ROSTER: &[(&str, Faction, Kind)] = &[
     ("AmericaVehicleComanche", Faction::Usa, Kind::Vehicle),
     ("AmericaPowerPlant", Faction::Usa, Kind::PowerPlant),
     ("AmericaStrategyCenter", Faction::Usa, Kind::TechBuilding),
+    ("AmericaSupplyDropZone", Faction::Usa, Kind::TechBuilding),
     ("AmericaInfantryRanger", Faction::Usa, Kind::Infantry),
     ("AmericaInfantryPathfinder", Faction::Usa, Kind::Infantry),
+    ("AmericaInfantryColonelBurton", Faction::Usa, Kind::Infantry),
+    ("RemoteC4Charge", Faction::Usa, Kind::Effect),
+    ("TimedC4Charge", Faction::Usa, Kind::Effect),
     ("AmericaTankCrusader", Faction::Usa, Kind::Tank),
     ("AmericaTankPaladin", Faction::Usa, Kind::Tank),
     ("AmericaVehicleTomahawk", Faction::Usa, Kind::Vehicle),
@@ -375,6 +381,9 @@ const ROSTER: &[(&str, Faction, Kind)] = &[
     ("GLAInfantryAngryMobRock04", Faction::Gla, Kind::Infantry),
     ("GLAInfantryAngryMobPistol05", Faction::Gla, Kind::Infantry),
     ("GLAVehicleBattleBus", Faction::Gla, Kind::Vehicle),
+    ("GLAVehicleCombatBike", Faction::Gla, Kind::Vehicle),
+    ("GLAVehicleBombTruck", Faction::Gla, Kind::Vehicle),
+    ("DeadBombTruckHulk", Faction::Gla, Kind::Effect),
     ("GLAInfantryRebel", Faction::Gla, Kind::Infantry),
     ("GLAInfantryJarmenKell", Faction::Gla, Kind::Infantry),
     ("GLAInfantryTerrorist", Faction::Gla, Kind::Infantry),
@@ -560,6 +569,7 @@ fn unit_type(
         minimum_health: body_minimum(body),
         build_rules: support::build_rules(&object.lines)?,
         battle_bus: battle_bus::load(files, object)?,
+        combat_bike: combat_bike::load(files, object)?,
         live_physics: physical_ocl::live_rules(files, object)?,
         aircraft: None,
         parking: None,

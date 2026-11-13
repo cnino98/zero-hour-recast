@@ -52,15 +52,16 @@ fn schedule(game: &mut Skirmish, rules: &OpponentRules, state: &mut State) {
         {
             continue;
         }
-        let Some(script) = data
+        let Some((script_index, script)) = data
             .scripts
             .iter()
-            .find(|script| script.name == template.condition)
+            .enumerate()
+            .find(|(_, script)| script.name == template.condition)
         else {
             continue;
         };
         if !scripts::difficulty(script, state)
-            || scripts::conditions(game, rules, state, script, None) != Some(true)
+            || scripts::conditions(game, rules, state, script_index, None) != Some(true)
             || !possible(game, state, template, rules)
         {
             continue;
@@ -279,7 +280,6 @@ fn run_teams(game: &mut Skirmish, rules: &OpponentRules, state: &mut State) {
                 run_generic_script(game, rules, state, script, index);
             }
         }
-        map::advance(game, rules, state, index);
     }
 }
 pub(super) fn run_script(
@@ -295,7 +295,7 @@ pub(super) fn run_script(
         return;
     }
     state.scripts[script].next = game.tick + u64::from(definition.delay_frames);
-    let Some(result) = scripts::conditions(game, rules, state, definition, Some(team)) else {
+    let Some(result) = scripts::conditions(game, rules, state, script, Some(team)) else {
         return;
     };
     let actions = if result {
@@ -322,7 +322,7 @@ fn run_generic_script(
     // difficulty and periodic-delay fields do not gate this per-team hook.
     let definition = &rules.factions[state.faction].scripts[script];
     if !state.teams[team].scripts[script].active
-        || scripts::conditions(game, rules, state, definition, Some(team)) != Some(true)
+        || scripts::conditions(game, rules, state, script, Some(team)) != Some(true)
     {
         return;
     }
@@ -334,9 +334,6 @@ fn run_generic_script(
     }
 }
 pub(super) fn sequence(game: &mut Skirmish, rules: &OpponentRules, state: &mut State, team: usize) {
-    if state.teams[team].follow.is_some() {
-        return;
-    }
     let Some((script, mut instruction)) = state.teams[team].sequence else {
         return;
     };
@@ -353,7 +350,22 @@ pub(super) fn sequence(game: &mut Skirmish, rules: &OpponentRules, state: &mut S
             state.teams[team].sequence = None;
             break;
         };
-        scripts::execute(game, rules, state, call, Some(team));
+        if matches!(
+            call.name.as_str(),
+            "SKIRMISH_WAIT_FOR_COMMANDBUTTON_AVAILABLE_ALL"
+                | "SKIRMISH_WAIT_FOR_COMMANDBUTTON_AVAILABLE_PARTIAL"
+        ) {
+            let Some(ready) = super::commands::button_ready(game, rules, state, call, Some(team))
+            else {
+                state.report(&call.name);
+                break;
+            };
+            if !ready {
+                break;
+            }
+        } else {
+            scripts::execute(game, rules, state, call, Some(team));
+        }
         instruction += 1;
         state.teams[team].sequence = Some((script, instruction));
     }
@@ -385,6 +397,7 @@ pub(super) fn action(
             | "TEAM_MOVE_TOWARDS_NEAREST_OBJECT_TYPE"
             | "TEAM_GARRISON_NEAREST_BUILDING"
             | "TEAM_GUARD_AREA"
+            | "TEAM_GUARD_OBJECT"
             | "TEAM_APPLY_ATTACK_PRIORITY_SET"
             | "TEAM_AVAILABLE_FOR_RECRUITMENT"
             | "TEAM_SET_ATTITUDE"
@@ -403,7 +416,6 @@ pub(super) fn action(
             for &id in members {
                 let _ = game.stop_actor(id);
             }
-            state.teams[team].follow = None;
             if call.name == "TEAM_STOP_AND_DISBAND" {
                 // doTeamStop(TRUE) merges members into the player's default team.
                 // The singleton instance survives.
@@ -430,11 +442,9 @@ pub(super) fn action(
             for &id in &state.teams[team].members {
                 let _ = game.stop_actor(id);
             }
-            state.teams[team].follow = None;
             state.teams[team].sequence = Some((script, 0));
         }
         "TEAM_HUNT" => {
-            state.teams[team].follow = None;
             let Some(native) = state.teams[team].native_instance else {
                 return Some(());
             };
@@ -452,7 +462,7 @@ pub(super) fn action(
                 state,
                 team,
                 &call.parameters.get(1)?.text,
-                false,
+                None,
             );
         }
         "SKIRMISH_FOLLOW_APPROACH_PATH" => {
@@ -462,7 +472,7 @@ pub(super) fn action(
                 state,
                 team,
                 &call.parameters.get(1)?.text,
-                true,
+                Some(call.parameters.get(2)?.integer != 0),
             );
         }
         _ => return configure_team(game, rules, state, call, team),
@@ -487,9 +497,29 @@ fn configure_team(
                 .areas
                 .iter()
                 .position(|candidate| candidate.name == area.name)?;
-            state.teams[team].follow = None;
             for &id in &state.teams[team].members {
                 let _ = game.guard_area(id, area);
+            }
+        }
+        "TEAM_GUARD_OBJECT" => {
+            let Some(target) = game
+                .named_map_object(&call.parameters.get(1)?.text)
+                .filter(|&target| game.entities[target].exists())
+            else {
+                return Some(());
+            };
+            let Some(native) = state.teams[team].native_instance else {
+                return Some(());
+            };
+            let members = game.team_membership.team_objects(native).to_vec();
+            for id in game.materialize_native_group(&members) {
+                if game.entities[id].ai.registration.is_some() {
+                    game.native_guard_object_from(
+                        id,
+                        target,
+                        crate::skirmish::ai_goals::COMMAND_FROM_SCRIPT,
+                    );
+                }
             }
         }
         "TEAM_APPLY_ATTACK_PRIORITY_SET" => {

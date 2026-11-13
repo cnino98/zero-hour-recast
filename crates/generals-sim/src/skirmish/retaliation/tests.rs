@@ -169,6 +169,7 @@ fn conceal(game: &mut Skirmish, actor: usize) {
         black_market_frames: 0,
         friendly_opacity: [0.5, 1.0],
         pulse_frames: 30,
+        disguise: None,
     });
     game.entities[actor].stealth = State::for_unit(unit, game.tick);
     game.grant_stealth(actor);

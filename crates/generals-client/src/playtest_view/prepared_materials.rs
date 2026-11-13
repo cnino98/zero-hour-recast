@@ -53,15 +53,25 @@ fn key(material: &SourceMaterial) -> Key {
         opacity,
         primary_gradient,
         shroud_extent,
+        uv_transform,
+        shroud_mode,
     } = parameters;
     let mut bits = Vec::with_capacity(256);
     bits.push(*terrain_lights);
-    for value in [ambient, diffuse, emissive, scene_ambient, shroud_extent]
-        .into_iter()
-        .chain(light_color)
-        .chain(light_direction)
-        .chain(point_position)
-        .chain(point_ambient)
+    bits.push(*shroud_mode);
+    for value in [
+        ambient,
+        diffuse,
+        emissive,
+        scene_ambient,
+        shroud_extent,
+        uv_transform,
+    ]
+    .into_iter()
+    .chain(light_color)
+    .chain(light_direction)
+    .chain(point_position)
+    .chain(point_ambient)
     {
         bits.extend(value.to_array().map(f32::to_bits));
     }

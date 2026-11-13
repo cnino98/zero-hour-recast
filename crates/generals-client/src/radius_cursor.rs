@@ -334,6 +334,7 @@ pub fn update(
             && !matches!(
                 mouse.pending_command,
                 CommandMode::Guard
+                    | CommandMode::GuardFlying
                     | CommandMode::HelixBomb
                     | CommandMode::Cleanup
                     | CommandMode::FireWeapon(2)

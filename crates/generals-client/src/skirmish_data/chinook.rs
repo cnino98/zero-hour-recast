@@ -210,4 +210,79 @@ mod tests {
         assert_eq!(rules.delay, [3, 6]);
         assert_eq!(rules.wobble_rate.to_bits(), 0.1_f32.to_bits());
     }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn installed_paid_chinook_combat_drop_uses_rope_transforms_and_ranger_landing() {
+        use crate::skirmish_data::reinforcement_runtime_tests::original_game;
+        use generals_sim::skirmish::{WeaponFxEvent, chinook::VisualEvent};
+
+        let (mut game, _) = original_game("Maps\\Fallen Empire\\Fallen Empire.map");
+        let (host, riders) = crate::transport_verification::chinook::prepare(&mut game).unwrap();
+        let rappellers: Vec<_> = riders
+            .iter()
+            .copied()
+            .filter(|&rider| {
+                game.catalog[game.entities[rider].type_index]
+                    .kind_of
+                    .iter()
+                    .any(|flag| flag == "CAN_RAPPEL")
+            })
+            .collect();
+        assert!(!rappellers.is_empty() && rappellers.len() < riders.len());
+        let target = game.object_position(host);
+        game.combat_drop(host, None, target).unwrap();
+        let mut seen = vec![false; rappellers.len()];
+        let mut altitude = vec![f32::NEG_INFINITY; rappellers.len()];
+        let mut flagged = vec![false; rappellers.len()];
+        let mut held = false;
+        let mut rope_created = false;
+        crate::skirmish_verification::advance_until(
+            &mut game,
+            3_000,
+            "paid Chinook combat drop and actual Ranger landings",
+            |game| {
+                held |= game.entities[host].disabled_held();
+                rope_created |= game.presentation.weapon_fx.iter().any(|event| {
+                    matches!(event, WeaponFxEvent::Chinook(VisualEvent::RopeCreated(_)))
+                });
+                for (slot, &rider) in rappellers.iter().enumerate() {
+                    let actor = &game.entities[rider];
+                    let unit = &game.catalog[actor.type_index];
+                    if actor.contained_by().is_none() {
+                        let height = game.height_above_ground(rider);
+                        let rappelling = game
+                            .model_flags(actor, unit.body_damage_thresholds)
+                            .contains("RAPPELLING");
+                        altitude[slot] = altitude[slot].max(height);
+                        flagged[slot] |= rappelling;
+                        seen[slot] |= height > 0.0 && rappelling;
+                    }
+                }
+                held && !game.entities[host].disabled_held()
+                    && rappellers.iter().all(|&rider| {
+                        let actor = &game.entities[rider];
+                        actor.alive()
+                            && actor.contained_by().is_none()
+                            && game.height_above_ground(rider) <= 0.0
+                    })
+            },
+        )
+        .unwrap();
+        assert!(
+            seen.iter().all(|&observed| observed),
+            "airborne rappel not observed for all Rangers: riders={rappellers:?} combined={seen:?} airborne_heights={altitude:?} rappel_flags={flagged:?}; ropes={} host={:?}",
+            game.rope_drawables.drawables.len(),
+            game.object_position(host)
+        );
+        assert!(game.entities[riders[0]].contained_by() == Some(host));
+        assert!(rope_created);
+        assert!(!game.rope_drawables.drawables.is_empty());
+        assert!(
+            game.rope_drawables
+                .drawables
+                .iter()
+                .all(|rope| rope.released.is_some())
+        );
+    }
 }

@@ -36,6 +36,9 @@ pub(super) struct Draw {
     pub attach_offset: [f32; 3],
     pub upgrade_show: Vec<String>,
     pub supply: BTreeMap<usize, std::sync::Arc<crate::supply_presentation::SupplyDraw>>,
+    pub treads: Option<super::treads::Rules>,
+    pub truck_wheels: Option<super::combat_bike::Rules>,
+    pub track: Option<String>,
 }
 
 impl Draw {
@@ -102,6 +105,7 @@ pub fn load(
             }
             let mut draw =
                 parse(lines).map_err(|error| format!("{} draw {module}: {error}", stats.name))?;
+            draw.truck_wheels = truck_wheels(&files, object, lines, stats)?;
             draw.upgrade_show = stats
                 .behavior
                 .sub_object_upgrades
@@ -163,6 +167,27 @@ pub fn load(
     animations.prepare_logical_bones(&files, models, types)?;
     animations.bind_weapon_templates(types);
     Ok(animations)
+}
+
+fn truck_wheels(
+    files: &[content::ContentFile],
+    object: &content::Declaration,
+    draw: &[ContentLine],
+    stats: &UnitType,
+) -> Result<Option<super::combat_bike::Rules>, Box<dyn Error>> {
+    use super::combat_bike::Rules;
+    let family = draw[0].tokens[1].as_str();
+    if family == "W3DTruckDraw"
+        && (stats.combat_bike.is_some() || stats.name == "GLAVehicleBombTruck")
+    {
+        return Rules::load(files, object, draw).map(Some);
+    }
+    if matches!(family, "W3DTruckDraw" | "W3DOverlordTruckDraw")
+        && stats.kind_of.iter().any(|kind| kind == "VEHICLE")
+    {
+        return Rules::load_wheels(draw).map(Some);
+    }
+    Ok(None)
 }
 
 fn external_draw(name: &str, draws: &[&[ContentLine]]) -> Result<bool, Box<dyn Error>> {
@@ -485,7 +510,7 @@ pub(super) fn load_state(
 fn load_motion(assets: &VirtualAssets, name: &str) -> Result<Option<Clip>, Box<dyn Error>> {
     let suffix = name.rsplit('.').next().ok_or("animation name missing")?;
     let path = format!("art/w3d/{suffix}.w3d");
-    let asset = match assets.read(&path) {
+    let asset = match generals_assets::w3d::read_asset(assets, suffix) {
         Ok(asset) => asset,
         // Get_HAnim returns null after an unsuccessful file load and exact-name
         // retry. Decoder and I/O failures remain explicit admission errors.
@@ -501,7 +526,7 @@ fn load_motion(assets: &VirtualAssets, name: &str) -> Result<Option<Clip>, Box<d
         return Ok(None);
     }
     let hierarchy_path = format!("art/w3d/{}.w3d", clip.hierarchy);
-    clip.bind_hierarchy(&assets.read(&hierarchy_path)?.bytes)
+    clip.bind_hierarchy(&generals_assets::w3d::read_asset(assets, &clip.hierarchy)?.bytes)
         .map_err(|error| format!("{name} hierarchy {hierarchy_path}: {error}"))?;
     Ok(Some(clip))
 }
@@ -574,6 +599,12 @@ pub(super) fn parse(lines: &[ContentLine]) -> Result<Draw, Box<dyn Error>> {
     let ignored = field(lines, 1, "IgnoreConditionStates")
         .map_or_else(BTreeSet::new, |line| flags(&line.tokens[1..]));
     Ok(Draw {
+        truck_wheels: None,
+        treads: super::treads::Rules::load(lines)?,
+        track: field(lines, 1, "TrackMarks")
+            .map(scalar)
+            .transpose()?
+            .map(str::to_ascii_lowercase),
         supply: BTreeMap::new(),
         upgrade_show: Vec::new(),
         attach_bone: field(lines, 1, "AttachToBoneInAnotherModule")

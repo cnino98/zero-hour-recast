@@ -50,7 +50,10 @@ pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
         "Hijacker production differs from original cost/time",
     )?;
     let actor = produce_type(game, barracks, kind, 0)?;
-    let enemy = friendly_entity(game, Kind::Builder, 1)?;
+    let enemy_command = friendly_entity(game, Kind::CommandCenter, 1)
+        .map_err(|error| format!("USA Command Center after promotion combat: {error}"))?;
+    let enemy = crate::progression_verification::construction::builder(game)
+        .map_err(|error| format!("USA Dozer after promotion combat: {error}"))?;
     // The promotion fight prepared the victim's original powered economy.
     let enemy_barracks = construct(game, enemy, Kind::Barracks, 1)?;
     let factory = construct(game, enemy, Kind::Factory, 1)?;
@@ -60,7 +63,6 @@ pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
     let attacker = produce_type(game, enemy_barracks, defender, 1)?;
     // Keep the later destruction weapon at its own base while the unarmed
     // Hijacker loses stationary stealth during its actual enter approach.
-    let enemy_command = friendly_entity(game, Kind::CommandCenter, 1)?;
     let enemy_base = game.entities[enemy_command].position;
     approach(game, attacker, enemy_base, 150.0)?;
     let point = stage_driver(game, actor, gla_factory)?;
@@ -332,34 +334,46 @@ fn approach(
 
 pub fn verify(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
     let setup = prepare(game)?;
-    let health = game.entities[setup.host].health.to_bits();
+    capture_host(game, setup.actor, setup.host)?;
+    verify_ground_release(game, &setup)
+}
+
+fn capture_host(game: &mut Skirmish, actor: usize, host: usize) -> Result<(), Box<dyn Error>> {
+    let health = game.entities[host].health.to_bits();
     let losses = game.players[0].statistics.units_lost;
-    game.hijack(setup.actor, setup.host)?;
+    game.hijack(actor, host)?;
     advance_until(game, 3000, "original Hijacker physical contact", |game| {
-        game.entities[setup.host].hijacked()
+        game.entities[host].hijacked()
     })?;
     require(
-        game.entities[setup.host].owner == 0
-            && game.entities[setup.host].health.to_bits() == health,
+        game.entities[host].owner == 0 && game.entities[host].health.to_bits() == health,
         "Hijacker capture changed host health or failed ownership",
     )?;
     require(
-        game.entities[setup.actor].alive()
-            && game.entities[setup.actor].masked()
-            && game.entities[setup.actor].driving_vehicle() == Some(setup.host),
-        "EjectPilotDie host consumed rather than stored living Hijacker",
-    )?;
-    require(
-        game.players[0].statistics.units_lost == losses,
-        "Hijacking granted a driver death loss",
-    )?;
+        game.entities[actor].alive()
+            && game.entities[actor].masked()
+            && game.entities[actor].driving_vehicle() == Some(host)
+            && game.players[0].statistics.units_lost == losses,
+        "EjectPilotDie host did not store the living Hijacker without death credit",
+    )
+}
+
+fn verify_ground_release(game: &mut Skirmish, setup: &Setup) -> Result<(), Box<dyn Error>> {
+    let losses = game.players[0].statistics.units_lost;
     game.attack(setup.attacker, setup.host)?;
+    let mut host_smoke = false;
+    let mut hull_smoke = false;
     advance_until(
         game,
         18_000,
         "paid enemy weapon destroys hijacked host",
-        |game| !game.entities[setup.host].alive(),
+        |game| {
+            host_smoke |= emitted_damage_smoke(game, setup.host);
+            hull_smoke |= emitted_hull_smoke(game);
+            !game.entities[setup.host].alive()
+        },
     )?;
+    require(host_smoke, "original damaged Humvee smoke never started")?;
     require(
         game.entities[setup.actor].masked(),
         "Hidden driver ejected before final host destruction",
@@ -368,7 +382,10 @@ pub fn verify(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
         game,
         18_000,
         "original host destruction releases driver",
-        |game| !game.entities[setup.actor].masked(),
+        |game| {
+            hull_smoke |= emitted_hull_smoke(game);
+            !game.entities[setup.actor].masked()
+        },
     )
     .map_err(|error| -> Box<dyn Error> {
         let host = &game.entities[setup.host];
@@ -387,6 +404,7 @@ pub fn verify(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
             driver.driving_vehicle()
         ).into()
     })?;
+    require(hull_smoke, "original Humvee rubble smoke never started")?;
     require(
         game.entities[setup.actor].alive()
             && game.entities[setup.actor].driving_vehicle().is_none()
@@ -399,22 +417,228 @@ pub fn verify(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn run(root: &Path) -> Result<(), Box<dyn Error>> {
-    let mut game = load_game(root)?;
-    verify(&mut game)
+fn emitted_damage_smoke(game: &Skirmish, object: usize) -> bool {
+    game.presentation
+        .structure_events
+        .iter()
+        .any(|event| event.object == object && is_damage_smoke(&event.action))
 }
 
-fn load_game(root: &Path) -> Result<Skirmish, Box<dyn Error>> {
-    let mut game = crate::infiltrator_verification::load_game(root)?;
-    let assets = generals_assets::virtual_assets::VirtualAssets::for_zero_hour(
-        root.join("GameData/Command and Conquer Generals"),
-        root.join("GameData/Command and Conquer Generals Zero Hour"),
+fn emitted_hull_smoke(game: &Skirmish) -> bool {
+    game.presentation.structure_events.iter().any(|event| {
+        game.catalog[game.entities[event.object].type_index].name == "AmericaVehicleHumveeDeadHull"
+            && is_damage_smoke(&event.action)
+    })
+}
+
+fn is_damage_smoke(action: &generals_sim::skirmish::structure_death::VisualAction) -> bool {
+    matches!(
+        action,
+        generals_sim::skirmish::structure_death::VisualAction::TransitionParticle { template, .. }
+            if template == "SmokeSmallContinuous01"
+    )
+}
+
+pub struct Airborne {
+    pub driver: usize,
+    pub chinook: usize,
+    pub host: usize,
+    pub defender: usize,
+    pub losses: u32,
+}
+
+pub fn prepare_airborne(game: &mut Skirmish) -> Result<Airborne, Box<dyn Error>> {
+    let setup = prepare(game)?;
+    capture_host(game, setup.actor, setup.host)?;
+    verify_ground_release(game, &setup)?;
+    stage_airborne(game, &setup)
+}
+
+fn stage_airborne(game: &mut Skirmish, setup: &Setup) -> Result<Airborne, Box<dyn Error>> {
+    let barracks = friendly_entity(game, Kind::Barracks, 0)?;
+    let gla_factory = friendly_entity(game, Kind::Factory, 0)?;
+    let enemy_barracks = friendly_entity(game, Kind::Barracks, 1)?;
+    let enemy_factory = friendly_entity(game, Kind::Factory, 1)?;
+    let enemy_base = game.entities[friendly_entity(game, Kind::CommandCenter, 1)?].position;
+    if game.entities[setup.attacker].alive() {
+        approach(game, setup.attacker, enemy_base, 150.0)?;
+    }
+
+    crate::strategy_verification::research(game, barracks, "Upgrade_InfantryCaptureBuilding")?;
+    let rebel_kind = template(game, "GLAInfantryRebel")?;
+    let rebel = produce_type(game, barracks, rebel_kind, 0)?;
+    let supply = crate::progression_verification::target_supply_center(game)?;
+    let supply_point = game.entities[supply].position;
+    approach(game, rebel, supply_point, 90.0)?;
+    game.capture(rebel, supply)?;
+    advance_until(
+        game,
+        3600,
+        "paid Rebel capturing original USA Supply Center",
+        |game| game.entities[supply].owner == 0,
     )?;
-    let map = generals_assets::map::MapData::parse(&assets.read(crate::playtest::MAP_NAME)?.bytes)?;
-    let mut data = crate::skirmish_data::load(&assets, &map.objects)?;
-    let mut animations = crate::model_animation::load(&assets, &mut data.models, &game.catalog)?;
-    animations.bind_logical_bones(&mut game.catalog);
-    Ok(game)
+    let chinook_kind = template(game, "AmericaVehicleChinook")?;
+    advance_until(game, 18_000, "normal income funding paid Chinook", |game| {
+        game.players[0].cash >= game.catalog[chinook_kind].cost
+    })?;
+    let chinook = produce_type(game, supply, chinook_kind, 0)?;
+
+    let defender_kind = template(game, "AmericaInfantryMissileDefender")?;
+    let defender = produce_type(game, enemy_barracks, defender_kind, 1)?;
+    let host_kind = game.entities[setup.host].type_index;
+    let host = produce_type(game, enemy_factory, host_kind, 1)?;
+    let point = stage_driver(game, setup.actor, gla_factory)?;
+    approach(game, host, point, 35.0)?;
+    capture_host(game, setup.actor, host)?;
+
+    // Board with the defender still at its base. The Chinook's route from the
+    // captured Supply Center can cross the defender's range before rendezvous.
+    approach(game, chinook, point, 20.0)?;
+    game.enter(host, chinook)?;
+    advance_until(
+        game,
+        6000,
+        "Chinook boarding the captured Humvee and taking off",
+        |game| {
+            game.entities[host].contained_by() == Some(chinook)
+                && game.height_above_ground(host) > 80.0
+        },
+    )?;
+    require(
+        game.entities[setup.actor].driving_vehicle() == Some(host)
+            && game.entities[setup.actor].masked(),
+        "Airborne cargo transport lost the hidden Hijacker before combat",
+    )?;
+    require_pristine_cargo(game, chinook, "after boarding and takeoff")?;
+    stage_air_defender(game, defender, chinook)?;
+    require_pristine_cargo(game, chinook, "after the defender's approach")?;
+    Ok(Airborne {
+        driver: setup.actor,
+        chinook,
+        host,
+        defender,
+        losses: game.players[0].statistics.units_lost,
+    })
+}
+
+fn stage_air_defender(
+    game: &mut Skirmish,
+    defender: usize,
+    chinook: usize,
+) -> Result<(), Box<dyn Error>> {
+    let missile_defender = &game.entities[defender];
+    let unit = &game.catalog[missile_defender.type_index];
+    // Include the authored laser-lock weapon's longer range. The combat phase
+    // still issues the ordinary attack and fires the standard missiles.
+    let range = unit
+        .secondary_weapon
+        .as_ref()
+        .map_or(unit.weapon.range, |weapon| {
+            weapon.range.max(unit.weapon.range)
+        });
+    let cargo_position = game.entities[chinook].position;
+    approach(game, defender, cargo_position, range + 100.0)?;
+    let transport = &game.entities[chinook];
+    let missile_defender = &game.entities[defender];
+    let distance = (transport.position[0] - missile_defender.position[0])
+        .hypot(transport.position[1] - missile_defender.position[1]);
+    require(
+        missile_defender.alive() && (range + 50.0..=range + 150.0).contains(&distance),
+        &format!(
+            "airborne trial standoff failed: Chinook {:?}, Missile Defender {:?} health={}, distance={distance}, longest weapon range={range}",
+            transport.position, missile_defender.position, missile_defender.health
+        ),
+    )
+}
+
+fn require_pristine_cargo(
+    game: &Skirmish,
+    chinook: usize,
+    phase: &str,
+) -> Result<(), Box<dyn Error>> {
+    let transport = &game.entities[chinook];
+    let last_attacker = transport.last_attacker().map(|id| {
+        let actor = &game.entities[id];
+        (
+            id,
+            game.catalog[actor.type_index].name.as_str(),
+            actor.position,
+        )
+    });
+    require(
+        transport.alive() && transport.health >= transport.max_health,
+        &format!(
+            "airborne cargo damaged {phase}: Chinook {:?} health={}/{}, last attacker={last_attacker:?}",
+            transport.position, transport.health, transport.max_health
+        ),
+    )
+}
+
+#[cfg(test)]
+fn verify_airborne_release(game: &mut Skirmish, setup: &Setup) -> Result<(), Box<dyn Error>> {
+    let airborne = stage_airborne(game, setup)?;
+    let Airborne {
+        chinook,
+        host,
+        defender,
+        losses,
+        ..
+    } = airborne;
+    game.attack(defender, chinook)?;
+    advance_until(
+        game,
+        2_700,
+        "paid Missile Defender destroying loaded Chinook",
+        |game| !game.entities[chinook].alive(),
+    )?;
+    require(
+        game.height_above_ground(chinook) > 60.0
+            && game.entities[chinook].last_attacker() == Some(defender)
+            && !game.entities[host].alive(),
+        "Missile Defender did not destroy the loaded Chinook in flight",
+    )?;
+    advance_until(
+        game,
+        180,
+        "host deletion placing Hijacker in original parachute",
+        |game| game.entities[setup.actor].contained_by().is_some(),
+    )?;
+    let chute = game.entities[setup.actor]
+        .contained_by()
+        .ok_or("airborne Hijacker lost its parachute")?;
+    require(
+        !game.entities[host].exists()
+            && game.catalog[game.entities[chute].type_index].name == "AmericaParachute"
+            && game.entities[chute].owner == 0
+            && game.height_above_ground(chute) > 60.0
+            && game.entities[setup.actor].driving_vehicle().is_none(),
+        "Airborne host deletion failed original player-owned parachute release",
+    )?;
+    advance_until(game, 600, "airborne Hijacker parachute opening", |game| {
+        game.entities[chute].parachute_opened()
+    })?;
+    advance_until(game, 600, "paid Hijacker landing", |game| {
+        game.entities[setup.actor].contained_by().is_none()
+    })?;
+    let driver = &game.entities[setup.actor];
+    require(
+        driver.alive()
+            && !driver.masked()
+            && driver.selectable(&game.catalog[driver.type_index])
+            && game.height_above_ground(setup.actor).abs() < 0.1
+            && game.players[0].statistics.units_lost == losses + 2,
+        "Airborne return did not restore the original living driver or score both vehicle losses",
+    )?;
+    println!(
+        "HIJACKER_AIRBORNE chinook={chinook} host={host} driver={} parachute={chute} opened=true landed=true",
+        setup.actor
+    );
+    Ok(())
+}
+
+pub fn run(root: &Path) -> Result<(), Box<dyn Error>> {
+    let mut game = crate::infiltrator_verification::load_game(root)?;
+    verify(&mut game)
 }
 
 #[cfg(test)]
@@ -424,5 +648,16 @@ mod tests {
     fn paid_hijacker_converts_and_returns_after_original_host_destruction() {
         let root = generals_assets::game_root().unwrap();
         super::run(&root).unwrap();
+    }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_hijacker_returns_after_airborne_chinook_cargo_death() {
+        let root = generals_assets::game_root().unwrap();
+        let mut game = crate::infiltrator_verification::load_game(&root).unwrap();
+        let setup = super::prepare(&mut game).expect("paid Hijacker combat preparation");
+        super::capture_host(&mut game, setup.actor, setup.host).expect("initial Humvee capture");
+        super::verify_ground_release(&mut game, &setup).expect("initial ground driver return");
+        super::verify_airborne_release(&mut game, &setup).expect("airborne cargo driver return");
     }
 }

@@ -226,10 +226,12 @@ impl Skirmish {
             self.record_body_damage(target, Some(source), damage);
             self.body_health_loss_callbacks(target, Some(source), amount, damage, death);
             self.notify_containment_body_state(target, old_state);
-            self.structure_damage_transition(
-                target,
-                self.entities[target].damage_state.previous_health,
-            );
+            if self.body_damage_state(target) != old_state {
+                self.structure_damage_transition(
+                    target,
+                    self.entities[target].damage_state.previous_health,
+                );
+            }
             self.body_damage_feedback(target, old_state);
             if self.entities[target].health <= 0.0
                 && self.entities[target].damage_state.previous_health > 0.0

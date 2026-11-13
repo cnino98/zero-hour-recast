@@ -37,6 +37,7 @@ pub(super) fn fixture_type(faction: Faction, kind: Kind) -> UnitType {
         neutral_tech: NeutralTechRules::none(),
         minimum_health: 0.0,
         battle_bus: None,
+        combat_bike: None,
         live_physics: None,
         aircraft: None,
         parking: None,
@@ -149,6 +150,7 @@ fn fixture_behavior(kind: Kind) -> BehaviorData {
         bridges: Vec::new(),
         neutron_blast: Vec::new(),
         bone_fx: Vec::new(),
+        damage_transitions: Vec::new(),
         command_button_hunts: Vec::new(),
         mine_generators: Vec::new(),
         minefields: Vec::new(),
@@ -1267,16 +1269,25 @@ fn build_clear_path_uses_terrain_connectivity_without_structure_goal_restriction
 fn flying_dock_probe_ignores_only_the_actual_dock_object() {
     let mut game = game();
     game.catalog[1].movement_surface = MovementSurface::Air;
+    game.catalog[1].locomotor.legal_surfaces = 8;
     let unit = game.spawn(1, 0, [105.0, 105.0], true);
-    let dock = game.object_footprint(game.supplies[0].object);
-    fixture_warehouse(&mut game, dock.position, dock.major, 400, false);
-    let world = game.find_native_dock_position(
-        unit,
-        game.supplies[0].object,
-        [dock.position[0], dock.position[1], 0.0],
+    let dock_id = game.supplies[0].object;
+    let dock = game.object_footprint(dock_id);
+    let center = [dock.position[0], dock.position[1], 0.0];
+    game.update_ground_contacts();
+    assert_eq!(
+        game.find_native_dock_position(unit, dock_id, center)
+            .map(f32::to_bits),
+        center.map(f32::to_bits)
     );
-    let point = [world[0], world[1]];
-    assert!(distance_squared(point, dock.position) > (dock.major + 5.0).powi(2));
+
+    fixture_warehouse(&mut game, dock.position, dock.major, 400, false);
+    game.update_ground_contacts();
+    let [x, y, _] = game.find_native_dock_position(unit, dock_id, center);
+    assert!(
+        distance_squared([x, y], dock.position) > (dock.major + 5.0).powi(2),
+        "colocated second warehouse must block the flyer at {x}, {y}"
+    );
 }
 
 #[test]

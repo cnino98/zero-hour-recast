@@ -164,9 +164,19 @@ pub fn run(root: &Path) -> Result<(), Box<dyn Error>> {
         let fake = isolated_fake(&mut game, setup.worker, kind)?;
         game.detonate_fake(0, fake)?;
         require(
-            !game.entities[fake].alive(),
-            "SuicideWeapon failed actual source damage",
+            game.entities[fake].alive()
+                && matches!(
+                    game.entities[fake].ai.order,
+                    generals_sim::skirmish::Order::FireAt { .. }
+                ),
+            "original detonation button did not enter the ordinary attack state",
         )?;
+        advance_until(&mut game, 30, "SuicideWeapon self damage", |game| {
+            matches!(
+                game.entities[fake].death_type(),
+                generals_sim::skirmish::DeathType::Suicided
+            )
+        })?;
         advance_until(
             &mut game,
             30,
@@ -214,8 +224,13 @@ pub fn switch(game: &mut Skirmish, worker: usize, fake: bool) -> Result<(), Box<
     })
 }
 
-fn isolated_fake(game: &mut Skirmish, worker: usize, kind: usize) -> Result<usize, Box<dyn Error>> {
-    let base = game.entities[friendly_entity(game, Kind::CommandCenter, 0)?].position;
+pub fn isolated_fake(
+    game: &mut Skirmish,
+    worker: usize,
+    kind: usize,
+) -> Result<usize, Box<dyn Error>> {
+    let owner = game.entities[worker].owner;
+    let base = game.entities[friendly_entity(game, Kind::CommandCenter, owner)?].position;
     let point = (0_u8..16)
         .find_map(|index| {
             let angle = f32::from(index) * std::f32::consts::TAU / 16.0;
@@ -239,11 +254,7 @@ fn isolated_fake(game: &mut Skirmish, worker: usize, kind: usize) -> Result<usiz
             })
         })
         .ok_or("no isolated legal source fake detonation site")?;
-    crate::skirmish_verification::scout_construction_site(game, worker, kind, point)?;
-    let fake = game.build(worker, kind, point)?;
-    advance_until(game, 18000, "paid isolated fake construction", |game| {
-        game.entities[fake].complete()
-    })?;
+    let fake = crate::skirmish_verification::construct_type_at(game, worker, kind, owner, point)?;
     game.move_to(worker, base)?;
     advance_until(
         game,
@@ -267,9 +278,97 @@ fn isolated_fake(game: &mut Skirmish, worker: usize, kind: usize) -> Result<usiz
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::skirmish_verification::produce_type;
+    use generals_sim::skirmish::structure_death::VisualAction;
+
     #[ignore = "requires original game installation"]
     #[test]
     fn installed_paid_all_five_build_convert_and_detonate() {
         super::run(&generals_assets::game_root().unwrap()).unwrap();
+    }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_fake_damage_repair_and_conversion_keep_original_transition_particles() {
+        let root = generals_assets::game_root().unwrap();
+        let mut game = crate::opponent_verification::load_game(&root, MAP_NAME).unwrap();
+        game.reset(Faction::Gla, Faction::Usa).unwrap();
+        let worker = friendly_entity(&game, Kind::Builder, 0).unwrap();
+        switch(&mut game, worker, true).unwrap();
+        let fake_type = template(&game, NAMES[1]).unwrap();
+        let fake = isolated_fake(&mut game, worker, fake_type).unwrap();
+        let enemy = friendly_entity(&game, Kind::Builder, 1).unwrap();
+        construct(&mut game, enemy, Kind::PowerPlant, 1).unwrap();
+        let barracks = construct(&mut game, enemy, Kind::Barracks, 1).unwrap();
+        let ranger_type = template(&game, "AmericaInfantryRanger").unwrap();
+        let ranger = produce_type(&mut game, barracks, ranger_type, 1).unwrap();
+        let base = game.entities[friendly_entity(&game, Kind::CommandCenter, 1).unwrap()].position;
+        damage_and_repair(&mut game, ranger, fake, worker, base);
+        let real = convert(&mut game, fake).unwrap();
+        assert!(!game.entities[fake].exists());
+        let worker_base =
+            game.entities[friendly_entity(&game, Kind::CommandCenter, 0).unwrap()].position;
+        game.move_to(worker, worker_base).unwrap();
+        advance_until(
+            &mut game,
+            18_000,
+            "Worker leaves converted building",
+            |game| {
+                let [x, y] = game.entities[worker].position;
+                let [target_x, target_y] = game.entities[real].position;
+                (x - target_x).hypot(y - target_y) > 300.0
+            },
+        )
+        .unwrap();
+        damage_and_repair(&mut game, ranger, real, worker, base);
+    }
+
+    fn damage_and_repair(
+        game: &mut Skirmish,
+        attacker: usize,
+        target: usize,
+        worker: usize,
+        retreat: [f32; 2],
+    ) {
+        game.attack(attacker, target).unwrap();
+        advance_until(game, 18_000, "paid Ranger triggers damaged smoke", |game| {
+            game.presentation.structure_events.iter().any(|event| {
+                event.object == target
+                    && matches!(&event.action,
+                    VisualAction::TransitionParticle { template, .. }
+                    if template == "StructureTransitionSmallSmoke")
+            })
+        })
+        .unwrap_or_else(|error| {
+            let actor = &game.entities[attacker];
+            let building = &game.entities[target];
+            panic!(
+                "{error}; attacker position={:?}, health={}; target {} position={:?}, health={}/{}",
+                actor.position,
+                actor.health,
+                game.catalog[building.type_index].name,
+                building.position,
+                building.health,
+                building.max_health
+            );
+        });
+        game.move_to(attacker, retreat).unwrap();
+        game.repair(worker, target).unwrap();
+        let mut cleared = false;
+        advance_until(
+            game,
+            18_000,
+            "paid structure repair retires damage smoke",
+            |game| {
+                cleared |= game.presentation.structure_events.iter().any(|event| {
+                    event.object == target
+                        && matches!(event.action, VisualAction::TransitionClear { .. })
+                });
+                let building = &game.entities[target];
+                building.health.to_bits() == building.max_health.to_bits() && cleared
+            },
+        )
+        .unwrap();
     }
 }

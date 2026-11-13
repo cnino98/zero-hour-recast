@@ -1,7 +1,9 @@
 //! Paid aircraft controls, missiles, source exhaust, sound and rocket-pod barrage.
+pub mod countermeasures;
 mod rocket_pods;
 use crate::{
     aircraft_verification,
+    capture_framing::{self, AircraftFrame},
     input::{self, Mouse, PickTarget},
     model_animation::AnimatedPart,
     particles::ParticleInspection,
@@ -10,6 +12,7 @@ use crate::{
     projectile_render::ProjectileVisual,
     skirmish_verification::require,
     source_audio::{FiringAudioInspection, Voice},
+    terrain::Terrain,
 };
 use bevy::prelude::*;
 use std::error::Error;
@@ -26,6 +29,7 @@ struct Check {
     reported: u64,
     diagnostic_saved: [bool; 2],
     diagnostic_paused: bool,
+    original_view: Option<(f32, f32)>,
 }
 
 enum Stage {
@@ -54,6 +58,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         reported: 0,
         diagnostic_saved: [false; 2],
         diagnostic_paused: false,
+        original_view: None,
     });
     app.world_mut().resource_mut::<Time<Virtual>>().pause();
     Ok(())
@@ -77,10 +82,11 @@ struct Control<'w> {
     time: ResMut<'w, Time<Virtual>>,
     capture: Res<'w, Capture>,
     exit: MessageWriter<'w, AppExit>,
+    terrain: Res<'w, Terrain>,
 }
 
 fn begin(mut check: ResMut<Check>, mut control: Control) {
-    if matches!(check.stage, Stage::Done) {
+    if matches!(check.stage, Stage::Done) || !control.capture.ready_for_scenario() {
         return;
     }
     let actor = if matches!(
@@ -94,9 +100,29 @@ fn begin(mut check: ResMut<Check>, mut control: Control) {
     let game = &control.battle.simulation;
     let from = Vec2::from_array(game.entities[actor].position);
     let to = Vec2::from_array(game.entities[check.setup.target].position);
-    control.camera.focus = (from + to) * 0.05;
-    if !control.capture.ready_for_scenario() {
-        return;
+    let (yaw, distance) = *check
+        .original_view
+        .get_or_insert((control.camera.settings.yaw, control.camera.distance));
+    if matches!(check.stage, Stage::Raptor | Stage::Comanche) {
+        let mut focus = game.object_position(actor);
+        // View across the shot's horizontal direction so the carrier does not
+        // conceal the missile during the first visible frames.
+        control.camera.settings.yaw = (to.y - from.y).atan2(to.x - from.x);
+        if let Some((position, _)) = game
+            .projectiles
+            .iter()
+            .find(|projectile| projectile.source == actor)
+            .and_then(|projectile| projectile.render_transform(&game.entities))
+        {
+            focus = std::array::from_fn(|axis| (focus[axis] + position[axis]) * 0.5);
+        }
+        control.camera.distance =
+            (control.camera.settings.min_height * 2.0).min(control.camera.settings.max_height);
+        capture_framing::focus_on(&mut control.camera, &control.terrain, focus);
+    } else {
+        control.camera.settings.yaw = yaw;
+        control.camera.distance = distance;
+        control.camera.focus = (from + to) * 0.05;
     }
     if check.diagnostic_paused {
         check.diagnostic_paused = false;
@@ -201,6 +227,7 @@ struct View<'w, 's> {
     projectiles: Query<'w, 's, (&'static ProjectileVisual, &'static Children)>,
     visible: Query<'w, 's, &'static ViewVisibility>,
     particles: ParticleInspection<'w, 's>,
+    framing: AircraftFrame<'w, 's>,
 }
 
 impl View<'_, '_> {
@@ -216,6 +243,7 @@ impl View<'_, '_> {
             projectiles,
             visible,
             particles,
+            framing,
         } = self;
         let body = [actor, target].map(|id| {
             actors.iter().any(|(visual, children)| {
@@ -228,7 +256,7 @@ impl View<'_, '_> {
                     })
             })
         });
-        let missile = missile(battle, actor, &projectiles, &visible, &particles)?;
+        let missile = missile(battle, actor, &projectiles, &visible, &particles, &framing)?;
         Ok([body[0], body[1], missile[0], missile[1]])
     }
 }
@@ -344,6 +372,7 @@ fn missile(
     projectiles: &Query<(&ProjectileVisual, &Children)>,
     visible: &Query<&ViewVisibility>,
     particles: &ParticleInspection,
+    framing: &AircraftFrame,
 ) -> Result<[bool; 2], Box<dyn Error>> {
     let mut body = false;
     for (visual, children) in projectiles {
@@ -356,6 +385,7 @@ fn missile(
             || !children
                 .iter()
                 .any(|child| visible.get(child).is_ok_and(|visibility| visibility.get()))
+            || framing.isolated_projectile(battle, children)?.is_none()
         {
             continue;
         }

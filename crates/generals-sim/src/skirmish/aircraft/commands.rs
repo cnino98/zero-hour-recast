@@ -82,6 +82,8 @@ impl Skirmish {
                     | Kind::AttackMove { .. }
                     | Kind::AttackArea(_)
                     | Kind::Guard(_)
+                    | Kind::GuardFlying(_)
+                    | Kind::GuardObject(_)
                     | Kind::GuardArea(_)
                     | Kind::Retaliate { .. }
                     | Kind::Hunt
@@ -106,7 +108,12 @@ impl Skirmish {
             RESUME_RELOAD,
             matches!(
                 command.kind,
-                Kind::Guard(_) | Kind::GuardArea(_) | Kind::Retaliate { .. } | Kind::Hunt
+                Kind::Guard(_)
+                    | Kind::GuardFlying(_)
+                    | Kind::GuardObject(_)
+                    | Kind::GuardArea(_)
+                    | Kind::Retaliate { .. }
+                    | Kind::Hunt
             ),
         );
         state.pending = None;

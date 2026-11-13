@@ -9,10 +9,12 @@ use generals_sim::skirmish::Faction;
 mod cancellation;
 mod command_icons;
 mod menu;
+mod ocl_timer;
 pub mod options;
 pub mod shell;
 pub use cancellation::update as cancellation_update;
 pub use command_icons::update as update_command_icons;
+pub use ocl_timer::update as ocl_timer_update;
 #[cfg(test)]
 mod changes_tests;
 pub mod observer;
@@ -97,6 +99,7 @@ pub enum Action {
     Modal,
     Slot(usize),
     CancelConstruction,
+    OclTimer,
     CancelProduction(Option<(usize, i32)>),
     CancelUpgrade(Option<(usize, usize)>),
     Menu,
@@ -263,6 +266,7 @@ pub fn setup(
     ));
     command_icons::setup(&mut commands, data, &mut icons);
     cancellation::setup(&mut commands, data, &mut icons);
+    ocl_timer::setup(&mut commands, data, &mut icons);
     commands.spawn((
         Button,
         Action::Pause,
@@ -595,6 +599,14 @@ fn gameplay_button(
                 dispatch_command(battle, pointer, command.action);
             }
         }
+        Action::OclTimer => {
+            if !battle.paused
+                && let Some(command) = ocl_timer::command(battle, data)
+                && command_icons::available(battle, command)
+            {
+                dispatch_command(battle, pointer, command.action);
+            }
+        }
         Action::Worker => select_idle_worker(battle, rig, pointer, menu),
         _ => {}
     }
@@ -629,6 +641,8 @@ fn button_enabled(
         Action::ToggleDropdown(dropdown) => menu.enabled(dropdown),
         Action::ChooseColor { slot, color } => menu.color_available(slot, color),
         Action::Slot(slot) => selected_command(battle, data, slot)
+            .is_some_and(|command| command_icons::available(battle, command)),
+        Action::OclTimer => ocl_timer::command(battle, data)
             .is_some_and(|command| command_icons::available(battle, command)),
         Action::Science { faction, index } => battle
             .simulation
@@ -697,14 +711,6 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
             transport::dispatch(battle, mouse, action);
         }
         CommandAction::SwitchWeapon(slot) => switch_weapon(battle, mouse, slot),
-        CommandAction::LaserLock => {
-            targeting_voice(
-                battle,
-                mouse,
-                CommandMode::LaserLock,
-                crate::source_audio::Voice::LaserMode,
-            );
-        }
         CommandAction::HackInternet => hack_internet(battle, mouse),
         CommandAction::CarBomb
         | CommandAction::Hijack
@@ -715,6 +721,7 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
         | CommandAction::AttackMove
         | CommandAction::CombatDrop
         | CommandAction::Guard
+        | CommandAction::GuardFlying
         | CommandAction::Rally
         | CommandAction::Capture => {
             battle.placing = None;
@@ -723,22 +730,6 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
         CommandAction::FireWeapon(slot) => target_location_weapon(battle, mouse, slot),
         CommandAction::ClearMines(slot) => {
             crate::input::contamination::mine_mode(battle, mouse, slot);
-        }
-        CommandAction::SnipeVehicle(slot) => {
-            targeting_voice(
-                battle,
-                mouse,
-                CommandMode::SnipeVehicle(slot),
-                crate::source_audio::Voice::SnipeMode,
-            );
-        }
-        CommandAction::Cleanup => {
-            targeting_voice(
-                battle,
-                mouse,
-                CommandMode::Cleanup,
-                crate::source_audio::Voice::CleanupMode,
-            );
         }
         CommandAction::CashHack
         | CommandAction::EmergencyRepair
@@ -757,7 +748,7 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
             }
         }
         CommandAction::Stop => stop_selected(battle),
-        CommandAction::Research(index) => research_order(battle, index),
+        CommandAction::Research(index) => research_order(battle, mouse, index),
         CommandAction::Sell => {
             for id in battle.command_message_members() {
                 if let Err(error) = battle.simulation.sell(0, id) {
@@ -768,11 +759,79 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
         CommandAction::CancelConstruction => {
             cancellation::activate(&Action::CancelConstruction, battle);
         }
+        CommandAction::LaserLock
+        | CommandAction::BurtonKnife
+        | CommandAction::BurtonCharge(_)
+        | CommandAction::BurtonDetonate
+        | CommandAction::BombTruckDisguise
+        | CommandAction::BombTruckDetonate
+        | CommandAction::SnipeVehicle(_)
+        | CommandAction::Cleanup => dispatch_unit_command(battle, mouse, action),
     }
 }
 
-fn research_order(battle: &mut Match, index: usize) {
+fn dispatch_unit_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAction) {
+    match action {
+        CommandAction::LaserLock => {
+            targeting_voice(
+                battle,
+                mouse,
+                CommandMode::LaserLock,
+                crate::source_audio::Voice::LaserMode,
+            );
+        }
+        CommandAction::BurtonKnife => targeting_voice(
+            battle,
+            mouse,
+            CommandMode::Burton(crate::input::burton::TargetCommand::Knife),
+            crate::source_audio::Voice::BurtonKnifeMode,
+        ),
+        CommandAction::BurtonCharge(charge) => {
+            use generals_sim::skirmish::special_ability::BurtonCharge;
+            let voice = match charge {
+                BurtonCharge::Timed => crate::source_audio::Voice::BurtonTimedMode,
+                BurtonCharge::Remote => crate::source_audio::Voice::BurtonRemoteMode,
+            };
+            targeting_voice(
+                battle,
+                mouse,
+                CommandMode::Burton(crate::input::burton::TargetCommand::Charge(charge)),
+                voice,
+            );
+        }
+        CommandAction::BurtonDetonate => crate::input::burton::detonate(battle, mouse),
+        CommandAction::BombTruckDisguise => targeting_voice(
+            battle,
+            mouse,
+            CommandMode::BombTruckDisguise,
+            crate::source_audio::Voice::BombTruckDisguiseMode,
+        ),
+        CommandAction::BombTruckDetonate => crate::input::bomb_truck::detonate(battle),
+        CommandAction::SnipeVehicle(slot) => {
+            targeting_voice(
+                battle,
+                mouse,
+                CommandMode::SnipeVehicle(slot),
+                crate::source_audio::Voice::SnipeMode,
+            );
+        }
+        CommandAction::Cleanup => {
+            targeting_voice(
+                battle,
+                mouse,
+                CommandMode::Cleanup,
+                crate::source_audio::Voice::CleanupMode,
+            );
+        }
+        _ => unreachable!("dispatched unit command"),
+    }
+}
+
+fn research_order(battle: &mut Match, mouse: &mut Mouse, index: usize) {
     if let Some(&producer) = battle.selected.first() {
+        if crate::input::bomb_truck::research_payload(battle, mouse, producer, index) {
+            return;
+        }
         drop(battle.command_message_members());
         if let Err(error) = battle.simulation.queue_upgrade(producer, index) {
             eprintln!("Research rejected: {error}");
@@ -791,6 +850,7 @@ fn command_target_mode(action: CommandAction) -> CommandMode {
         CommandAction::AttackMove => CommandMode::AttackMove,
         CommandAction::CombatDrop => CommandMode::CombatDrop,
         CommandAction::Guard => CommandMode::Guard,
+        CommandAction::GuardFlying => CommandMode::GuardFlying,
         CommandAction::Rally => CommandMode::Rally,
         CommandAction::Capture => CommandMode::Capture,
         _ => unreachable!("targeted command mode"),
@@ -1101,6 +1161,10 @@ fn action_tooltip(action: &Action, battle: &Match, data: &UiData) -> Option<Stri
             "{}\n{}",
             data.cancel_construction.label, data.cancel_construction.description
         )),
+        Action::OclTimer => {
+            let command = ocl_timer::command(battle, data)?;
+            Some(format!("{}\n{}", command.label, command.description))
+        }
         _ => None,
     }
 }

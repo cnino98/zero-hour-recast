@@ -122,7 +122,6 @@ pub(super) fn check_building(game: &mut Skirmish, rules: &OpponentRules, state: 
                 game.team_membership.activate(native);
             }
             team.sequence = None;
-            team.follow = None;
             state.requests[index].orders.clear();
             state.requests[index].phase = RequestPhase::Finished;
             clear_team_flags(state);

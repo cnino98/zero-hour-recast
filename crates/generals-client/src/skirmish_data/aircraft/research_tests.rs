@@ -22,6 +22,12 @@ fn installed_aircraft_research_uses_original_projectile_bonus_and_health_module(
             1500,
         ),
         (
+            "AmericaAirfield",
+            Faction::Usa,
+            "Upgrade_AmericaCountermeasures",
+            1000,
+        ),
+        (
             "ChinaAirfield",
             Faction::China,
             "Upgrade_ChinaAircraftArmor",

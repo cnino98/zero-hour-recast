@@ -80,6 +80,7 @@ mod opponent_verification;
 mod options_preferences;
 mod outpost_capture;
 mod outpost_verification;
+mod p02_ground_capture;
 mod paladin_capture;
 mod particles;
 mod physical_debris;
@@ -124,6 +125,7 @@ mod stealth_fighter_capture;
 mod stealth_fighter_verification;
 mod stealth_unit_capture;
 mod stealth_view;
+mod sticky_bomb_icons;
 mod stinger_capture;
 mod stinger_verification;
 mod strategy_capture;
@@ -157,6 +159,7 @@ mod weapon_verification;
 mod weather_view;
 mod world_capture;
 mod world_data;
+mod world_hover;
 
 use std::{error::Error, process::ExitCode};
 
@@ -368,7 +371,7 @@ fn validate_arguments(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-const SCREEN_CAPTURES: [(&str, playtest::ScreenCapture); 110] = {
+const SCREEN_CAPTURES: [(&str, playtest::ScreenCapture); 121] = {
     use generals_sim::skirmish::Faction;
     use playtest::ScreenCapture;
     [
@@ -423,16 +426,45 @@ const SCREEN_CAPTURES: [(&str, playtest::ScreenCapture); 110] = {
         ("--smoke-pathfinder", ScreenCapture::Pathfinder),
         ("--smoke-aircraft", ScreenCapture::Aircraft),
         ("--smoke-aircraft-crash", ScreenCapture::AircraftCrash),
+        ("--pilot-ejection-capture", ScreenCapture::PilotEjection),
+        (
+            "--parachute-terrain-capture",
+            ScreenCapture::ParachuteTerrain,
+        ),
+        ("--mig-crash-capture", ScreenCapture::MigCrash),
+        (
+            "--comanche-countermeasures-capture",
+            ScreenCapture::ComancheCountermeasures,
+        ),
+        (
+            "--hijacker-airborne-capture",
+            ScreenCapture::HijackerAirborne,
+        ),
         ("--smoke-terrorist", ScreenCapture::Terrorist),
         ("--sabotage-capture", ScreenCapture::Sabotage),
         ("--hijacker-capture", ScreenCapture::Hijacker),
         ("--helix-capture", ScreenCapture::Helix),
+        (
+            "--burton-capture",
+            ScreenCapture::Ground(p02_ground_capture::Kind::Burton),
+        ),
+        (
+            "--bomb-truck-capture",
+            ScreenCapture::Ground(p02_ground_capture::Kind::BombTruck),
+        ),
+        (
+            "--combat-bike-capture",
+            ScreenCapture::Ground(p02_ground_capture::Kind::CombatBike),
+        ),
         ("--aurora-capture", ScreenCapture::Aurora),
         ("--angry-mob-capture", ScreenCapture::AngryMob),
         ("--battle-bus-capture", ScreenCapture::BattleBus),
         ("--stealth-fighter-capture", ScreenCapture::StealthFighter),
         ("--neutral-expanded-capture", ScreenCapture::NeutralExpanded),
+        ("--neutral-damage-capture", ScreenCapture::NeutralDamage),
         ("--repair-bay-capture", ScreenCapture::RepairBay),
+        ("--repair-pad-capture", ScreenCapture::RepairPad),
+        ("--supply-drop-zone-capture", ScreenCapture::SupplyDropZone),
         ("--capture-fake-buildings", ScreenCapture::FakeBuildings),
         ("--options-capture", ScreenCapture::Options),
         ("--china-aircraft-capture", ScreenCapture::ChinaAircraft),

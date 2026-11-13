@@ -125,7 +125,7 @@ impl Skirmish {
     }
 
     fn portable_attack_disabled(&self, id: usize) -> bool {
-        self.object_disabled_mask(id) & ((1 << 1) | (1 << 2) | (1 << 4) | (1 << 5)) != 0
+        self.object_disabled_mask(id) & ((1 << 1) | (1 << 2) | (1 << 4) | (1 << 10)) != 0
     }
 
     pub(in crate::skirmish) fn native_evacuate_from(&mut self, id: usize, source: i32) {

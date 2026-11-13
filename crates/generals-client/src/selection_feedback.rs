@@ -377,6 +377,7 @@ pub struct SelectionTint {
 }
 
 type TintPart = (
+    Option<&'static crate::model_animation::AnimatedPart>,
     Entity,
     &'static ChildOf,
     &'static mut MeshMaterial3d<SourceMaterial>,
@@ -398,6 +399,7 @@ pub struct TintView<'w, 's> {
         (
             &'static UnitVisual,
             Option<&'static crate::light_environment::DrawPose>,
+            Option<&'static crate::model_animation::Players>,
         ),
     >,
     parts: Query<'w, 's, TintPart, Without<crate::stealth_view::HeatPart>>,
@@ -414,20 +416,33 @@ pub fn tint_models(mut commands: Commands, view: TintView) {
     } = view;
     let feedback = feedback.into_inner();
     let cloaks = cloaks.into_inner();
-    for (entity, parent, mut material, mut tint, bounds, order, layers) in &mut parts {
-        let Ok((unit, pose)) = parents.get(parent.parent()) else {
+    for (part, entity, parent, mut material, mut tint, bounds, order, layers) in &mut parts {
+        let Ok((unit, pose, players)) = parents.get(parent.parent()) else {
             continue;
         };
         let flash = feedback
             .tint(unit.index)
             .filter(|_| unit.generation == feedback.generation);
-        let opacity = cloaks.base_opacity(unit.index);
+        // DX8MeshRenderer restores the authored shader and material when the
+        // drawable alpha override reaches one (dx8renderer.cpp:1906).
+        let opacity = cloaks
+            .base_opacity(unit.index)
+            .filter(|alpha| alpha.to_bits() != 1.0_f32.to_bits());
         if let (Some(order), Some(mut layers)) = (order, layers) {
             *layers =
                 bevy::camera::visibility::RenderLayers::layer(order.layer(opacity.unwrap_or(1.0)));
         }
+        let uv = part
+            .filter(|_| order.is_none_or(|order| !order.sorted()))
+            .and_then(|part| {
+                players?.tread_uv(
+                    part.model,
+                    part.binding.mesh,
+                    part.binding.linear_mapper.as_ref()?,
+                )
+            });
         let lit = lighting.affects(unit, pose, bounds);
-        if flash.is_some() || opacity.is_some() || lit {
+        if flash.is_some() || opacity.is_some() || lit || uv.is_some() {
             // Ownership/model changes can replace the material during a live flash.
             // Preserve that new base rather than restoring the old owner's skin.
             if let Some(tint) = tint.as_mut()
@@ -452,6 +467,9 @@ pub fn tint_models(mut commands: Commands, view: TintView) {
                 if opacity == 0.0 {
                     colored.depth_write = false;
                 }
+            }
+            if let Some(uv) = uv {
+                colored.parameters.uv_transform = uv;
             }
             lighting.apply(unit, pose, bounds, &mut colored.parameters);
             if let Some(tint) = tint {
@@ -494,10 +512,22 @@ pub struct ProjectionView<'w, 's> {
     terrain: Res<'w, Terrain>,
 }
 
-struct HealthView<'a> {
+pub struct HealthView<'a> {
     camera: (&'a Camera, &'a GlobalTransform),
-    scale: f32,
+    pub(crate) scale: f32,
     zoom: f32,
+}
+
+impl<'w> ProjectionView<'w, '_> {
+    pub(crate) fn into_view(self) -> HealthView<'w> {
+        let rig = self.rig.into_inner();
+        let ground = self.terrain.into_inner().sample(rig.focus);
+        HealthView {
+            camera: self.camera.into_inner(),
+            scale: self.window.into_inner().scale_factor(),
+            zoom: (ground + rig.distance) / (ground + rig.settings.max_height),
+        }
+    }
 }
 
 pub fn health_bars(
@@ -512,21 +542,7 @@ pub fn health_bars(
     let battle = battle.into_inner();
     let mouse = mouse.into_inner();
     let feedback = feedback.into_inner();
-    let ProjectionView {
-        camera,
-        window,
-        rig,
-        terrain,
-    } = view;
-    let window = window.into_inner();
-    let rig = rig.into_inner();
-    let terrain = terrain.into_inner();
-    let ground = terrain.sample(rig.focus);
-    let view = HealthView {
-        camera: camera.into_inner(),
-        scale: window.scale_factor(),
-        zoom: (ground + rig.distance) / (ground + rig.settings.max_height),
-    };
+    let view = view.into_view();
     let visible = |index| {
         battle.started
             && feedback.show_health
@@ -624,6 +640,19 @@ fn health_display(
     if stats.progression.ignored_in_gui {
         return None;
     }
+    let area = health_region(battle, index, view)?;
+    let ratio = unit.health / unit.max_health;
+    let (fill, outline) = health_colors(
+        ratio,
+        !unit.complete(),
+        feedback.damaged,
+        feedback.really_damaged,
+    );
+    Some((area, ratio, fill, outline))
+}
+
+pub fn health_region(battle: &Match, index: usize, view: &HealthView) -> Option<Rect> {
+    let unit = &battle.simulation.entities[index];
     let geometry = battle.simulation.body_geometry(index);
     let bounds = battle.simulation.body_geometry_bounds(index);
     let (camera, transform) = view.camera;
@@ -650,15 +679,7 @@ fn health_display(
     let width = 2.0 * (geometry.major + geometry.minor).clamp(20.0, 150.0) / zoom;
     let x = (point.x.trunc() - width * 0.45).trunc();
     let y = (point.y.trunc() - 1.5).trunc();
-    let area = Rect::new(x, y, (x + width).trunc(), y + 3.0);
-    let ratio = unit.health / unit.max_health;
-    let (fill, outline) = health_colors(
-        ratio,
-        !unit.complete(),
-        feedback.damaged,
-        feedback.really_damaged,
-    );
-    Some((area, ratio, fill, outline))
+    Some(Rect::new(x, y, (x + width).trunc(), y + 3.0))
 }
 
 // Object::getHealthBoxPosition adds the spawner's averaged offset and original +20 Z.
@@ -841,6 +862,230 @@ mod capture_tests {
         tint.advance(0.0);
         tint.advance(1.0);
         assert_eq!(tint.sustain.to_bits(), 4_294_967_293.0_f64.to_bits());
+    }
+
+    fn tread_fixture() -> (
+        App,
+        SourceMaterial,
+        Handle<SourceMaterial>,
+        Vec<(Entity, Entity)>,
+    ) {
+        use crate::{
+            model_animation::{AnimatedPart, treads::fixture_players},
+            model_render::PartBinding,
+            stealth_view::Cloaks,
+        };
+        let mut app = App::new();
+        let mut feedback = feedback();
+        let mut flash = Flash::new(Vec3::splat(0.25));
+        flash.advance(1.0);
+        feedback.flashes.insert(0, flash);
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<SourceMaterial>()
+            .insert_resource(feedback)
+            .insert_resource(Cloaks::fixture_opacity(0, 0.5))
+            .add_systems(Update, super::tint_models);
+        let source =
+            SourceMaterial::new([1.0; 3], [1.0; 3], [0.0; 3], 1.0, AlphaMode::Opaque, false);
+        let original = app
+            .world_mut()
+            .resource_mut::<Assets<SourceMaterial>>()
+            .add(source.clone());
+        let binding = std::sync::Arc::new(PartBinding {
+            mesh: 0,
+            pass: 0,
+            vertices: vec![0, 1, 2],
+            linear_mapper: Some(generals_assets::w3d::material::LinearMapper {
+                scale: [2.0, 3.0],
+                offset: [0.0; 2],
+                per_second: [0.0; 2],
+                clamp: false,
+            }),
+        });
+        let mut objects = Vec::new();
+        for (index, offset) in [0.25, 0.75].into_iter().enumerate() {
+            let parent = app
+                .world_mut()
+                .spawn((
+                    UnitVisual {
+                        index,
+                        generation: 0,
+                    },
+                    fixture_players(offset),
+                ))
+                .id();
+            let part = app
+                .world_mut()
+                .spawn((
+                    ChildOf(parent),
+                    AnimatedPart {
+                        model: 0,
+                        binding: binding.clone(),
+                    },
+                    MeshMaterial3d(original.clone()),
+                ))
+                .id();
+            objects.push((parent, part));
+        }
+        (app, source, original, objects)
+    }
+
+    #[test]
+    fn completed_disguise_restores_authored_shader_while_retaining_independent_tread_uv() {
+        use crate::{model_animation::Players, stealth_view::Cloaks};
+        let (mut app, _, original, objects) = tread_fixture();
+        app.world_mut().resource_mut::<Feedback>().flashes.clear();
+        app.world_mut()
+            .resource_mut::<Assets<SourceMaterial>>()
+            .get_mut(&original)
+            .unwrap()
+            .parameters
+            .opacity = 0.75;
+        app.update();
+        let actor = objects[0].1;
+        let handle = app
+            .world()
+            .get::<MeshMaterial3d<SourceMaterial>>(actor)
+            .unwrap()
+            .0
+            .clone();
+        let faded = app
+            .world()
+            .resource::<Assets<SourceMaterial>>()
+            .get(&handle)
+            .unwrap();
+        assert_eq!(faded.alpha_mode, AlphaMode::Blend);
+        assert_eq!(faded.parameters.opacity.to_bits(), 0.5_f32.to_bits());
+        app.insert_resource(Cloaks::fixture_opacity(0, 1.0));
+        app.update();
+        for (index, offset) in [0.25, 0.75].into_iter().enumerate() {
+            let handle = &app
+                .world()
+                .get::<MeshMaterial3d<SourceMaterial>>(objects[index].1)
+                .unwrap()
+                .0;
+            let material = app
+                .world()
+                .resource::<Assets<SourceMaterial>>()
+                .get(handle)
+                .unwrap();
+            assert_eq!(material.alpha_mode, AlphaMode::Opaque);
+            assert_eq!(material.parameters.opacity.to_bits(), 0.75_f32.to_bits());
+            assert_eq!(
+                material.parameters.uv_transform,
+                Vec4::new(2.0, 3.0, offset, 0.0)
+            );
+        }
+        app.world_mut()
+            .get_mut::<Players>(objects[0].0)
+            .unwrap()
+            .0
+            .clear();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<SourceMaterial>>(actor)
+                .unwrap()
+                .0,
+            original
+        );
+        assert!(app.world().get::<super::SelectionTint>(actor).is_none());
+    }
+
+    #[test]
+    fn per_instance_tread_uniforms_survive_selection_damage_and_cloak_without_mesh_uploads() {
+        use crate::{model_animation::Players, stealth_view::Cloaks};
+        let (mut app, source, original, objects) = tread_fixture();
+        // The tint system needs no Mesh resource: scrolling is a material matrix.
+        app.update();
+        let handles: Vec<_> = objects
+            .iter()
+            .map(|&(_, part)| {
+                app.world()
+                    .get::<MeshMaterial3d<SourceMaterial>>(part)
+                    .unwrap()
+                    .0
+                    .clone()
+            })
+            .collect();
+        assert_ne!(handles[0], handles[1]);
+        let materials = app.world().resource::<Assets<SourceMaterial>>();
+        assert!(materials.get(&original).unwrap().parameters == source.parameters);
+        for (index, offset) in [0.25, 0.75].into_iter().enumerate() {
+            assert_eq!(
+                materials
+                    .get(&handles[index])
+                    .unwrap()
+                    .parameters
+                    .uv_transform,
+                Vec4::new(2.0, 3.0, offset, 0.0)
+            );
+        }
+        assert_eq!(
+            materials
+                .get(&handles[0])
+                .unwrap()
+                .parameters
+                .opacity
+                .to_bits(),
+            0.5_f32.to_bits()
+        );
+        assert_eq!(
+            materials
+                .get(&handles[1])
+                .unwrap()
+                .parameters
+                .opacity
+                .to_bits(),
+            1.0_f32.to_bits()
+        );
+        let mut damaged = source;
+        damaged.parameters.emissive = Vec4::splat(0.2);
+        let damaged = app
+            .world_mut()
+            .resource_mut::<Assets<SourceMaterial>>()
+            .add(damaged);
+        app.world_mut()
+            .get_mut::<MeshMaterial3d<SourceMaterial>>(objects[0].1)
+            .unwrap()
+            .0 = damaged.clone();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<super::SelectionTint>(objects[0].1)
+                .unwrap()
+                .original,
+            damaged
+        );
+        assert_eq!(app.world().resource::<Assets<SourceMaterial>>().len(), 4);
+        drop(handles);
+        app.world_mut().resource_mut::<Feedback>().flashes.clear();
+        app.insert_resource(Cloaks::new());
+        for &(parent, _) in &objects {
+            app.world_mut()
+                .get_mut::<Players>(parent)
+                .unwrap()
+                .0
+                .clear();
+        }
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<SourceMaterial>>(objects[0].1)
+                .unwrap()
+                .0,
+            damaged
+        );
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<SourceMaterial>>(objects[1].1)
+                .unwrap()
+                .0,
+            original
+        );
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<Assets<SourceMaterial>>().len(), 2);
     }
 
     #[test]

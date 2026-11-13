@@ -72,15 +72,31 @@ pub(super) fn load(
         conditions: super::death_callbacks::conditions(module)?,
         module: data,
         phases,
-        transitions: transitions::load(&object.lines)?,
-        damage_thresholds: {
-            let global = &definition(files, "GameData", "")?.lines;
-            [
-                super::number(global, 0, "UnitDamagedThreshold")?,
-                super::number(global, 0, "UnitReallyDamagedThreshold")?,
-            ]
-        },
     }))
+}
+
+pub(super) fn damage_transitions(
+    object: &Declaration,
+) -> Result<Vec<generals_sim::skirmish::structure_death::TransitionRules>, Box<dyn Error>> {
+    if matches!(
+        object.name.as_str(),
+        "AmericaVehicleHumvee"
+            | "AmericaVehicleHumveeDeadHull"
+            | "GLAVehicleCombatBike"
+            | "GLAVehicleBombTruck"
+    ) || crate::fake_building_verification::NAMES.contains(&object.name.as_str())
+        || super::REAL_FAKE_REPLACEMENTS.contains(&object.name.as_str())
+        || blocks(&object.lines, 0, "Behavior")?.iter().any(|module| {
+            matches!(
+                module[0].tokens.get(1).map(String::as_str),
+                Some("StructureCollapseUpdate" | "StructureToppleUpdate" | "TechBuildingBehavior")
+            )
+        })
+    {
+        transitions::load(&object.lines)
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 fn validate_fields(module: &[ContentLine], collapse: bool) -> Result<(), Box<dyn Error>> {
@@ -240,16 +256,15 @@ pub fn bind_bones(
     animations: &crate::model_animation::Animations,
 ) {
     for (index, unit) in catalog.iter_mut().enumerate() {
-        let Some(rules) = &mut unit.structure_death else {
-            continue;
-        };
-        for transition in &mut rules.transitions {
+        for transition in &mut unit.behavior.damage_transitions {
             for (state, particles) in transition.particles.iter_mut().enumerate() {
                 let flag = [None, Some("DAMAGED"), Some("REALLYDAMAGED"), Some("RUBBLE")][state];
                 for particle in particles {
-                    particle.position = animations
-                        .logical_bone_position(models, index, flag, &particle.bone)
-                        .unwrap_or([0.0; 3]);
+                    if !particle.random_bone {
+                        particle.position = animations
+                            .logical_bone_position(models, index, flag, &particle.bone)
+                            .unwrap_or([0.0; 3]);
+                    }
                 }
             }
         }

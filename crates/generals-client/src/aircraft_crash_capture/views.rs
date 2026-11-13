@@ -13,6 +13,7 @@ pub(super) struct Snapshot {
     elapsed: Duration,
     position: [f32; 3],
     basis: [[f32; 3]; 3],
+    blocked_view: Option<(u8, f64)>,
 }
 
 impl Snapshot {
@@ -33,6 +34,7 @@ impl Snapshot {
             elapsed: time.elapsed(),
             position,
             basis,
+            blocked_view: None,
         }
     }
 
@@ -144,20 +146,44 @@ impl Check {
             .as_ref()
             .ok_or("missing paused aircraft snapshot")?;
         snapshot.unchanged(battle, &view.animation_clock, time)?;
-        if !view.framing.visible(battle, snapshot.body)?
-            || !view.framing.physical_pose(battle, snapshot.body)?
-        {
-            return Ok(());
-        }
-        if matches!(self.stage, Stage::FallingView)
-            && !physical(
+        let body_visible = view.framing.visible(battle, snapshot.body)?;
+        let body_pose = view.framing.physical_pose(battle, snapshot.body)?;
+        let debris_ready = !matches!(self.stage, Stage::FallingView)
+            || physical(
                 battle,
                 snapshot.body,
                 Some("AVRaptor_D4"),
                 "GenericDebris",
                 &view.framing,
-            )?
-        {
+            )?;
+        if !body_visible || !body_pose || !debris_ready {
+            let now = view.clock.elapsed_secs_f64();
+            let blocked = &mut self
+                .snapshot
+                .as_mut()
+                .expect("paused snapshot")
+                .blocked_view;
+            let report = match blocked {
+                Some((quarter, began)) if *quarter == self.view_index => {
+                    if now - *began >= 2.0 {
+                        *began = f64::INFINITY;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => {
+                    *blocked = Some((self.view_index, now));
+                    false
+                }
+            };
+            if report {
+                println!(
+                    "Aircraft paused view waiting: quarter={} body_visible={body_visible} body_pose={body_pose} debris_ready={debris_ready}",
+                    self.view_index
+                );
+                self.log_view(battle, view, time)?;
+            }
             return Ok(());
         }
         self.log_view(battle, view, time)?;

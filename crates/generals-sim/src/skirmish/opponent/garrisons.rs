@@ -5,7 +5,7 @@ use crate::skirmish::{Skirmish, movement::distance_squared};
 pub(super) fn action(
     game: &mut Skirmish,
     rules: &OpponentRules,
-    state: &mut State,
+    state: &State,
     call: &AiCall,
     team: usize,
 ) -> Option<()> {
@@ -39,7 +39,7 @@ pub(super) fn action(
 fn approach(
     game: &mut Skirmish,
     rules: &OpponentRules,
-    state: &mut State,
+    state: &State,
     team: usize,
     name: &str,
     region: &str,
@@ -67,7 +67,6 @@ fn approach(
         {
             return None;
         }
-        state.teams[team].follow = None;
         for &id in &state.teams[team].members {
             let _ = game.move_to(id, game.entities[target].position);
         }
@@ -78,7 +77,7 @@ fn approach(
 fn approach_list(
     game: &mut Skirmish,
     rules: &OpponentRules,
-    state: &mut State,
+    state: &State,
     team: usize,
     name: &str,
     region: &str,
@@ -127,7 +126,7 @@ fn nearest_type(
     best
 }
 
-fn assign(game: &mut Skirmish, state: &mut State, team: usize) -> Option<()> {
+fn assign(game: &mut Skirmish, state: &State, team: usize) -> Option<()> {
     let members = &state.teams[team].members;
     let Some(&leader) = members.first() else {
         return Some(());
@@ -172,9 +171,6 @@ fn assign(game: &mut Skirmish, state: &mut State, team: usize) -> Option<()> {
     // SimpleObjectIterator prepends each result, then performs a stable merge sort.
     targets.reverse();
     targets.sort_by(|left, right| left.1.total_cmp(&right.1));
-    if !targets.is_empty() {
-        state.teams[team].follow = None;
-    }
     let mut members = state.teams[team].members.iter().copied();
     for (host, _) in targets {
         let Some(contain) = &game.catalog[game.entities[host].type_index].contain else {

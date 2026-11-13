@@ -199,7 +199,10 @@ impl Skirmish {
             // successful factory quick path, while retaining the ignored factory.
             actor.ai.waypoints.exit_quick_pending = false;
         }
-        if temporary.is_none() && matches!(actor.ai.order, Order::FollowPath) {
+        if temporary.is_none()
+            && actor.ai.follow_waypoint.is_none()
+            && matches!(actor.ai.order, Order::FollowPath)
+        {
             actor.ai.waypoints.adjusts_destination = !intermediate;
         }
         self.set_ground_path_extra_distance(id);
@@ -535,12 +538,14 @@ impl Skirmish {
 
     fn set_ground_path_extra_distance(&mut self, id: usize) {
         let actor = &mut self.entities[id];
-        if matches!(
-            actor.ai.command.main_state,
-            super::ai_goals::MainState::Jet
-                | super::ai_goals::MainState::Wander
-                | super::ai_goals::MainState::Panic
-        ) {
+        if actor.ai.follow_waypoint.is_some()
+            || matches!(
+                actor.ai.command.main_state,
+                super::ai_goals::MainState::Jet
+                    | super::ai_goals::MainState::Wander
+                    | super::ai_goals::MainState::Panic
+            )
+        {
             return;
         }
         if actor.ai.blocking.temporary_goal().is_some() {

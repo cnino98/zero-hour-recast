@@ -66,6 +66,7 @@ pub(super) fn system(templates: Vec<Template>) -> Particles {
         generation: 0,
         frame: None,
         processed: None,
+        advanced: None,
         phase: 0.0,
         scale: 1.0,
         bindings: Vec::new(),

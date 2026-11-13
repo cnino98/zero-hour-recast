@@ -16,16 +16,18 @@ pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
     let barracks = construct(game, builder, Kind::Barracks, 0)?;
     let ranger = crate::strategy_verification::template(game, "AmericaInfantryRanger")?;
     let defender = crate::strategy_verification::template(game, "AmericaInfantryMissileDefender")?;
+    let burton = crate::strategy_verification::template(game, "AmericaInfantryColonelBurton")?;
     let existing = produce_type(game, barracks, ranger, 0)?;
+    let colonel = produce_type(game, barracks, burton, 0)?;
     require(
-        !game.entities[existing].chemical_suit(),
+        !game.entities[existing].chemical_suit() && !game.entities[colonel].chemical_suit(),
         "Ranger received unpaid Chemical Suits",
     )?;
     crate::strategy_verification::research(game, setup.center, "Upgrade_AmericaSupplyLines")?;
     crate::strategy_verification::research(game, setup.center, "Upgrade_AmericaChemicalSuits")?;
     let future = produce_type(game, barracks, ranger, 0)?;
     let missile = produce_type(game, barracks, defender, 0)?;
-    let infantry = vec![existing, future, missile];
+    let infantry = vec![existing, colonel, future, missile];
     for &id in &infantry {
         require(
             game.entities[id].chemical_suit(),
@@ -36,6 +38,7 @@ pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
         "AmericaInfantryRanger",
         "AmericaInfantryMissileDefender",
         "AmericaInfantryPathfinder",
+        "AmericaInfantryColonelBurton",
     ] {
         let index = crate::strategy_verification::template(game, name)?;
         let module = game.catalog[index]
@@ -98,7 +101,7 @@ fn verify_delivery(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
 pub fn verify(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
     let setup = prepare(game)?;
     require(
-        game.entities[setup.center].complete() && setup.infantry.len() == 3,
+        game.entities[setup.center].complete() && setup.infantry.len() == 4,
         "USA research setup incomplete",
     )?;
     verify_pathfinders(game)

@@ -1,4 +1,5 @@
-//! Native original El Scorcho captured artillery and live shell view.
+//! Native captured neutral tech, artillery projectile and docked vehicle views.
+pub mod damage;
 use crate::{
     capture_framing::AircraftFrame,
     playtest::{CameraRig, Match},
@@ -17,6 +18,7 @@ use std::{
 struct Check {
     platform: usize,
     requires_shell: bool,
+    vehicle: Option<usize>,
     started: Instant,
     done: bool,
 }
@@ -36,25 +38,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
     )?;
     battle.started = true;
     battle.select_objects(&[platform], true);
-    app.insert_resource(Check {
-        platform,
-        requires_shell: true,
-        started: Instant::now(),
-        done: false,
-    });
-    app.world_mut().resource_mut::<Time<Virtual>>().pause();
-    app.add_systems(
-        Update,
-        focus
-            .after(crate::playtest::camera_controls)
-            .before(crate::playtest::update_camera),
-    );
-    app.add_systems(
-        PostUpdate,
-        inspect
-            .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility)
-            .after(bevy::ui::UiSystems::PostLayout),
-    );
+    register(app, platform, true, None);
     Ok(())
 }
 
@@ -63,9 +47,24 @@ pub fn prepare_repair_bay(app: &mut App, battle: &mut Match) -> Result<(), Box<d
         crate::neutral_expanded_verification::prepare_repair_bay(&mut battle.simulation)?;
     battle.started = true;
     battle.select_objects(&[platform], true);
+    register(app, platform, false, None);
+    Ok(())
+}
+
+pub fn prepare_repair_pad(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> {
+    let (pad, vehicle) =
+        crate::neutral_expanded_verification::prepare_repair_pad(&mut battle.simulation)?;
+    battle.started = true;
+    battle.select_objects(&[vehicle], true);
+    register(app, pad, false, Some(vehicle));
+    Ok(())
+}
+
+fn register(app: &mut App, platform: usize, requires_shell: bool, vehicle: Option<usize>) {
     app.insert_resource(Check {
         platform,
-        requires_shell: false,
+        requires_shell,
+        vehicle,
         started: Instant::now(),
         done: false,
     });
@@ -82,7 +81,6 @@ pub fn prepare_repair_bay(app: &mut App, battle: &mut Match) -> Result<(), Box<d
             .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility)
             .after(bevy::ui::UiSystems::PostLayout),
     );
-    Ok(())
 }
 
 #[derive(SystemParam)]
@@ -104,7 +102,7 @@ fn inspect(
     }
     if check.started.elapsed() > Duration::from_secs(45) {
         check.done = true;
-        error!("Original neutral artillery native verification timed out");
+        error!("Neutral tech native verification timed out");
         exit.write(AppExit::error());
         return;
     }
@@ -131,19 +129,24 @@ fn inspect(
                 .any(|child| parts.get(child).is_ok_and(|visible| visible.get()))
     });
     check.done = true;
-    let result = building.and_then(|building| require(
-        building && (!check.requires_shell || shell),
-        "captured original neutral tech geometry is cropped or covered, or live shell is not visible",
-    ));
+    let result = building.and_then(|building| {
+        let vehicle = check
+            .vehicle
+            .map_or(Ok(true), |id| frame.visible(battle, id))?;
+        require(
+            building && (!check.requires_shell || shell) && vehicle,
+            "captured tech geometry, requested live shell or docked tank is cropped or covered",
+        )
+    });
     match result {
         Ok(()) => {
             capture.finish_scenario();
             println!(
-                "Rendered neutral tech: original captured building and requested live shell meshes visible"
+                "Rendered neutral tech: original captured building and requested subject meshes visible"
             );
         }
         Err(error) => {
-            error!("Neutral artillery native verification: {error}");
+            error!("Neutral tech native verification: {error}");
             exit.write(AppExit::error());
         }
     }

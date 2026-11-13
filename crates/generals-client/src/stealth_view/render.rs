@@ -196,6 +196,7 @@ mod tests {
                 AnimatedPart {
                     model: 0,
                     binding: Arc::new(crate::model_render::PartBinding {
+                        linear_mapper: None,
                         mesh: 0,
                         pass: 0,
                         vertices: vec![0, 1, 2],

@@ -15,6 +15,8 @@ use std::{error::Error, path::Path, time::Instant};
 pub mod attack;
 #[cfg(test)]
 mod attack_tests;
+pub mod bomb_truck;
+pub mod burton;
 pub mod capture;
 pub mod car_bomb;
 pub mod cleanup;
@@ -124,6 +126,7 @@ pub enum CommandMode {
     AttackMove,
     CombatDrop,
     Guard,
+    GuardFlying,
     Rally,
     Capture,
     LaserLock,
@@ -133,6 +136,8 @@ pub enum CommandMode {
     FireWeapon(usize),
     ClearMines(usize),
     SnipeVehicle(usize),
+    Burton(burton::TargetCommand),
+    BombTruckDisguise,
     CarBomb,
     Hijack,
     HelixBomb,
@@ -485,13 +490,12 @@ fn double_click_guard(
         return;
     };
     let response = VoiceRequest::new(&battle.simulation, &battle.selected, Voice::Guard, false);
-    let mut issued = false;
-    for id in selection::command_units(battle) {
-        if locally_controlled(battle, id) {
-            issued |= battle.simulation.guard_world(id, point.to_array()).is_ok();
-        }
-    }
-    if issued {
+    let members = selection::command_units(battle);
+    if battle
+        .simulation
+        .group_guard_world(&members, point.to_array(), false)
+        .is_ok()
+    {
         mouse.voices.push(response);
     }
     // InGameUI's timer is decremented by createCommandHint, once per client update.
@@ -593,21 +597,7 @@ fn targeted_order_world(
         return;
     }
     if matches!(mouse.pending_command, CommandMode::HelixBomb) {
-        let response = VoiceRequest::special_power(
-            &battle.simulation,
-            &battle.selected,
-            &["SPECIAL_HELIX_NAPALM_BOMB"],
-        );
-        let mut issued = false;
-        for id in selection::command_units(battle) {
-            if locally_controlled(battle, id) && battle.simulation.helix_bomb_ready(id) {
-                issued |= battle.simulation.helix_bomb(id, point.to_array()).is_ok();
-            }
-        }
-        if issued {
-            mouse.voices.extend(response);
-            mouse.pending_command = CommandMode::Normal;
-        }
+        targeted_helix_bomb(battle, mouse, point);
         return;
     }
     if matches!(mouse.pending_command, CommandMode::Hijack) {
@@ -618,6 +608,18 @@ fn targeted_order_world(
     }
     if matches!(mouse.pending_command, CommandMode::Sabotage) {
         sabotage::targeted(battle, mouse, point, nearest);
+        return;
+    }
+    if let CommandMode::Burton(command) = mouse.pending_command {
+        if let Some(target) = nearest {
+            burton::issue(battle, mouse, command, target);
+        }
+        return;
+    }
+    if matches!(mouse.pending_command, CommandMode::BombTruckDisguise) {
+        if let Some(target) = nearest {
+            bomb_truck::issue_disguise(battle, mouse, target);
+        }
         return;
     }
     if let CommandMode::SnipeVehicle(slot) = mouse.pending_command {
@@ -679,6 +681,24 @@ fn targeted_order_world(
     targeted_movement(battle, mouse, world);
 }
 
+fn targeted_helix_bomb(battle: &mut Match, mouse: &mut Mouse, point: Vec2) {
+    let response = VoiceRequest::special_power(
+        &battle.simulation,
+        &battle.selected,
+        &["SPECIAL_HELIX_NAPALM_BOMB"],
+    );
+    let mut issued = false;
+    for id in selection::command_units(battle) {
+        if locally_controlled(battle, id) && battle.simulation.helix_bomb_ready(id) {
+            issued |= battle.simulation.helix_bomb(id, point.to_array()).is_ok();
+        }
+    }
+    if issued {
+        mouse.voices.extend(response);
+        mouse.pending_command = CommandMode::Normal;
+    }
+}
+
 fn combat_drop(battle: &mut Match, mouse: &mut Mouse, position: Vec3, target: Option<usize>) {
     let response = VoiceRequest::new(
         &battle.simulation,
@@ -701,11 +721,10 @@ fn combat_drop(battle: &mut Match, mouse: &mut Mouse, position: Vec3, target: Op
     }
 }
 
-fn targeted_movement(battle: &mut Match, mouse: &mut Mouse, point: Vec3) {
-    let mut issued = false;
+pub fn targeted_movement(battle: &mut Match, mouse: &mut Mouse, point: Vec3) {
     let voice = match mouse.pending_command {
         CommandMode::AttackMove => Voice::Move,
-        CommandMode::Guard => Voice::Guard,
+        CommandMode::Guard | CommandMode::GuardFlying => Voice::Guard,
         _ => return,
     };
     let response = VoiceRequest::new(
@@ -714,26 +733,22 @@ fn targeted_movement(battle: &mut Match, mouse: &mut Mouse, point: Vec3) {
         voice,
         mouse.waypoint_mode,
     );
-    for id in selection::command_units(battle) {
-        if battle
+    let members = selection::command_units(battle);
+    let position = point.to_array();
+    let result = match mouse.pending_command {
+        CommandMode::AttackMove => battle
             .simulation
-            .entities
-            .get(id)
-            .is_none_or(|unit| unit.owner != 0 || !unit.complete())
-        {
-            continue;
-        }
-        let result = match mouse.pending_command {
-            CommandMode::AttackMove => battle.simulation.attack_move_world(id, point.to_array()),
-            CommandMode::Guard => battle.simulation.guard_world(id, point.to_array()),
-            _ => return,
-        };
-        match result {
-            Ok(()) => issued = true,
-            Err(error) => eprintln!("Targeted order rejected: {error}"),
-        }
-    }
-    if issued {
+            .group_attack_move_world(&members, position),
+        CommandMode::Guard | CommandMode::GuardFlying => battle.simulation.group_guard_world(
+            &members,
+            position,
+            matches!(mouse.pending_command, CommandMode::GuardFlying),
+        ),
+        _ => return,
+    };
+    if let Err(error) = result {
+        eprintln!("Targeted order rejected: {error}");
+    } else {
         mouse.voices.push(response);
         if matches!(mouse.pending_command, CommandMode::AttackMove) {
             mouse.move_hints.push(point.truncate().to_array());

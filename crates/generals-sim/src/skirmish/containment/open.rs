@@ -29,7 +29,11 @@ impl Skirmish {
         }
         let transport = matches!(
             family,
-            "TransportContain" | "InternetHackContain" | "HelixContain" | "OverlordContain"
+            "TransportContain"
+                | "InternetHackContain"
+                | "HelixContain"
+                | "OverlordContain"
+                | "RiderChangeContain"
         );
         if transport
             && self.entities[rider].parachute.is_some()
@@ -82,6 +86,9 @@ impl Skirmish {
         }
         if actor.owner != host.owner || candidate.transport_slots == 0 {
             return false;
+        }
+        if family == "RiderChangeContain" {
+            return self.bike_admits_rider(carrier, rider);
         }
         if !capacity {
             return true;

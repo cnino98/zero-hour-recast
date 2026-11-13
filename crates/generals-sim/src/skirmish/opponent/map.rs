@@ -1,5 +1,5 @@
 use super::{AiArea, OpponentRules, State};
-use crate::skirmish::{Skirmish, movement::distance_squared};
+use crate::skirmish::{Skirmish, ai_goals::COMMAND_FROM_SCRIPT, movement::distance_squared};
 
 pub(super) fn area<'a>(rules: &'a OpponentRules, state: &State, name: &str) -> Option<&'a AiArea> {
     // ScriptEngine::getQualifiedTriggerAreaByName uses the multiplayer start index.
@@ -118,14 +118,13 @@ pub(super) fn nearest(
     team: usize,
     label: &str,
 ) -> Option<usize> {
+    let native = state.teams[team].native_instance?;
     let mut position = [0.0; 2];
     let mut count = 0_u16;
-    for &id in &state.teams[team].members {
-        if game.entities[id].alive() && game.entities[id].contained_by().is_none() {
-            position[0] += game.entities[id].position[0];
-            position[1] += game.entities[id].position[1];
-            count = count.checked_add(1)?;
-        }
+    for &id in game.team_membership.team_objects(native) {
+        position[0] += game.entities[id].position[0];
+        position[1] += game.entities[id].position[1];
+        count = count.checked_add(1)?;
     }
     if count == 0 {
         return None;
@@ -155,67 +154,42 @@ pub(super) fn begin(
     state: &mut State,
     team: usize,
     label: &str,
-    follow: bool,
+    follow_as_team: Option<bool>,
 ) {
-    // Both native approach actions return without changing orders for an empty
-    // team or missing labelled waypoint. These are implemented no-ops.
+    let Some(native) = state.teams[team].native_instance else {
+        return;
+    };
+    let members = game.team_membership.team_objects(native).to_vec();
+    let first_member = members.first().copied();
+    let members = game.materialize_native_group(&members);
     let Some(current) = nearest(game, rules, state, team, label) else {
         return;
     };
-    let members = state.teams[team]
-        .members
-        .iter()
-        .copied()
-        .filter(|&id| game.entities[id].complete())
-        .collect::<Vec<_>>();
-    let _ = game.move_group(&members, rules.map.waypoints[current].position, false);
-    state.teams[team].follow = if follow { Some((current, None)) } else { None };
-}
-pub(super) fn advance(game: &mut Skirmish, rules: &OpponentRules, state: &mut State, team: usize) {
-    let Some((current, prior)) = state.teams[team].follow else {
-        return;
-    };
-    if !state.teams[team]
-        .members
-        .iter()
-        .all(|&id| !game.entities[id].alive() || game.entities[id].ai_idle())
-    {
-        return;
+    if let Some(as_team) = follow_as_team {
+        if let Some(first) = first_member {
+            super::bridge_repair::preflight(game, rules, state, first, current);
+        }
+        let Some(rules) = game.opponent_rules.clone() else {
+            return;
+        };
+        for id in members {
+            if game.entities[id].ai.registration.is_some() {
+                game.native_follow_waypoint_from(
+                    id,
+                    rules.clone(),
+                    current,
+                    as_team,
+                    COMMAND_FROM_SCRIPT,
+                );
+            }
+        }
+    } else {
+        let [x, y] = rules.map.waypoints[current].position;
+        let _ = game.move_group_world(
+            &members,
+            [x, y, game.ground_height([x, y])],
+            false,
+            COMMAND_FROM_SCRIPT,
+        );
     }
-    let links = &rules.map.waypoints[current].links;
-    let skip = prior.and_then(|id| {
-        links
-            .iter()
-            .position(|&link| link == rules.map.waypoints[id].id)
-    });
-    let count = links.len() - usize::from(skip.is_some());
-    if count == 0 {
-        state.teams[team].follow = None;
-        return;
-    }
-    let Ok(maximum) = u32::try_from(count - 1) else {
-        return;
-    };
-    let mut which = usize::try_from(game.random_between(maximum)).unwrap_or(0);
-    if skip == Some(which) {
-        which = links.len() - 1;
-    }
-    let Some(next) = rules
-        .map
-        .waypoints
-        .iter()
-        .position(|way| way.id == links[which])
-    else {
-        state.report("Broken map waypoint link");
-        state.teams[team].follow = None;
-        return;
-    };
-    let members = state.teams[team]
-        .members
-        .iter()
-        .copied()
-        .filter(|&id| game.entities[id].complete())
-        .collect::<Vec<_>>();
-    let _ = game.move_group(&members, rules.map.waypoints[next].position, false);
-    state.teams[team].follow = Some((next, Some(current)));
 }

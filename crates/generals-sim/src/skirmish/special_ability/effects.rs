@@ -94,6 +94,11 @@ impl Skirmish {
                     self.place_ability_charge(id, ordinal, target);
                 }
             }
+            PowerType::SpecialDisguiseAsVehicle => {
+                if let Some(target) = target {
+                    self.disguise_as_vehicle(id, target);
+                }
+            }
             _ => {}
         }
         if effects.lose_stealth && lose_stealth {

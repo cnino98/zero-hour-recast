@@ -1,4 +1,5 @@
 //! Paid China hangars, original `MiG` attack input and visible Black Napalm storm.
+pub mod crash;
 use crate::{
     capture_framing::{self, AircraftFrame},
     china_aircraft_verification::{self, Setup},

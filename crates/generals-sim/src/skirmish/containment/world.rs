@@ -255,6 +255,7 @@ mod tests {
             black_market_frames: 0,
             friendly_opacity: [0.5, 1.0],
             pulse_frames: 30,
+            disguise: None,
         });
         tests::register_update(unit, "StealthUpdate");
         let rider = game.spawn(5, 0, [355.0, 255.0], true);

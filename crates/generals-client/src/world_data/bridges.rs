@@ -379,6 +379,7 @@ pub(super) fn draw(
             let model_index = models.len();
             models.push(model);
             placed.push(crate::playtest_view::WorldObject {
+                terrain_bridge: true,
                 animation: None,
                 model_index,
                 position: [0.0; 3],

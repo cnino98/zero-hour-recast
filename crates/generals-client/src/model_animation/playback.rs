@@ -472,6 +472,9 @@ mod tests {
             idle: false,
         });
         let draw = Draw {
+            truck_wheels: None,
+            treads: None,
+            track: None,
             supply: BTreeMap::new(),
             upgrade_show: Vec::new(),
             attach_bone: None,
@@ -517,6 +520,9 @@ mod tests {
             idle: false,
         });
         let draw = Draw {
+            truck_wheels: None,
+            treads: None,
+            track: None,
             supply: std::collections::BTreeMap::new(),
             upgrade_show: Vec::new(),
             attach_bone: None,
@@ -582,6 +588,9 @@ mod tests {
         carrying.key = "trans_full".into();
         carrying.finish_key = "trans_pickingup".into();
         let draw = Draw {
+            truck_wheels: None,
+            treads: None,
+            track: None,
             supply: std::collections::BTreeMap::new(),
             upgrade_show: Vec::new(),
             attach_bone: None,

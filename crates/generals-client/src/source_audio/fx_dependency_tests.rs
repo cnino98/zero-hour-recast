@@ -46,7 +46,13 @@ fn fixture() -> App {
         .init_resource::<Assets<SourceMaterial>>()
         .add_systems(
             Update,
-            (weapon_fx::record, particles::step, particles::update).chain(),
+            (
+                weapon_fx::record,
+                particles::step,
+                particles::advance,
+                particles::update,
+            )
+                .chain(),
         );
     app.world_mut()
         .spawn((crate::playtest_view::WorldCamera, Transform::IDENTITY));

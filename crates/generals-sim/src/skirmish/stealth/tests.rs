@@ -2,8 +2,9 @@ use super::*;
 use crate::skirmish::tests;
 mod camo;
 mod detector_feedback;
+mod disguise;
 
-fn rules() -> Rules {
+pub(in crate::skirmish) fn rules() -> Rules {
     Rules {
         module_order: 0,
         delay: 2,
@@ -21,6 +22,7 @@ fn rules() -> Rules {
         black_market_frames: 0,
         friendly_opacity: [0.5, 1.0],
         pulse_frames: 30,
+        disguise: None,
     }
 }
 
@@ -32,6 +34,35 @@ fn fixture() -> (Skirmish, usize, usize) {
     let observer = game.spawn(6, 0, [400.0, 300.0], true);
     game.update_ground_contacts();
     (game, concealed, observer)
+}
+
+#[test]
+fn player_move_append_and_stop_draw_one_restealth_mood_delay() {
+    for command in 0..3 {
+        let prepare = |acquisition| {
+            let (mut game, actor, _) = fixture();
+            let unit = &mut game.catalog[game.entities[actor].type_index];
+            unit.ai.acquisition = acquisition;
+            unit.behavior.stealth.as_mut().unwrap().delay = 60;
+            game.tick = 10;
+            (game, actor)
+        };
+        let issue = |game: &mut Skirmish, actor| match command {
+            0 => game.group_move_to(&[actor], [620.0, 330.0], false),
+            1 => game.group_move_to(&[actor], [620.0, 330.0], true),
+            _ => game.stop(actor),
+        };
+        let (mut game, actor) = prepare(super::super::UnitAi::IDLE);
+        let (mut bypassed, other) =
+            prepare(super::super::UnitAi::IDLE | super::super::UnitAi::STEALTHED);
+        issue(&mut bypassed, other).unwrap();
+        let skew = bypassed.random_between(30);
+        issue(&mut game, actor).unwrap();
+        let mood = &game.entities[actor].ai.mood;
+        assert_eq!(mood.next_check, 70 + u64::from(skew));
+        assert!(!mood.offset_check);
+        assert_eq!(game.random, bypassed.random);
+    }
 }
 
 #[test]
@@ -91,6 +122,42 @@ fn explicit_detector_duration_extends_but_default_reveal_overwrites_expiry() {
     game.tick = 5;
     game.update_concealment(target);
     assert!(!game.entities[target].detected());
+}
+
+#[test]
+fn mounted_rider_supplies_default_reveal_duration_and_enemy_response() {
+    let (mut game, carrier, observer) = fixture();
+    let mut rider = tests::fixture_type(
+        crate::skirmish::Faction::China,
+        crate::skirmish::Kind::Infantry,
+    );
+    rider.behavior.stealth = Some(Rules {
+        delay: 75,
+        idle_enemies_on_reveal: true,
+        ..rules()
+    });
+    tests::register_update(&mut rider, "StealthUpdate");
+    let kind = game.catalog.len();
+    game.catalog.push(rider);
+    let passenger = game.spawn(kind, 1, [500.0, 300.0], true);
+    game.catalog[6].behavior.stealth.as_mut().unwrap().use_rider = true;
+    game.entities[carrier]
+        .containment
+        .passengers
+        .push(passenger);
+    game.set_object_position(observer, [505.0, 300.0, 0.0]);
+    game.tick = 10;
+    game.entities[observer].ai.mood.next_check = 1000;
+    game.mark_detected(carrier, 0);
+    assert_eq!(
+        game.entities[carrier]
+            .stealth
+            .as_ref()
+            .unwrap()
+            .detected_until,
+        85
+    );
+    assert_eq!(game.entities[observer].ai.mood.next_check, 10);
 }
 
 #[test]

@@ -91,6 +91,24 @@ impl Path {
         self.nodes.last().map(|node| node.position)
     }
 
+    pub(super) fn append_ground_node(&mut self, position: [f32; 3]) {
+        if let Some(last) = self.nodes.last() {
+            let direction = delta(position, last.position);
+            let length = length_squared(direction).sqrt();
+            let length = if length == 0.0 { 0.01 } else { length };
+            self.segments.push(Segment {
+                direction: [direction[0] / length, direction[1] / length],
+                length,
+            });
+        }
+        self.nodes.push(Node {
+            position,
+            layer: 1,
+            previous_layer: self.nodes.last().map_or(1, |node| node.layer),
+            can_optimize: true,
+        });
+    }
+
     pub(super) fn update_last_position(&mut self, position: [f32; 3], layer: u8) {
         let count = self.nodes.len();
         let Some(last) = self.nodes.last_mut() else {

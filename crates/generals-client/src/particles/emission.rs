@@ -120,7 +120,9 @@ impl Emitter {
     ) -> Particle {
         let factor = 0.5 + scale / 2.0;
         let local = position(&template.volume, self.radius, random).map(|v| v * factor);
-        let velocity = velocity(template, local, random).map(|v| v * factor);
+        let velocity = velocity(template, local, random);
+        let velocity =
+            std::array::from_fn(|i| velocity[i] * (self.velocity_multiplier[i] * factor));
         let previous = *self.previous.get_or_insert(self.transform.position);
         let step = 1.0 - f32::from(number) / f32::from(count);
         let rotated = self.transform.rotate(local);
@@ -137,8 +139,8 @@ impl Emitter {
             .lifetime
             .unwrap_or_else(|| template.lifetime.sample(random))
             .trunc();
-        let base_size = template.size.sample(random) * scale;
-        let size_rate = template.size_rate.sample(random) * scale;
+        let base_size = template.size.sample(random) * self.size_multiplier * scale;
+        let size_rate = template.size_rate.sample(random) * self.size_multiplier * scale;
         let size_damping = template.size_rate_damping.sample(random);
         let size = base_size + self.size_bonus;
         self.size_bonus += template.start_size_rate.sample(random);

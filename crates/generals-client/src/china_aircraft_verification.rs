@@ -1,5 +1,5 @@
 //! Paid China hangars, `MiG` sorties and the original shared eight-impact firestorm.
-mod crash;
+pub mod crash;
 mod sortie;
 use crate::{
     playtest::MAP_NAME,
@@ -74,6 +74,20 @@ fn verify(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
 }
 
 pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
+    let setup = produce_squadron(game)?;
+    for (index, &id) in setup.migs.iter().enumerate() {
+        require(
+            setup.migs[..index].iter().all(|&other| {
+                game.entities[id].position.map(f32::to_bits)
+                    != game.entities[other].position.map(f32::to_bits)
+            }),
+            "parked MiGs did not occupy four distinct model hangars",
+        )?;
+    }
+    Ok(setup)
+}
+
+fn produce_squadron(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
     game.reset(Faction::China, Faction::Usa)?;
     let builder = friendly_entity(game, Kind::Builder, 0)?;
     let index = template(game, "ChinaAirfield")?;
@@ -105,15 +119,6 @@ pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
             })
         },
     )?;
-    for (index, &id) in migs.iter().enumerate() {
-        require(
-            migs[..index].iter().all(|&other| {
-                game.entities[id].position.map(f32::to_bits)
-                    != game.entities[other].position.map(f32::to_bits)
-            }),
-            "parked MiGs did not occupy four distinct model hangars",
-        )?;
-    }
     let cash = game.players[0].cash;
     require(
         !game.parking_available(airfield, index)
@@ -227,5 +232,67 @@ mod tests {
     fn paid_china_hangars_migs_research_and_shared_firestorms() {
         let root = &generals_assets::game_root().unwrap();
         super::run(root).unwrap();
+    }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_mig_return_control_changes_only_pristine_airfield_bone_binding() {
+        use super::*;
+        for bound in [false, true] {
+            let (_, mut battle, mut animations) =
+                crate::cleanup_verification::tests::installed_with_animations();
+            let game = &mut battle.simulation;
+            if bound {
+                animations.bind_logical_bones(&mut game.catalog);
+            }
+            let setup = produce_squadron(game).unwrap();
+            let producer = game.entities[setup.airfield].position;
+            let parked = setup.migs.map(|id| game.entities[id].position);
+            if bound {
+                assert!(parked.iter().enumerate().all(|(index, position)| {
+                    !parked[..index]
+                        .iter()
+                        .any(|earlier| earlier.map(f32::to_bits) == position.map(f32::to_bits))
+                }));
+            } else {
+                assert!(
+                    parked
+                        .iter()
+                        .all(|point| { point.map(f32::to_bits) == producer.map(f32::to_bits) })
+                );
+            }
+            crash::prepare(game, &setup).unwrap();
+            approach(game, &setup).unwrap();
+            let result = sortie::verify(game, &setup, false);
+            let dead: Vec<_> = setup
+                .migs
+                .iter()
+                .copied()
+                .filter(|&id| !game.entities[id].alive())
+                .map(|id| {
+                    let actor = &game.entities[id];
+                    (
+                        id,
+                        actor.last_attacker(),
+                        actor.death_type() as u32,
+                        game.object_position(id),
+                    )
+                })
+                .collect();
+            println!(
+                "MiG causal control bound={bound} producer={producer:?} parked={parked:?} deaths={dead:?} sortie={result:?}"
+            );
+            if bound {
+                result.unwrap();
+                assert!(dead.is_empty());
+            } else {
+                let &(id, source, death, _) = dead
+                    .first()
+                    .expect("missing bones must reproduce the historical self-sourced descent");
+                assert_eq!(source, Some(id));
+                assert_eq!(death, generals_sim::skirmish::DeathType::Splatted as u32);
+                assert!(result.is_err());
+            }
+        }
     }
 }

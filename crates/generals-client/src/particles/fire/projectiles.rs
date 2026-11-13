@@ -71,14 +71,14 @@ pub(super) fn load(assets: &VirtualAssets, types: &[UnitType]) -> Result<Binding
 }
 
 impl Particles {
-    pub(super) fn fire_projectile_draws(
+    pub(in crate::particles) fn fire_projectile_draws<'a>(
         &mut self,
-        game: &Skirmish,
-        region: [[f32; 2]; 2],
-        random: &mut impl FnMut(f32, f32) -> f32,
-    ) {
+        game: &'a Skirmish,
+        observer: usize,
+        hidden: &impl Fn(usize, bool) -> bool,
+    ) -> BTreeMap<usize, &'a generals_sim::skirmish::Projectile> {
         if self.fires.projectile_bindings.is_empty() {
-            return;
+            return BTreeMap::new();
         }
         let live: BTreeMap<_, _> = game
             .projectiles
@@ -106,52 +106,70 @@ impl Particles {
                 emitter.wind_origin = Some([0.0; 3]);
             }
         }
-        for projectile in game.projectiles.iter().rev() {
-            let kind = projectile.weapon_type;
-            let Some(templates) = self.fires.projectile_bindings.get(&(
-                kind,
-                projectile.weapon_index,
-                projectile.jammed(&game.entities),
-            )) else {
-                continue;
-            };
-            let Some((pose, hidden)) = super::super::effects::attached_pose(game, projectile)
-            else {
-                continue;
-            };
-            if self.fires.projectiles.get(&projectile.id)
-                == Some(&projectile.jammed(&game.entities))
-                || hidden
-                || !super::super::model_states::view::contains(
-                    region,
-                    [pose.position[0], pose.position[1]],
-                )
-            {
-                continue;
-            }
-            let templates = templates.clone();
-            for template in templates {
-                self.create(template, pose.clone(), Some(projectile.id), random);
-                self.emitters
-                    .last_mut()
-                    .expect("created projectile drawable particles")
-                    .fire_attachment = Some(Attachment::Projectile(projectile.id));
-            }
-            self.fires
-                .projectiles
-                .insert(projectile.id, projectile.jammed(&game.entities));
-        }
         // Existing systems follow the object even outside the current view region.
         for emitter in &mut self.emitters {
             if let Some(Attachment::Projectile(id)) = emitter.fire_attachment
                 && !emitter.lifecycle.destroyed
-                && let Some((pose, hidden)) = live
-                    .get(&id)
-                    .and_then(|projectile| super::super::effects::attached_pose(game, projectile))
+                && let Some((pose, shrouded, object)) = live.get(&id).and_then(|projectile| {
+                    super::super::effects::attached_pose_for_player(game, projectile, observer).map(
+                        |(pose, shrouded)| {
+                            (
+                                pose,
+                                shrouded,
+                                projectile.object.expect("attached projectile"),
+                            )
+                        },
+                    )
+                })
             {
                 emitter.transform = pose;
-                emitter.shrouded = hidden;
+                emitter.shrouded = hidden(object, shrouded);
             }
         }
+        live.into_values()
+            .filter_map(|projectile| projectile.object.map(|object| (object, projectile)))
+            .collect()
+    }
+
+    pub(in crate::particles) fn sync_fire_projectile(
+        &mut self,
+        game: &Skirmish,
+        projectile: &generals_sim::skirmish::Projectile,
+        region: [[f32; 2]; 2],
+        hidden: bool,
+        random: &mut impl FnMut(f32, f32) -> f32,
+    ) {
+        let kind = projectile.weapon_type;
+        let Some(templates) = self.fires.projectile_bindings.get(&(
+            kind,
+            projectile.weapon_index,
+            projectile.jammed(&game.entities),
+        )) else {
+            return;
+        };
+        let Some((position, axes)) = projectile.effect_transform(&game.entities) else {
+            return;
+        };
+        let pose = super::Pose { position, axes };
+        if self.fires.projectiles.get(&projectile.id) == Some(&projectile.jammed(&game.entities))
+            || hidden
+            || !super::super::model_states::view::contains(
+                region,
+                [pose.position[0], pose.position[1]],
+            )
+        {
+            return;
+        }
+        let templates = templates.clone();
+        for template in templates {
+            self.create(template, pose.clone(), Some(projectile.id), random);
+            self.emitters
+                .last_mut()
+                .expect("created projectile drawable particles")
+                .fire_attachment = Some(Attachment::Projectile(projectile.id));
+        }
+        self.fires
+            .projectiles
+            .insert(projectile.id, projectile.jammed(&game.entities));
     }
 }

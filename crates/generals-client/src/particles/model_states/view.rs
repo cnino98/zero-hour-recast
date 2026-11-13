@@ -1,7 +1,7 @@
 //! `W3DView::getAxisAlignedViewRegion` using this frame's camera, not visibility lag.
 use bevy::prelude::*;
 
-pub(in crate::particles) fn region(
+pub fn region(
     transform: &Transform,
     projection: &Projection,
     camera: &Camera,
@@ -47,7 +47,7 @@ fn overscan(mut region: [[f32; 2]; 2]) -> [[f32; 2]; 2] {
     region
 }
 
-pub(in crate::particles) fn contains(region: [[f32; 2]; 2], position: [f32; 2]) -> bool {
+pub fn contains(region: [[f32; 2]; 2], position: [f32; 2]) -> bool {
     (0..2).all(|axis| (region[0][axis]..=region[1][axis]).contains(&position[axis]))
 }
 

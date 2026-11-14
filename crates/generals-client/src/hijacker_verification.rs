@@ -5,6 +5,7 @@ use crate::{
     },
     strategy_verification::template,
 };
+use bevy::math::Vec2;
 use generals_sim::skirmish::{Faction, Kind, Skirmish};
 use std::{error::Error, path::Path};
 
@@ -477,22 +478,29 @@ fn stage_airborne(game: &mut Skirmish, setup: &Setup) -> Result<Airborne, Box<dy
         "paid Rebel capturing original USA Supply Center",
         |game| game.entities[supply].owner == 0,
     )?;
-    let chinook_kind = template(game, "AmericaVehicleChinook")?;
-    advance_until(game, 18_000, "normal income funding paid Chinook", |game| {
-        game.players[0].cash >= game.catalog[chinook_kind].cost
-    })?;
-    let chinook = produce_type(game, supply, chinook_kind, 0)?;
-
-    let defender_kind = template(game, "AmericaInfantryMissileDefender")?;
-    let defender = produce_type(game, enemy_barracks, defender_kind, 1)?;
     let host_kind = game.entities[setup.host].type_index;
     let host = produce_type(game, enemy_factory, host_kind, 1)?;
     let point = stage_driver(game, setup.actor, gla_factory)?;
     approach(game, host, point, 35.0)?;
     capture_host(game, setup.actor, host)?;
 
-    // Board with the defender still at its base. The Chinook's route from the
-    // captured Supply Center can cross the defender's range before rendezvous.
+    let chinook_kind = template(game, "AmericaVehicleChinook")?;
+    if game.entities[setup.attacker].alive() {
+        park_ground_attacker(
+            game,
+            setup.attacker,
+            enemy_base,
+            [supply_point, point],
+            enemy_barracks,
+            chinook_kind,
+        )?;
+    }
+    advance_until(game, 18_000, "normal income funding paid Chinook", |game| {
+        game.players[0].cash >= game.catalog[chinook_kind].cost
+    })?;
+    let chinook = produce_type(game, supply, chinook_kind, 0)?;
+    // The Chinook's route from the captured Supply Center crosses the USA base.
+    // Purchase its assigned defender once the cargo is safely airborne.
     approach(game, chinook, point, 20.0)?;
     game.enter(host, chinook)?;
     advance_until(
@@ -510,6 +518,20 @@ fn stage_airborne(game: &mut Skirmish, setup: &Setup) -> Result<Airborne, Box<dy
         "Airborne cargo transport lost the hidden Hijacker before combat",
     )?;
     require_pristine_cargo(game, chinook, "after boarding and takeoff")?;
+    settle_airborne_cargo(game, chinook, host, point)?;
+    let defender_kind = template(game, "AmericaInfantryMissileDefender")?;
+    let defender = produce_type(game, enemy_barracks, defender_kind, 1)?;
+    let transport = &game.entities[chinook];
+    require(
+        matches!(transport.ai.order, generals_sim::skirmish::Order::Idle)
+            && !transport.moving()
+            && Vec2::from_array(transport.position).distance(Vec2::from_array(point)) < 20.0,
+        &format!(
+            "loaded Chinook left the rendezvous during defender production; {} {}",
+            transport.chinook_diagnostic(),
+            generals_sim::skirmish::diagnostics::movement_details(game, chinook)
+        ),
+    )?;
     stage_air_defender(game, defender, chinook)?;
     require_pristine_cargo(game, chinook, "after the defender's approach")?;
     Ok(Airborne {
@@ -521,6 +543,114 @@ fn stage_airborne(game: &mut Skirmish, setup: &Setup) -> Result<Airborne, Box<dy
     })
 }
 
+fn settle_airborne_cargo(
+    game: &mut Skirmish,
+    chinook: usize,
+    host: usize,
+    point: [f32; 2],
+) -> Result<(), Box<dyn Error>> {
+    let rendezvous = Vec2::from_array(point);
+    // Let the automatic supply regroup move begin. A real player move back
+    // from there gives the supply machine a non-idle player order to observe.
+    advance_until(
+        game,
+        1800,
+        "loaded Chinook starting its supply regroup",
+        |game| {
+            let transport = &game.entities[chinook];
+            matches!(transport.ai.order, generals_sim::skirmish::Order::Move(_))
+                && Vec2::from_array(transport.position).distance(rendezvous) >= 40.0
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "{error}; {} {}",
+            game.entities[chinook].chinook_diagnostic(),
+            generals_sim::skirmish::diagnostics::movement_details(game, chinook)
+        )
+    })?;
+    require_pristine_cargo(game, chinook, "after starting the supply regroup")?;
+    game.move_to(chinook, point)?;
+    let mut previous = Vec2::from_array(game.entities[chinook].position);
+    let mut stationary_frames = 0;
+    advance_until(
+        game,
+        1800,
+        "loaded Chinook settling over rendezvous",
+        |game| {
+            let transport = &game.entities[chinook];
+            let position = Vec2::from_array(transport.position);
+            let settled = transport.alive()
+                && matches!(transport.ai.order, generals_sim::skirmish::Order::Idle)
+                && !transport.moving()
+                && game.height_above_ground(chinook) > 80.0
+                && game.entities[host].contained_by() == Some(chinook)
+                && position.distance(rendezvous) < 20.0
+                && position.distance_squared(previous) < 0.01;
+            previous = position;
+            stationary_frames = if settled { stationary_frames + 1 } else { 0 };
+            stationary_frames >= 5
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "{error}; {} {}",
+            game.entities[chinook].chinook_diagnostic(),
+            generals_sim::skirmish::diagnostics::movement_details(game, chinook)
+        )
+    })?;
+    require_pristine_cargo(game, chinook, "after settling over the rendezvous")
+}
+
+fn park_ground_attacker(
+    game: &mut Skirmish,
+    attacker: usize,
+    enemy_base: [f32; 2],
+    flight: [[f32; 2]; 2],
+    barracks: usize,
+    chinook_kind: usize,
+) -> Result<(), Box<dyn Error>> {
+    let [supply, rendezvous] = flight.map(Vec2::from_array);
+    let route = rendezvous - supply;
+    let direction = route.normalize_or_zero();
+    let clearance = |point: [f32; 2]| {
+        let offset = Vec2::from_array(point) - supply;
+        let along_route = offset.dot(direction).clamp(0.0, route.length());
+        (offset - direction * along_route).length()
+    };
+    let defender = &game.catalog[game.entities[attacker].type_index];
+    let minimum_clearance = defender_weapon_range(defender)
+        + defender.geometry_bounds.sphere_radius
+        + game.catalog[chinook_kind].geometry_bounds.sphere_radius
+        + 50.0;
+    let barracks = game.entities[barracks].type_index;
+    // Keep the ground trial's Defender clear of the airlift route.
+    let parking = [[400.0, 0.0], [-400.0, 0.0], [0.0, 400.0], [0.0, -400.0]]
+        .into_iter()
+        .filter_map(|offset| {
+            game.placement_near(
+                barracks,
+                [enemy_base[0] + offset[0], enemy_base[1] + offset[1]],
+            )
+        })
+        .filter(|&point| game.build_site_reachable(attacker, point))
+        .max_by(|&left, &right| clearance(left).total_cmp(&clearance(right)))
+        .ok_or("no reachable parking position for the ground trial's Missile Defender")?;
+    approach(game, attacker, parking, 20.0)?;
+    require(
+        clearance(game.entities[attacker].position) > minimum_clearance,
+        "ground trial's Missile Defender remained near the airlift route",
+    )
+}
+
+fn defender_weapon_range(unit: &generals_sim::skirmish::UnitType) -> f32 {
+    unit.secondary_weapon
+        .as_ref()
+        .map_or(unit.weapon.range, |weapon| {
+            weapon.range.max(unit.weapon.range)
+        })
+}
+
 fn stage_air_defender(
     game: &mut Skirmish,
     defender: usize,
@@ -530,12 +660,7 @@ fn stage_air_defender(
     let unit = &game.catalog[missile_defender.type_index];
     // Include the authored laser-lock weapon's longer range. The combat phase
     // still issues the ordinary attack and fires the standard missiles.
-    let range = unit
-        .secondary_weapon
-        .as_ref()
-        .map_or(unit.weapon.range, |weapon| {
-            weapon.range.max(unit.weapon.range)
-        });
+    let range = defender_weapon_range(unit);
     let cargo_position = game.entities[chinook].position;
     approach(game, defender, cargo_position, range + 100.0)?;
     let transport = &game.entities[chinook];
@@ -545,8 +670,12 @@ fn stage_air_defender(
     require(
         missile_defender.alive() && (range + 50.0..=range + 150.0).contains(&distance),
         &format!(
-            "airborne trial standoff failed: Chinook {:?}, Missile Defender {:?} health={}, distance={distance}, longest weapon range={range}",
-            transport.position, missile_defender.position, missile_defender.health
+            "airborne trial standoff failed: Chinook moved from {cargo_position:?} to {:?}, {}, {}; Missile Defender {:?} health={}, distance={distance}, longest weapon range={range}",
+            transport.position,
+            transport.chinook_diagnostic(),
+            generals_sim::skirmish::diagnostics::movement_details(game, chinook),
+            missile_defender.position,
+            missile_defender.health,
         ),
     )
 }

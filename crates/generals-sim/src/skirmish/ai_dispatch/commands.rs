@@ -1,5 +1,9 @@
 //! Direct AI-source attack commands used by native update modules.
-use crate::skirmish::{Order, Skirmish, ai_goals::COMMAND_FROM_AI, combat::attack::Goal};
+use crate::skirmish::{
+    Order, Skirmish,
+    ai_goals::{COMMAND_FROM_AI, COMMAND_FROM_PLAYER},
+    combat::attack::Goal,
+};
 
 impl Skirmish {
     /// `aiDoCommand` rejects effectively dead actors and sleeping AI controllers.
@@ -50,6 +54,11 @@ impl Skirmish {
         }
         if !self.native_ai_command_allowed(id) || self.attack_kind(id, "PROJECTILE") {
             return;
+        }
+        // SupplyTruckAIUpdate::privateIdle latches player Stop before base Idle.
+        // Chinook dispatch above can defer this until flight settles.
+        if source == COMMAND_FROM_PLAYER && self.entities[id].chinook.is_some() {
+            self.entities[id].ai.supply.force_busy = true;
         }
         self.clear_ai_goal(id);
         self.set_ai_order(id, Order::Idle);

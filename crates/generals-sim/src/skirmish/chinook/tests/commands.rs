@@ -209,6 +209,32 @@ fn direct_attack_waits_for_landing_and_takeoff_before_forwarding() {
 }
 
 #[test]
+fn player_stop_latches_supply_busy_only_when_deferred_idle_is_replayed() {
+    use crate::skirmish::ai_goals::COMMAND_FROM_AI;
+
+    let (mut game, host) = aircraft();
+    game.set_chinook_state(host, super::super::Phase::Land, None, None, COMMAND_FROM_AI);
+    game.stop(host).unwrap();
+    assert!(!game.entities[host].ai.supply.force_busy);
+
+    // Complete the flight boundary before replaying the actual retained Stop.
+    game.set_ai_order(host, Order::Idle);
+    assert!(game.entities[host].landed());
+    let stop = game.entities[host]
+        .chinook
+        .as_mut()
+        .unwrap()
+        .pending
+        .take()
+        .expect("landing retained player Stop");
+    game.replay_stored_command(host, stop);
+
+    assert!(game.entities[host].ai.supply.force_busy);
+    assert!(game.entities[host].ai_idle());
+    assert!(!game.entities[host].last_command_from_ai());
+}
+
+#[test]
 fn stop_or_move_supersedes_deferred_attack_without_forwarding() {
     for stop in [true, false] {
         let (mut game, host, rider, child, target) = armed_helix();

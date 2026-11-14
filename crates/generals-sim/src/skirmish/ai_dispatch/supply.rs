@@ -203,10 +203,11 @@ impl Skirmish {
     }
 
     fn supply_wanting_update(&mut self, id: usize) -> Result {
-        assert!(
-            self.supply_available(id),
-            "Wanting requires available SupplyTruck interface"
-        );
+        if !self.supply_available(id) {
+            // Chinook passengers can queue or board after Wanting is entered.
+            // The source returns STATE_FAILURE here, entering Regrouping.
+            return Result::Failure;
+        }
         let target = if self.entities[id].cargo > 0 {
             self.closest_supply_center(id).map(DockTarget::Center)
         } else {
@@ -265,5 +266,37 @@ impl Skirmish {
             }
         }
         closest
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Phase;
+    use crate::skirmish::{Kind, Order, chinook::tests::aircraft};
+
+    #[test]
+    fn queued_passenger_interrupts_chinook_supply_wanting() {
+        let (mut game, chinook) = aircraft();
+        let command = game.type_for(0, Kind::CommandCenter).unwrap();
+        game.catalog[command].kind_of.push("COMMANDCENTER".into());
+        game.spawn(command, 0, [390.0, 335.0], true);
+        let rider = game.spawn(5, 0, [355.0, 335.0], true);
+        game.resume_supply(chinook);
+        game.update_supply_machine(chinook);
+        assert!(matches!(
+            game.entities[chinook].ai.supply.phase,
+            Some(Phase::Wanting)
+        ));
+
+        game.enter(rider, chinook).unwrap();
+        assert!(game.container_waiting(chinook));
+        game.update_supply_machine(chinook);
+
+        assert!(matches!(
+            game.entities[chinook].ai.supply.phase,
+            Some(Phase::Regrouping)
+        ));
+        assert!(game.entities[chinook].ai.docking.is_none());
+        assert!(matches!(game.entities[rider].ai.order, Order::Enter(id) if id == chinook));
     }
 }

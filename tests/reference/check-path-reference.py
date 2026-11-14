@@ -236,11 +236,12 @@ void position(Coord3D point) { bits(point.x); bits(point.y); bits(point.z); }
 
 def rust_sampler():
     source = (PROJECT / "crates/generals-sim/src/skirmish/path_following.rs").read_text()
-    # Keep the production samplers/helpers verbatim. Debug formatting and caller
-    # arrival adapters have no native counterpart in this comparison; importing
-    # them would require dummy calls or warning suppression, not more coverage.
+    # Keep the production samplers/helpers verbatim. Exclude debug formatting,
+    # caller arrival adapters and route mutations. The C++ fixture supplies its
+    # own nodes and does not execute Path::appendNode or Path::updateLastNode.
     for signature in ["    pub(super) fn sampling_details(",
                       "    pub(super) fn last_position(",
+                      "    pub(super) fn append_ground_node(",
                       "    pub(super) fn update_last_position(",
                       "    pub(super) const fn is_direct(",
                       "    pub fn distance_to_goal(",

@@ -199,7 +199,7 @@ fn inspect(mut check: ResMut<Check>, mut view: View) {
         Phase::Countdown => {
             let expected = view
                 .data
-                .ocl_timer
+                .ocl_timer()
                 .padded_description
                 .replacen("%d", "0", 1)
                 .replacen("%d", "3", 1);

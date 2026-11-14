@@ -169,7 +169,7 @@ pub(super) fn run(
     let mut audio = crate::source_audio::load_shell(&assets, &options)?;
     let values = preferences.applied();
     audio.apply_volumes(values.music, values.sound, values.sound3d, values.voice);
-    let data = crate::control_bar::load(&assets, &[], &options)?;
+    let data = crate::control_bar::load_shell(&assets, &options)?;
     app.insert_resource(data)
         .insert_resource(preferences)
         .insert_resource(audio)
@@ -564,7 +564,10 @@ fn install_resources(world: &mut World, prepared: &mut World) {
     transfer::<crate::model_animation::Animations>(world, prepared);
     transfer::<crate::playtest_view::WorldObjects>(world, prepared);
     transfer::<crate::tree_buffer::shadows::Shadows>(world, prepared);
+    transfer::<crate::model_animation::TerrainTracks>(world, prepared);
     transfer::<UiData>(world, prepared);
+    transfer::<crate::sticky_bomb_icons::Art>(world, prepared);
+    transfer::<crate::world_hover::Style>(world, prepared);
     transfer::<crate::input::Mouse>(world, prepared);
     transfer::<crate::move_hint::MoveHints>(world, prepared);
     transfer::<crate::dynamic_lod::DynamicLod>(world, prepared);
@@ -592,7 +595,7 @@ mod tests {
         let assets = crate::content_overlay::assets(root, None).unwrap();
         let options = root.join("UserData/Options.ini");
         let mut world = World::new();
-        world.insert_resource(crate::control_bar::load(&assets, &[], &options).unwrap());
+        world.insert_resource(crate::control_bar::load_shell(&assets, &options).unwrap());
         world.insert_resource(crate::source_audio::load_shell(&assets, &options).unwrap());
         world.insert_resource(
             crate::options_preferences::Preferences::load(&assets, &options).unwrap(),
@@ -614,6 +617,47 @@ mod tests {
         });
         world.run_system_once(playtest_ui::shell::setup).unwrap();
         world
+    }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn ordinary_startup_builds_original_main_menu_without_a_match() {
+        let mut world = shell_world();
+        let data = world.resource::<UiData>();
+        assert!(data.units.is_empty());
+        assert!(data.ocl_timer.is_none());
+        assert!(!world.resource::<Shell>().loading());
+        assert!(!world.contains_resource::<Match>());
+        assert!(!world.contains_resource::<MapSelection>());
+        assert!(!world.contains_resource::<crate::terrain::Terrain>());
+        assert!(!world.contains_resource::<crate::playtest_view::Models>());
+        let mut buttons =
+            world.query::<(&playtest_ui::Action, &playtest_ui::Layer, &Interaction)>();
+        for expected in [
+            playtest_ui::Action::SinglePlayer,
+            playtest_ui::Action::Options,
+        ] {
+            assert!(buttons.iter(&world).any(|(action, layer, interaction)| {
+                matches!(layer, playtest_ui::Layer::Menu)
+                    && *interaction == Interaction::None
+                    && matches!(
+                        (&expected, action),
+                        (
+                            playtest_ui::Action::SinglePlayer,
+                            playtest_ui::Action::SinglePlayer
+                        ) | (playtest_ui::Action::Options, playtest_ui::Action::Options)
+                    )
+            }));
+        }
+        let root = generals_assets::game_root().unwrap();
+        let assets = crate::content_overlay::assets(&root, None).unwrap();
+        let error = crate::control_bar::load(&assets, &[], &root.join("UserData/Options.ini"))
+            .err()
+            .expect("a match requires its object catalog");
+        assert_eq!(
+            error.to_string(),
+            "OCL timer command's original object template is absent"
+        );
     }
 
     #[ignore = "requires original game installation"]

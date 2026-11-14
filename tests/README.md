@@ -30,3 +30,5 @@ Use a POSIX desktop with graphics and audio, both [game installations and UI fon
    ```
 
 The full run adds ignored installed and GPU tests, reference comparisons, a release build, runtime scenarios, native captures and performance measurements. It tests a verified copy of the freshly built client unless you pass `--executable PATH` to select another external build. Use `--case-timeout SECONDS` to change the per-case timeout. Open the manifests and logs to find failing steps and individual cases. Native captures and performance results apply to the tested build, game data and hardware.
+
+Before packaging a client, run the installed `playtest::startup::tests` regressions and the `native-smoke-menu` and `native-smoke-shell-flow` acceptance cases. Also open the actual launcher without diagnostic arguments and check its visible menu and startup timings. Cases that enter a match directly do not test ordinary startup.

@@ -42,7 +42,7 @@ pub struct UiData {
     pub results: results::Results,
     pub units: Vec<UnitUi>,
     pub cancel_construction: Command,
-    pub ocl_timer: ocl_timer::Data,
+    pub ocl_timer: Option<ocl_timer::Data>,
     pub windows: BTreeMap<String, Rect>,
     pub labels: BTreeMap<String, String>,
     pub factions: [String; 3],
@@ -172,6 +172,12 @@ struct Picture {
 }
 
 impl UiData {
+    pub const fn ocl_timer(&self) -> &ocl_timer::Data {
+        self.ocl_timer
+            .as_ref()
+            .expect("match control bar OCL timer")
+    }
+
     pub fn commands(&self, game: &generals_sim::skirmish::Skirmish, id: usize) -> &[Command] {
         let ui = &self.units[game.entities[id].type_index];
         if let Some(name) = game.entities[id].command_set_override() {
@@ -260,32 +266,39 @@ pub fn load(
     load_for_map(assets, catalog, options, None)
 }
 
+pub fn load_shell(assets: &VirtualAssets, options: &Path) -> Result<UiData, Box<dyn Error>> {
+    load_ui(assets, None, options, None)
+}
+
 pub fn load_for_map(
     assets: &VirtualAssets,
     catalog: &[UnitType],
     options: &Path,
     map_path: Option<&str>,
 ) -> Result<UiData, Box<dyn Error>> {
-    let mut labels = strings(&assets.read("data/english/generals.csf")?.bytes)?;
-    if let Some(path) = map_path {
-        crate::world_data::map_labels(assets, path, &mut labels)?;
-    }
-    if !labels.contains_key("gui:addcash") {
-        return Err("missing original floating income label".into());
-    }
+    load_ui(assets, Some(catalog), options, map_path)
+}
+
+fn load_ui(
+    assets: &VirtualAssets,
+    catalog: Option<&[UnitType]>,
+    options: &Path,
+    map_path: Option<&str>,
+) -> Result<UiData, Box<dyn Error>> {
+    let labels = ui_labels(assets, map_path)?;
     let schemes = load_schemes(assets)?;
     let windows = menu_windows(assets)?;
-    let units = object_ui(assets, catalog, &labels)?;
+    let (units, ocl_timer, bomb_icons) = if let Some(catalog) = catalog {
+        (
+            object_ui(assets, catalog, &labels)?,
+            Some(ocl_timer::load(assets, catalog, &labels)?),
+            Some(crate::sticky_bomb_icons::load(assets)?),
+        )
+    } else {
+        (Vec::new(), None, None)
+    };
     let cancel_construction = cancellation::load(assets, &labels)?;
-    let ocl_timer = ocl_timer::load(assets, catalog, &labels)?;
-    let promotions = promotions::load(assets, &labels, options)?;
-    for button in promotions.buttons.iter().flatten() {
-        if !windows.contains_key(&button.window) {
-            return Err(
-                format!("promotion button has no original window {}", button.window).into(),
-            );
-        }
-    }
+    let promotions = load_promotions(assets, &labels, options, &windows)?;
     let pictures = mapped_images(assets)?;
     let results = results::load(assets, &labels)?;
     let observer = observer::load(assets, &labels)?;
@@ -294,7 +307,6 @@ pub fn load_for_map(
     let loading = loading::Data::load(assets, &labels)?;
     let veterancy = crate::veterancy_feedback::load(assets)?;
     let money_crates = crate::income::map_crates::load(assets)?;
-    let bomb_icons = crate::sticky_bomb_icons::load(assets)?;
     let textures = textures(
         assets,
         &schemes,
@@ -306,12 +318,17 @@ pub fn load_for_map(
             .chain(options_menu.images())
             .chain(veterancy.images())
             .chain(money_crates.images())
-            .chain(bomb_icons.images())
+            .chain(
+                bomb_icons
+                    .iter()
+                    .flat_map(crate::sticky_bomb_icons::Art::images),
+            )
             .chain(loading.images())
-            .chain([
-                ocl_timer.sell.image.as_str(),
-                ocl_timer.rally.image.as_str(),
-            ]),
+            .chain(
+                ocl_timer
+                    .iter()
+                    .flat_map(|timer| [timer.sell.image.as_str(), timer.rally.image.as_str()]),
+            ),
         &pictures,
         &cancel_construction,
     )?;
@@ -366,6 +383,37 @@ pub fn load_for_map(
         handles: BTreeMap::new(),
         pictures,
     })
+}
+
+fn ui_labels(
+    assets: &VirtualAssets,
+    map_path: Option<&str>,
+) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
+    let mut labels = strings(&assets.read("data/english/generals.csf")?.bytes)?;
+    if let Some(path) = map_path {
+        crate::world_data::map_labels(assets, path, &mut labels)?;
+    }
+    if !labels.contains_key("gui:addcash") {
+        return Err("missing original floating income label".into());
+    }
+    Ok(labels)
+}
+
+fn load_promotions(
+    assets: &VirtualAssets,
+    labels: &BTreeMap<String, String>,
+    options: &Path,
+    windows: &BTreeMap<String, Rect>,
+) -> Result<Promotions, Box<dyn Error>> {
+    let promotions = promotions::load(assets, labels, options)?;
+    for button in promotions.buttons.iter().flatten() {
+        if !windows.contains_key(&button.window) {
+            return Err(
+                format!("promotion button has no original window {}", button.window).into(),
+            );
+        }
+    }
+    Ok(promotions)
 }
 
 fn load_schemes(assets: &VirtualAssets) -> Result<Vec<Scheme>, Box<dyn Error>> {

@@ -11,6 +11,7 @@ Zero Hour Recast aims to reproduce local skirmish with the original rules, contr
 | November 4, 2026 | Fixed ground build buttons that incorrectly required aircraft parking. Verified a USA Dozer buying and completing a power plant through the original HUD. |
 | November 5, 2026 | Prepared the source checkout with game-independent tests and a six-target native CI matrix. Verified a second sortie after rearming in the four-MiG installed check. |
 | November 13, 2026 — v0.2.0 | Verified base special-unit behavior, fake-building conversion, stock airfield lifecycles, countermeasures, repair and deliveries. Restored original wheel effects, tracks, borrowed vehicle tread animation, C4 feedback and disguise hover names. Verified aircraft crash bodies, hulks and pilot release. Fixed faded-track mesh retirement and opaque disguise materials. |
+| November 14, 2026 — v0.2.1 | Fixed the main-menu startup failure introduced in v0.2.0. Gameplay controls load when a match starts, including C4 icons, hover labels and terrain tracks. Added a normal-startup regression that also checks missing match data is still rejected. |
 
 ## Known issues
 

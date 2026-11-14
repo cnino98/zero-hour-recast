@@ -13,7 +13,7 @@ pub enum Part {
 }
 
 pub(super) fn setup(commands: &mut Commands, data: &UiData, icons: &mut Assets<PromotionIcon>) {
-    let source = &data.ocl_timer;
+    let source = data.ocl_timer();
     let bar_node = Node {
         border: UiRect::all(px(1)),
         display: Display::None,
@@ -118,10 +118,11 @@ pub(super) fn command<'a>(battle: &Match, data: &'a UiData) -> Option<&'a Comman
     }
     let unit = &battle.simulation.catalog[actor.type_index];
     unit.behavior.ocl_update.as_ref()?;
+    let source = data.ocl_timer();
     if !unit.kind_of.iter().any(|flag| flag == "TECH_BUILDING") {
-        Some(&data.ocl_timer.sell)
+        Some(&source.sell)
     } else if unit.kind_of.iter().any(|flag| flag == "AUTO_RALLYPOINT") {
-        Some(&data.ocl_timer.rally)
+        Some(&source.rally)
     } else {
         None
     }
@@ -154,6 +155,7 @@ pub fn update(
 ) {
     let battle = battle.into_inner();
     let data = data.into_inner();
+    let source = data.ocl_timer();
     let countdown = selected(battle).and_then(|id| {
         let (seconds, percent) = battle.simulation.delivery_countdown(id)?;
         let key = (battle.generation, id, seconds);
@@ -187,14 +189,12 @@ pub fn update(
         match part {
             Part::Fill if redraw => {
                 if let Some((_, _, _, progress)) = countdown {
-                    node.width =
-                        percent(data.ocl_timer.bar.width() / 8.0 * f32::from(progress) / 100.0);
+                    node.width = percent(source.bar.width() / 8.0 * f32::from(progress) / 100.0);
                 }
             }
             Part::Description if redraw => {
                 if let (Some((_, _, seconds, _)), Some(mut description)) = (countdown, description)
                 {
-                    let source = &data.ocl_timer;
                     let format = if seconds % 60 < 10 {
                         &source.padded_description
                     } else {

@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "generals-assets"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "num-traits",
  "sha2",
@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "generals-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bevy",
  "fontdb",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "generals-sim"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "num-traits",
 ]

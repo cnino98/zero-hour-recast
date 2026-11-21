@@ -30,15 +30,23 @@ fn paid_dozer_original_controls_context_voice_and_full_disarm_timing() {
         &mut mouse
     ));
     assert!(
-        matches!(battle.simulation.entities[setup.builder].ai.order, Order::Attack(id) if id == setup.trap)
-    );
-    assert!(
         mouse
             .voices
             .last()
             .is_some_and(|voice| matches!(voice.voice(), Voice::Disarm))
     );
+    // PostUpdate playback may consume the client response before the next logic frame.
+    mouse.voices.clear();
+    input::commands::step(&mut battle, &mut mouse);
+    assert!(
+        matches!(battle.simulation.entities[setup.builder].ai.order, Order::Attack(id) if id == setup.trap)
+    );
+    assert!(
+        mouse.voices.is_empty(),
+        "logic dispatch must not repeat the client voice"
+    );
     let mut trace = disarm_verification::Trace::new();
+    trace.record(&battle.simulation, &setup).unwrap();
     for _ in 0..1800 {
         battle.simulation.step();
         trace.record(&battle.simulation, &setup).unwrap();

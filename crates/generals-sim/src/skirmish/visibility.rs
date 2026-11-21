@@ -184,7 +184,18 @@ impl Visibility {
     }
 
     fn cell(&self, owner: usize, point: [f32; 2]) -> Status {
-        let [x, y] = self.center(point);
+        let scaled = point.map(|axis| axis * (1.0 / self.rules.cell_size));
+        // PartitionManager returns SHROUDED for a missing cell. Check the
+        // domain before converting coordinates to the source integer format.
+        if owner >= self.cells.len()
+            || scaled
+                .iter()
+                .zip(self.dimensions)
+                .any(|(axis, limit)| !axis.is_finite() || *axis < 0.0 || *axis >= f32::from(limit))
+        {
+            return Status::Shrouded;
+        }
+        let [x, y] = scaled.map(|axis| integer(axis.floor()));
         let Ok(x) = u16::try_from(x) else {
             return Status::Shrouded;
         };
@@ -204,6 +215,20 @@ impl Visibility {
 }
 
 impl Skirmish {
+    pub(in crate::skirmish) fn particle_uplink_reveal(
+        &mut self,
+        owner: usize,
+        point: [f32; 2],
+        radius: f32,
+    ) {
+        let center = self.visibility.center(point);
+        // ParticleUplinkCannonUpdate passes only the owner's mask and calls
+        // undoShroudReveal immediately, leaving explored fog rather than a looker.
+        if let Some(look) = self.visibility.look(center, radius, vec![owner]) {
+            self.visibility.change(&look, false);
+        }
+    }
+
     pub(super) fn reveal_defeated_player(&mut self, owner: usize) {
         // VictoryConditions::update calls the permanent reveal only after frame 1.
         if self.tick > 1 && !self.visibility.permanent[owner] {

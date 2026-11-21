@@ -26,6 +26,8 @@ fn site() -> (Skirmish, usize) {
         cost: 500,
         frames: 2,
         player: false,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     }];
     let mut soldier = rules();
     soldier.innate = false;

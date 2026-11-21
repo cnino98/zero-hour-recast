@@ -32,6 +32,7 @@ fn paid_original_hijacker_button_and_context_use_enter_hostile_and_aggressive_cu
     assert_eq!(attack_cursor::context(&mut battle, &mouse), Some(10));
     let point = battle.simulation.entities[setup.host].position;
     input::targeted_order(&mut battle, &mut mouse, point.into(), Some(setup.host));
+    input::commands::step(&mut battle, &mut mouse);
     assert!(
         matches!(battle.simulation.entities[setup.actor].ai.order, Order::Enter(target) if target == setup.host)
     );
@@ -45,6 +46,7 @@ fn paid_original_hijacker_button_and_context_use_enter_hostile_and_aggressive_cu
         Some(input::PickTarget::Unit(setup.host)),
         &mut mouse
     ));
+    input::commands::step(&mut battle, &mut mouse);
     assert!(
         matches!(battle.simulation.entities[setup.actor].ai.order, Order::Enter(target) if target == setup.host)
     );

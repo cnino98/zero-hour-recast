@@ -26,6 +26,7 @@ pub struct Match {
     pub observer_player: Option<usize>,
     pub observer_players: Vec<usize>,
     pub simulation: Skirmish,
+    pub commands: input::commands::Queue,
     pub selected: Vec<usize>,
     /// Player current-selection Squad, separate from unique selected drawables.
     pub logic_selection: Vec<usize>,
@@ -45,6 +46,7 @@ impl Match {
             observer_player: None,
             observer_players: Vec::new(),
             simulation,
+            commands: input::commands::Queue::default(),
             selected: Vec::new(),
             logic_selection: Vec::new(),
             placing: None,
@@ -94,6 +96,11 @@ impl Match {
                 | ScreenCapture::Hijacker
                 | ScreenCapture::Helix
                 | ScreenCapture::Ground(_)
+                | ScreenCapture::Recon
+                | ScreenCapture::Powers(_)
+                | ScreenCapture::AirPower(_)
+                | ScreenCapture::ChinaPower(_)
+                | ScreenCapture::GlaPower(_)
                 | ScreenCapture::Aurora
                 | ScreenCapture::AngryMob
                 | ScreenCapture::BattleBus
@@ -174,6 +181,7 @@ impl Match {
     }
 
     fn begin(&mut self) {
+        self.commands.clear();
         self.observer_player = None;
         self.observer_players.clear();
         self.opponent_faction = self.simulation.players[1].faction;
@@ -182,12 +190,14 @@ impl Match {
             .filter(|_| self.simulation.slots[1].occupied);
         self.selected.clear();
         self.logic_selection.clear();
-        if let Some(builder) = self.simulation.entities.iter().position(|unit| {
-            unit.owner == 0 && self.simulation.catalog[unit.type_index].kind == Kind::Builder
-        }) {
-            self.selected.push(builder);
-            // Initial Match state is declared directly; this is not a GUI message.
-            self.logic_selection.push(builder);
+        for owner in 0..self.simulation.players.len() {
+            if self.simulation.player_active(owner)
+                && let Some(center) = self.simulation.initialize_command_center_selection(owner)
+                && owner == 0
+            {
+                self.selected.push(center);
+                self.logic_selection.push(center);
+            }
         }
         self.placing = None;
         self.started = true;
@@ -198,6 +208,15 @@ impl Match {
 
     pub fn restart(&mut self) {
         self.start_slots(self.simulation.slots.clone());
+    }
+
+    /// `CommandXlat` audio retains GUI drawables while logic uses its current Squad.
+    pub(crate) fn command_drawables(&self) -> &[usize] {
+        if self.commands.executing {
+            &self.commands.drawables
+        } else {
+            &self.selected
+        }
     }
 
     pub fn resource_owner(&self) -> Option<usize> {
@@ -261,6 +280,11 @@ pub enum ScreenCapture {
     Hijacker,
     Helix,
     Ground(crate::p02_ground_capture::Kind),
+    Recon,
+    Powers(Faction),
+    AirPower(crate::p03_air_capture::Kind),
+    ChinaPower(crate::p03_china_capture::Kind),
+    GlaPower(crate::p03_gla_capture::Kind),
     Aurora,
     AngryMob,
     BattleBus,
@@ -552,7 +576,7 @@ fn load_map(
     )?;
     let mut simulation = prepare_simulation(world, data, movement_terrain, layout, opponent)?;
     terrain.configure_projectiles(&mut simulation, projectiles.partition_cell_size)?;
-    load_feedback(world, &assets, &simulation.catalog)?;
+    load_feedback(world, &assets, &simulation)?;
     let battle = Match::new(simulation, capture);
     radar.configure_bridges(&assets, &terrain, &battle.simulation, battle.generation)?;
     // Prepare every fallible resource before replacing the current map.
@@ -749,6 +773,7 @@ fn load_map_audio(
 }
 
 struct UnitEffects {
+    particle_uplink: crate::particle_uplink::Presentation,
     emitters: crate::w3d_emitter::Definitions,
     lasers: crate::laser_beam::Lasers,
     streams: crate::projectile_stream::Streams,
@@ -761,6 +786,7 @@ impl UnitEffects {
     fn insert(self, world: &mut World) {
         crate::w3d_emitter::replace_scene(world, self.emitters);
         world.insert_resource(self.debris);
+        world.insert_resource(self.particle_uplink);
         world.insert_resource(self.lasers);
         world.init_resource::<crate::structure_view::Structures>();
         world.init_resource::<crate::sway::Sway>();
@@ -780,7 +806,9 @@ fn load_unit_effects(
     let garrison_guns = crate::model_animation::garrison::load(assets, &mut data.models)?;
     let orientation = crate::particles::orientation::load(assets, &mut data.models)?;
     let debris = crate::physical_debris::load(assets, &data.types, &mut data.models)?;
+    let particle_uplink = crate::particle_uplink::load(assets, &data.types)?;
     Ok(UnitEffects {
+        particle_uplink,
         emitters,
         lasers,
         streams,
@@ -883,8 +911,9 @@ fn map_settings(
 fn load_feedback(
     world: &mut World,
     assets: &VirtualAssets,
-    catalog: &[generals_sim::skirmish::UnitType],
+    simulation: &generals_sim::skirmish::Skirmish,
 ) -> Result<(), Box<dyn Error>> {
+    let catalog = &simulation.catalog;
     // All remaining map loads have succeeded. Prepare these together so a failure
     // leaves the prior map's command presentation intact as well.
     let income = crate::income::load(assets)?;
@@ -892,7 +921,7 @@ fn load_feedback(
     let notifications = crate::notifications::load(assets)?;
     let weapon_fx = crate::weapon_fx::load(assets, catalog)?;
     let horde = crate::horde_decal::load(assets, catalog)?;
-    let spectre = crate::spectre_decals::load(assets, catalog)?;
+    let spectre = crate::spectre_decals::load(assets, simulation)?;
     let lockon = crate::lockon_cursor::load(assets, catalog)?;
     let attack = crate::attack_cursor::load(assets)?;
     let radius = crate::radius_cursor::load(assets)?;
@@ -1202,103 +1231,53 @@ fn prepare_abilities(
     capture: &ScreenCapture,
 ) -> Result<(), Box<dyn Error>> {
     prepare_economy_captures(app, battle, capture)?;
-    if matches!(capture, ScreenCapture::HackerDisable) {
-        crate::hacker_verification::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::InfantryCapture) {
-        crate::capture_verification::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Tunnel) {
-        crate::tunnel_verification::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Crawler) {
-        crate::crawler_verification::prepare(app, battle)?;
-    }
-    if let ScreenCapture::PointDefense(air) = capture {
-        crate::point_defense_capture::prepare(app, battle, *air)?;
-    }
-    if matches!(capture, ScreenCapture::Paladin) {
-        crate::paladin_capture::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Drones) {
-        crate::drone_capture::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Speaker) {
-        crate::speaker_capture::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::FireBase) {
-        crate::firebase_capture::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Stinger) {
-        crate::stinger_capture::prepare(app, battle)?;
-    }
     prepare_stealth_captures(app, battle, capture)?;
     prepare_aircraft_captures(app, battle, capture)?;
-    if matches!(capture, ScreenCapture::Terrorist) {
-        crate::terrorist_capture::prepare(app, battle)?;
+    match capture {
+        ScreenCapture::HackerDisable => crate::hacker_verification::prepare(app, battle),
+        ScreenCapture::InfantryCapture => crate::capture_verification::prepare(app, battle),
+        ScreenCapture::Tunnel => crate::tunnel_verification::prepare(app, battle),
+        ScreenCapture::Crawler => crate::crawler_verification::prepare(app, battle),
+        ScreenCapture::PointDefense(air) => {
+            crate::point_defense_capture::prepare(app, battle, *air)
+        }
+        ScreenCapture::Paladin => crate::paladin_capture::prepare(app, battle),
+        ScreenCapture::Drones => crate::drone_capture::prepare(app, battle),
+        ScreenCapture::Speaker => crate::speaker_capture::prepare(app, battle),
+        ScreenCapture::FireBase => crate::firebase_capture::prepare(app, battle),
+        ScreenCapture::Stinger => crate::stinger_capture::prepare(app, battle),
+        ScreenCapture::Terrorist => crate::terrorist_capture::prepare(app, battle),
+        ScreenCapture::Hijacker => crate::hijacker_capture::prepare(app, battle),
+        ScreenCapture::AirPower(kind) => crate::p03_air_capture::prepare(app, battle, *kind),
+        ScreenCapture::GlaPower(kind) => crate::p03_gla_capture::prepare(app, battle, *kind),
+        ScreenCapture::ChinaPower(kind) => crate::p03_china_capture::prepare(app, battle, *kind),
+        ScreenCapture::Recon => crate::p03_recon_capture::prepare(app, battle),
+        ScreenCapture::Powers(faction) => crate::p03_capture::prepare(app, battle, *faction),
+        ScreenCapture::Ground(kind) => crate::p02_ground_capture::prepare(app, battle, *kind),
+        ScreenCapture::Sabotage => crate::sabotage_verification::prepare(app, battle),
+        ScreenCapture::Tractor => crate::tractor_capture::prepare(app, battle),
+        ScreenCapture::Fire(storm) => crate::fire_capture::prepare(app, battle, *storm),
+        ScreenCapture::Cleanup => crate::radius_cursor::cleanup_verification::prepare(app, battle),
+        ScreenCapture::Artillery(kind) => crate::artillery_capture::prepare(app, battle, *kind),
+        ScreenCapture::Strategy => crate::strategy_capture::prepare(app, battle),
+        ScreenCapture::Horde => crate::horde_verification::prepare(app, battle),
+        ScreenCapture::Technical => crate::technical_verification::prepare(app, battle),
+        ScreenCapture::Research => crate::research_capture::prepare(app, battle),
+        ScreenCapture::Weapons => crate::laser_beam::verification::prepare(app, battle),
+        ScreenCapture::Defenses => crate::laser_beam::verification::prepare_defenses(app, battle),
+        ScreenCapture::Garrisons | ScreenCapture::NeutralGarrison => {
+            crate::model_animation::garrison::prepare(
+                app,
+                battle,
+                matches!(capture, ScreenCapture::NeutralGarrison),
+            )
+        }
+        ScreenCapture::Overlord => playtest_ui::prepare_overlord(app, battle),
+        ScreenCapture::Chinook => playtest_ui::prepare_chinook(app, battle),
+        ScreenCapture::Transports => playtest_ui::prepare_transports(app, battle),
+        ScreenCapture::BarracksHealing => playtest_ui::prepare_barracks_healing(app, battle),
+        _ => Ok(()),
     }
-    if matches!(capture, ScreenCapture::Hijacker) {
-        crate::hijacker_capture::prepare(app, battle)?;
-    }
-    if let ScreenCapture::Ground(kind) = capture {
-        crate::p02_ground_capture::prepare(app, battle, *kind)?;
-    }
-    if matches!(capture, ScreenCapture::Sabotage) {
-        crate::sabotage_verification::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Tractor) {
-        crate::tractor_capture::prepare(app, battle)?;
-    }
-    if let ScreenCapture::Fire(storm) = capture {
-        crate::fire_capture::prepare(app, battle, *storm)?;
-    }
-    if matches!(capture, ScreenCapture::Cleanup) {
-        crate::radius_cursor::cleanup_verification::prepare(app, battle)?;
-    }
-    if let ScreenCapture::Artillery(kind) = capture {
-        crate::artillery_capture::prepare(app, battle, *kind)?;
-    }
-    if matches!(capture, ScreenCapture::Strategy) {
-        crate::strategy_capture::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Horde) {
-        crate::horde_verification::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Technical) {
-        crate::technical_verification::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Research) {
-        crate::research_capture::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Weapons) {
-        crate::laser_beam::verification::prepare(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Defenses) {
-        crate::laser_beam::verification::prepare_defenses(app, battle)?;
-    }
-    if matches!(
-        capture,
-        ScreenCapture::Garrisons | ScreenCapture::NeutralGarrison
-    ) {
-        crate::model_animation::garrison::prepare(
-            app,
-            battle,
-            matches!(capture, ScreenCapture::NeutralGarrison),
-        )?;
-    }
-    if matches!(capture, ScreenCapture::Overlord) {
-        playtest_ui::prepare_overlord(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Chinook) {
-        playtest_ui::prepare_chinook(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::Transports) {
-        playtest_ui::prepare_transports(app, battle)?;
-    }
-    if matches!(capture, ScreenCapture::BarracksHealing) {
-        playtest_ui::prepare_barracks_healing(app, battle)?;
-    }
-    Ok(())
 }
 
 fn prepare_aircraft_captures(
@@ -1552,6 +1531,11 @@ const fn selection_focus(capture: &ScreenCapture) -> bool {
             | ScreenCapture::Hijacker
             | ScreenCapture::Helix
             | ScreenCapture::Ground(_)
+            | ScreenCapture::Recon
+            | ScreenCapture::Powers(_)
+            | ScreenCapture::AirPower(_)
+            | ScreenCapture::ChinaPower(_)
+            | ScreenCapture::GlaPower(_)
             | ScreenCapture::Aurora
             | ScreenCapture::AngryMob
             | ScreenCapture::BattleBus
@@ -1772,7 +1756,14 @@ fn register_capture(app: &mut App, root: &Path, capture: &ScreenCapture) {
         !matches!(capture, ScreenCapture::None | ScreenCapture::Audio),
         root.join(capture_path(capture)),
     );
-    if matches!(
+    if capture_waits_for_scenario(capture) {
+        app.world_mut()
+            .resource_mut::<playtest_view::Capture>()
+            .wait_for_scenario();
+    }
+}
+const fn capture_waits_for_scenario(capture: &ScreenCapture) -> bool {
+    matches!(
         capture,
         ScreenCapture::MapSelection(_)
             | ScreenCapture::CustomMap
@@ -1827,6 +1818,11 @@ fn register_capture(app: &mut App, root: &Path, capture: &ScreenCapture) {
             | ScreenCapture::Hijacker
             | ScreenCapture::Helix
             | ScreenCapture::Ground(_)
+            | ScreenCapture::Recon
+            | ScreenCapture::Powers(_)
+            | ScreenCapture::AirPower(_)
+            | ScreenCapture::ChinaPower(_)
+            | ScreenCapture::GlaPower(_)
             | ScreenCapture::Aurora
             | ScreenCapture::AngryMob
             | ScreenCapture::BattleBus
@@ -1859,11 +1855,7 @@ fn register_capture(app: &mut App, root: &Path, capture: &ScreenCapture) {
             | ScreenCapture::Overlord
             | ScreenCapture::Garrisons
             | ScreenCapture::NeutralGarrison
-    ) {
-        app.world_mut()
-            .resource_mut::<playtest_view::Capture>()
-            .wait_for_scenario();
-    }
+    )
 }
 
 const fn capture_path(capture: &ScreenCapture) -> &'static str {
@@ -1967,6 +1959,54 @@ const fn capture_path(capture: &ScreenCapture) -> &'static str {
 }
 const fn flight_capture_path(capture: &ScreenCapture) -> Option<&'static str> {
     Some(match capture {
+        ScreenCapture::AirPower(crate::p03_air_capture::Kind::A10) => "output/p03-a10-cleared.png",
+        ScreenCapture::AirPower(crate::p03_air_capture::Kind::Paradrop) => {
+            "output/p03-paradrop-cleared.png"
+        }
+        ScreenCapture::AirPower(crate::p03_air_capture::Kind::Daisy) => {
+            "output/p03-daisy-cleared.png"
+        }
+        ScreenCapture::AirPower(crate::p03_air_capture::Kind::Moab) => {
+            "output/p03-moab-cleared.png"
+        }
+        ScreenCapture::AirPower(crate::p03_air_capture::Kind::Leaflet) => {
+            "output/p03-leaflet-cleared.png"
+        }
+        ScreenCapture::AirPower(crate::p03_air_capture::Kind::Spectre) => {
+            "output/p03-spectre-cleared.png"
+        }
+        ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Artillery) => {
+            "output/p03-china-artillery.png"
+        }
+        ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Cluster) => {
+            "output/p03-china-cluster.png"
+        }
+        ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Carpet) => {
+            "output/p03-china-carpet.png"
+        }
+        ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Emp) => {
+            "output/p03-china-emp.png"
+        }
+        ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Frenzy) => {
+            "output/p03-china-frenzy.png"
+        }
+        ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Cannon) => {
+            "output/p03-china-cannon-neutron.png"
+        }
+        ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Ambush) => {
+            "output/p03-gla-ambush.png"
+        }
+        ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Gps) => "output/p03-gla-gps.png",
+        ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Sneak) => "output/p03-gla-sneak.png",
+        ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Anthrax) => {
+            "output/p03-gla-anthrax.png"
+        }
+        ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Radar) => "output/p03-gla-radar.png",
+        ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Booby) => "output/p03-gla-booby.png",
+        ScreenCapture::Recon => "output/p03-recon-cleared.png",
+        ScreenCapture::Powers(Faction::Usa) => "output/p03-particle-scorch.png",
+        ScreenCapture::Powers(Faction::China) => "output/p03-nuke-blast.png",
+        ScreenCapture::Powers(Faction::Gla) => "output/p03-scud-toxin.png",
         ScreenCapture::Aircraft => "output/aircraft.png",
         ScreenCapture::AircraftCrash => "output/aircraft-crash-hulk.png",
         ScreenCapture::PilotEjection => "output/ejected-pilot-landed.png",
@@ -2254,7 +2294,11 @@ fn configure_presentation(app: &mut App) {
     );
     app.add_systems(
         Update,
-        (crate::spectre_decals::update, crate::lockon_cursor::update)
+        (
+            crate::spectre_decals::update,
+            crate::lockon_cursor::update,
+            crate::particle_uplink::update.after(crate::model_animation::update_world),
+        )
             .run_if(resource_exists::<Match>),
     );
     app.add_systems(
@@ -2345,11 +2389,7 @@ fn step(
         battle
             .simulation
             .set_retaliation(0, preferences.applied().retaliation);
-        let selected = battle.selected.clone();
-        battle.simulation.sync_drawable_selection(&selected);
-        battle.simulation.step();
-        // ReplaceObjectUpgrade reads the first selected drawable before destroying it.
-        mouse.apply_replacements(&mut battle);
+        input::commands::step(&mut battle, &mut mouse);
         battle.apply_bike_selections();
         input::apply_spectre_selections(&mut battle);
         audio.map_script_actions(&battle.simulation.take_map_script_audio());

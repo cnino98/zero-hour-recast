@@ -2,7 +2,9 @@
 use crate::{
     playtest::MAP_NAME,
     skirmish_data,
-    skirmish_verification::{advance_until, construct, friendly_entity, produce_type, require},
+    skirmish_verification::{
+        advance_until, construct, construct_type, friendly_entity, produce_type, require,
+    },
     strategy_verification::{research, template},
     terrain::Terrain,
     world_data,
@@ -85,7 +87,8 @@ fn prepare_for(game: &mut Skirmish, china: usize) -> Result<Setup, Box<dyn Error
         "Lotus bypassed original Propaganda Center prerequisite",
     )?;
     construct(game, worker, Kind::Factory, china)?;
-    construct(game, worker, Kind::TechBuilding, china)?;
+    let propaganda = template(game, "ChinaPropagandaCenter")?;
+    construct_type(game, worker, propaganda, china)?;
     let actor = produce_type(game, barracks, lotus, china)?;
     let before = game.players[china].cash;
     require(

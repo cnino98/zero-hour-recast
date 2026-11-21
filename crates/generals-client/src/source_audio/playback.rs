@@ -13,12 +13,39 @@ pub(super) struct Playing {
     pub(super) sample_names: Vec<String>,
     pub(super) object: Option<usize>,
     projectile: Option<u64>,
+    orbital: Option<usize>,
     position: Option<Vec3>,
     volume: f32,
     volume_shift: f32,
     serial: u64,
     pitch: f32,
     looping: Option<super::looping::Template>,
+}
+
+#[derive(SystemParam)]
+pub struct EventInspection<'w, 's> {
+    sinks: Query<'w, 's, (&'static Playing, &'static AudioSink)>,
+}
+
+impl EventInspection<'_, '_> {
+    pub fn played(self, events: [(&str, Option<usize>, &[&str]); 3]) -> [bool; 3] {
+        use bevy::audio::AudioSinkPlayback;
+        let mut played = [false; 3];
+        for (playing, sink) in self.sinks {
+            if sink.position().as_secs_f64() <= 0.01 || playing.sample_names.is_empty() {
+                continue;
+            }
+            for (index, (event, object, samples)) in events.iter().enumerate() {
+                played[index] |= playing.event == *event
+                    && playing.object == *object
+                    && playing
+                        .sample_names
+                        .iter()
+                        .all(|sample| samples.contains(&sample.as_str()));
+            }
+        }
+        played
+    }
 }
 
 struct Active {
@@ -41,6 +68,7 @@ impl Playing {
             event: self.event.clone(),
             object: self.object,
             projectile: self.projectile,
+            orbital: self.orbital,
             position: self.position,
             samples: Vec::new(),
             sample_names: vec![event.sounds[looping.previous].clone()],
@@ -62,6 +90,24 @@ impl Playing {
             {
                 self.position = Some(Vec3::new(position[0], position[2], -position[1]));
             }
+        } else if let (Some(id), Some(ordinal)) = (self.object, self.orbital) {
+            if game
+                .entities
+                .get(id)
+                .is_some_and(generals_sim::skirmish::Entity::exists)
+                && let Some(target) = game
+                    .particle_uplink_visuals(id)
+                    .nth(ordinal)
+                    .and_then(|visual| visual.target)
+            {
+                let [x, y, z] = target.position;
+                self.position = Some(Vec3::new(
+                    x,
+                    z + generals_sim::skirmish::particle_uplink::ORBITAL_BEAM_AUDIO_Z_OFFSET,
+                    -y,
+                ));
+            }
+            // The source stop event retains the last drawable position for decay.
         } else if self.position.is_some()
             && let Some(id) = self.object
         {
@@ -450,6 +496,7 @@ fn spawn(
                 sample_names: request.sample_names,
                 object: request.object,
                 projectile: request.projectile,
+                orbital: request.orbital,
                 position,
                 volume: request.volume,
                 volume_shift: request.volume_shift,
@@ -999,6 +1046,7 @@ mod tests {
             event: "voice".to_owned(),
             object: Some(7),
             projectile: None,
+            orbital: None,
             position: None,
             samples: Vec::new(),
             looping: None,

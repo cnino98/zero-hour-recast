@@ -43,6 +43,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         .ok_or("pointer missing")?;
     let rider = passenger(battle, 0).ok_or("Chinook first passenger absent")?;
     dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(0));
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         3000,
@@ -54,6 +55,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         input::context_order(battle, None, Some(PickTarget::Unit(host)), &mut mouse),
         "Chinook context boarding rejected",
     )?;
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         6000,
@@ -65,6 +67,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
     )?;
     battle.select_objects(&[host], true);
     dispatch_command(battle, &mut mouse, CommandAction::Evacuate);
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         1800,

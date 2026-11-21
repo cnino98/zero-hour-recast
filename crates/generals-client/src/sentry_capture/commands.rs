@@ -1,12 +1,11 @@
 use super::{Check, Control, Error, Stage, View, require};
 use crate::{
     control_bar::CommandAction,
-    input::{self, PickTarget},
+    input::{self, CommandMode, PickTarget},
     playtest_ui::dispatch_command,
     source_audio::Voice,
 };
 use bevy::prelude::*;
-use generals_sim::skirmish::Order;
 
 pub(super) fn research(
     check: &mut Check,
@@ -27,13 +26,10 @@ pub(super) fn research(
             && upgrade.frames == 900,
         "Sentry Gun button changed original research, price or duration",
     )?;
-    let cash = game.players[0].cash;
+    let player = &game.players[0];
+    check.research_balance = Some(player.cash.wrapping_sub(player.statistics.money_earned));
     check.research = game.tick;
     dispatch_command(&mut control.battle, &mut control.mouse, action);
-    require(
-        control.battle.simulation.players[0].cash + 1000 == cash,
-        "original Sentry Gun button did not pay its research cost",
-    )?;
     check.stage = Stage::Research;
     control.time.unpause();
     Ok(())
@@ -56,18 +52,10 @@ pub(super) fn guard(
     );
     input::targeted_order(&mut control.battle, &mut control.mouse, point, None);
     require(
-        matches!(
-            control.battle.simulation.entities[check.setup.drone]
-                .ai
-                .order,
-            Order::Guard(_)
-        ) && control
-            .mouse
-            .voices
-            .last()
-            .is_some_and(|voice| matches!(voice.voice(), Voice::Guard)),
-        "original Guard click failed to issue its order and response",
+        matches!(control.mouse.pending_command, CommandMode::Normal),
+        "original Guard click was not accepted",
     )?;
+    check.command_issued = Some((control.battle.simulation.tick, Voice::Guard));
     check.stage = Stage::Deploy;
     control.time.unpause();
     Ok(())
@@ -90,9 +78,10 @@ pub(super) fn move_drone(check: &mut Check, control: &mut Control) -> Result<(),
             .mouse
             .voices
             .last()
-            .is_some_and(|voice| matches!(voice.voice(), Voice::Move)),
-        "Sentry context Move omitted original response",
+            .is_some_and(|request| matches!(request.voice(), Voice::Move)),
+        "accepted Sentry context Move omitted original voice",
     )?;
+    check.command_issued = Some((control.battle.simulation.tick, Voice::Move));
     check.stage = Stage::Move;
     control.time.unpause();
     Ok(())
@@ -119,9 +108,10 @@ pub(super) fn attack(check: &mut Check, control: &mut Control) -> Result<(), Box
             .mouse
             .voices
             .last()
-            .is_some_and(|voice| matches!(voice.voice(), Voice::Attack)),
-        "Sentry context Attack omitted original response",
+            .is_some_and(|request| matches!(request.voice(), Voice::Attack)),
+        "accepted Sentry context Attack omitted original voice",
     )?;
+    check.command_issued = Some((control.battle.simulation.tick, Voice::Attack));
     check.stage = Stage::Fire;
     Ok(())
 }

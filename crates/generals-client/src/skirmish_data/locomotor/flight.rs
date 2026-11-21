@@ -26,7 +26,8 @@ pub(super) fn load(
         .unwrap_or("NO_Z_MOTIVE_FORCE")
     {
         "NO_Z_MOTIVE_FORCE" => Height::None,
-        "SURFACE_RELATIVE_HEIGHT" | "RELATIVE_TO_HIGHEST_LAYER" => Height::Surface,
+        "SURFACE_RELATIVE_HEIGHT" => Height::Surface,
+        "RELATIVE_TO_HIGHEST_LAYER" => Height::HighestLayer,
         "ABSOLUTE_HEIGHT" => Height::Absolute,
         "FIXED_SURFACE_RELATIVE_HEIGHT" => Height::FixedSurface,
         "FIXED_ABSOLUTE_HEIGHT" => Height::FixedAbsolute,
@@ -101,7 +102,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(matches!(rules.appearance, Appearance::Hover));
-        assert!(matches!(rules.height, Height::Surface));
+        assert!(matches!(rules.height, Height::HighestLayer));
         assert!(rules.close_3d && rules.airborne_force && rules.friction_2d);
         assert_eq!(rules.braking.to_bits(), 99_999.0_f32.to_bits());
         assert_eq!(rules.forward_friction.to_bits(), 0.15_f32.to_bits());

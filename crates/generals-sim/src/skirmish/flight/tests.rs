@@ -54,6 +54,68 @@ fn setup(appearance: Appearance) -> (crate::skirmish::Skirmish, usize) {
 }
 
 #[test]
+fn stationary_spy_hover_tracks_water_surface_and_other_drones_track_bridge_layers() {
+    use crate::terrain::{BridgeGeometry, WaterPolygon};
+
+    let (mut game, id) = setup(Appearance::Hover);
+    let point = [100.0, 100.0];
+    let kind = game.entities[id].type_index;
+    let drone = &mut game.catalog[kind];
+    drone.movement_surface = crate::skirmish::MovementSurface::Ground;
+    drone.locomotor.legal_surfaces = 3;
+    drone.speed = 0.0;
+    drone.locomotor.speed_damaged = 0.0;
+    drone.locomotor.airborne_targeting_height = 30.0;
+    drone.locomotor.wander_length = Some(1.0);
+    drone.locomotor.flight.as_mut().unwrap().preferred_height = 90.0;
+    game.set_object_position(id, [point[0], point[1], 90.0]);
+    game.update_flight(id);
+    game.integrate_flight(id);
+    assert!((game.height_above_ground(id) - 90.0).abs() < 0.01);
+
+    game.movement_terrain.set_water_polygons(vec![
+        WaterPolygon::new(vec![
+            [60, 60, 25],
+            [140, 60, 25],
+            [140, 140, 25],
+            [60, 140, 25],
+        ])
+        .unwrap(),
+    ]);
+    for _ in 0..300 {
+        game.tick += 1;
+        game.update_flight(id);
+        game.integrate_flight(id);
+    }
+    assert_eq!(
+        game.entities[id].position.map(f32::to_bits),
+        point.map(f32::to_bits)
+    );
+    assert!((game.height_above_ground(id) - 115.0).abs() < 1.0);
+    game.update_ground_locomotor(id);
+    assert!(game.entities[id].is_airborne_target());
+
+    let bridge = BridgeGeometry {
+        from: [60.0, 100.0, 40.0],
+        to: [150.0, 100.0, 40.0],
+        corners: [
+            [60.0, 80.0, 40.0],
+            [60.0, 120.0, 40.0],
+            [150.0, 120.0, 40.0],
+            [150.0, 80.0, 40.0],
+        ],
+    };
+    game.movement_terrain.add_bridge(bridge, |_| 0.0).unwrap();
+    game.catalog[kind].locomotor.flight.as_mut().unwrap().height = Height::HighestLayer;
+    for _ in 0..300 {
+        game.tick += 1;
+        game.update_flight(id);
+        game.integrate_flight(id);
+    }
+    assert!((game.object_position(id)[2] - 130.0).abs() < 1.0);
+}
+
+#[test]
 fn hover_accelerates_using_the_direction_before_rotating_and_physics_runs_later() {
     let (mut game, id) = setup(Appearance::Hover);
     assert!(!game.travel_flight(id, [100.0, 400.0], 0.1));

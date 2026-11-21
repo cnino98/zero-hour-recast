@@ -63,12 +63,14 @@ def run_logged(project, executable, command, session_path=None, timeout=None):
     latest = project / "output" / "playtest-run.log"
     child = None
     pending_signals = []
+    interrupted_by = None
+    child_status = None
     handlers = {}
     deadline = None
     termination_deadline = None
     timed_out = threading.Event()
 
-    def forward(signum, _frame):
+    def send_signal(signum):
         if child is None:
             pending_signals.append(signum)
         else:
@@ -76,6 +78,12 @@ def run_logged(project, executable, command, session_path=None, timeout=None):
                 os.killpg(child.pid, signum)
             except ProcessLookupError:
                 pass
+
+    def forward(signum, _frame):
+        nonlocal interrupted_by
+        if interrupted_by is None:
+            interrupted_by = signum
+        send_signal(signum)
 
     with os.fdopen(descriptor, "wb", buffering=0) as log:
         fcntl.flock(log, fcntl.LOCK_EX)
@@ -116,8 +124,8 @@ def run_logged(project, executable, command, session_path=None, timeout=None):
             def expire():
                 nonlocal termination_deadline
                 timed_out.set()
-                forward(signal.SIGTERM, None)
-                termination_deadline = threading.Timer(5, forward, args=(signal.SIGKILL, None))
+                send_signal(signal.SIGTERM)
+                termination_deadline = threading.Timer(5, send_signal, args=(signal.SIGKILL,))
                 termination_deadline.daemon = True
                 termination_deadline.start()
 
@@ -127,13 +135,14 @@ def run_logged(project, executable, command, session_path=None, timeout=None):
                 deadline.start()
             write(f"child_pid: {child.pid}\n")
             for signum in pending_signals:
-                forward(signum, None)
+                send_signal(signum)
             with child.stdout:
                 while block := child.stdout.read1(65536):
                     log.write(block)
                     if mirror:
                         mirror = mirror_output(block)
             code = child.wait()
+            child_status = code
             if timed_out.is_set():
                 write(f"\nacceptance_timeout_seconds: {timeout}\n")
                 code = -signal.SIGTERM if code == 0 else code
@@ -149,6 +158,10 @@ def run_logged(project, executable, command, session_path=None, timeout=None):
                 termination_deadline.cancel()
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)
+            if interrupted_by is not None:
+                status = 128 + interrupted_by
+                write(f"\ninterruption_requested: {interrupted_by} ({signal.Signals(interrupted_by).name})\n")
+                write(f"child_exit_status: {child_status}\n")
             write(f"\n--- session ended ---\nfinished_utc: {utc_now()}\nexit_status: {status}\n")
             os.fsync(log.fileno())
     try:

@@ -160,6 +160,7 @@ fn verify_rules(game: &Skirmish, index: usize) -> Result<(), Box<dyn Error>> {
                 .eq([
                     "Upgrade_ChinaSatelliteHackOne",
                     "Upgrade_ChinaMines",
+                    "Upgrade_ChinaEMPMines",
                     "Upgrade_ChinaSatelliteHackTwo",
                 ])
             && unit

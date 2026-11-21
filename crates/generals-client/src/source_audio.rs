@@ -40,6 +40,7 @@ mod object_fx;
 mod object_sounds;
 mod pilot;
 mod playback;
+pub use playback::EventInspection;
 mod radar;
 mod random;
 mod research;
@@ -140,6 +141,8 @@ pub enum Voice {
     BombTruckDisguiseMode,
     BombTruckBioBombMode,
     BombTruckHighExplosiveMode,
+    BoobyTrapMode,
+    NoBuild,
 }
 
 impl Voice {
@@ -184,6 +187,8 @@ impl Voice {
             Self::BombTruckDisguiseMode => 35,
             Self::BombTruckBioBombMode => 36,
             Self::BombTruckHighExplosiveMode => 37,
+            Self::BoobyTrapMode => 38,
+            Self::NoBuild => 39,
         }
     }
 }
@@ -321,6 +326,7 @@ struct Request {
     event: String,
     object: Option<usize>,
     projectile: Option<u64>,
+    orbital: Option<usize>,
     position: Option<Vec3>,
     samples: Vec<SamplesBuffer>,
     looping: Option<looping::Template>,
@@ -391,7 +397,9 @@ pub fn load(
         .chain([
             "GUIClick",
             "GUIClickDisabled",
+            "GUIGenShortcutClick",
             "GUIMessageReceived",
+            "NoCanDoSound",
             "ExplosionRocketBuggyMissile",
             "ExplosionFlashBang",
         ])
@@ -626,9 +634,14 @@ impl SourceAudio {
                 | Voice::BombTruckDisguiseMode
                 | Voice::BombTruckBioBombMode
                 | Voice::BombTruckHighExplosiveMode
+                | Voice::BoobyTrapMode
         ))
         .then_some(object);
         self.units[unit].voices[index].previous = self.queue(&name, object, None, previous, false);
+        if matches!(request.voice, Voice::NoBuild) {
+            // PlaceEventTranslator queues the provider voice before the UI beep.
+            self.ui("NoCanDoSound");
+        }
         if request.car_bomb
             && let Some(object) = object
         {
@@ -687,6 +700,7 @@ impl SourceAudio {
             event: name.to_owned(),
             object,
             projectile: None,
+            orbital: None,
             position,
             looping: hacker::loop_template(event, &self.samples, index, self.random.clone()),
             samples,

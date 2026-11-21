@@ -110,6 +110,15 @@ impl RecordedEffects<'_> {
             | WeaponFxEvent::Laser(_)
             | WeaponFxEvent::Shot(_)
             | WeaponFxEvent::Projectile(_) => self.record_drawable_event(battle, visuals, event),
+            WeaponFxEvent::ParticleUplinkScorch(index) => {
+                self.particles
+                    .particle_uplink_scorch(battle, *index, &mut self.animations);
+            }
+            WeaponFxEvent::EmpSparks(index) => {
+                self.particles
+                    .emp_sparks(battle, *index, &mut self.animations);
+            }
+            WeaponFxEvent::NeutronScorch(index) => self.particles.neutron_scorch(battle, *index),
             WeaponFxEvent::BodyParticles(index) => self.particles.body_particle_event(
                 &battle.simulation,
                 battle.generation,
@@ -132,20 +141,10 @@ impl RecordedEffects<'_> {
                     &mut self.particles,
                 );
             }
-            WeaponFxEvent::AbilityFeedback(index) => {
-                let event = &battle.simulation.presentation.ability_feedback[*index];
-                self.particles
-                    .ability_feedback(battle, event, &mut self.animations);
-                if matches!(
-                    event.effect,
-                    generals_sim::skirmish::special_ability::FeedbackEffect::CaptureFlash
-                ) {
-                    self.selection
-                        .ability_capture_flash(battle, event.target, event.owner);
-                }
-            }
+            WeaponFxEvent::AbilityFeedback(index) => self.record_ability_feedback(battle, *index),
 
-            WeaponFxEvent::FiringSound { .. }
+            WeaponFxEvent::SuperweaponEva(_)
+            | WeaponFxEvent::FiringSound { .. }
             | WeaponFxEvent::StopFiringSound(_)
             | WeaponFxEvent::RapidFire { .. }
             | WeaponFxEvent::Pilot(_)
@@ -199,6 +198,19 @@ impl RecordedEffects<'_> {
             }
         }
     }
+    fn record_ability_feedback(&mut self, battle: &Match, index: usize) {
+        let event = &battle.simulation.presentation.ability_feedback[index];
+        self.particles
+            .ability_feedback(battle, event, &mut self.animations);
+        if matches!(
+            event.effect,
+            generals_sim::skirmish::special_ability::FeedbackEffect::CaptureFlash
+        ) {
+            self.selection
+                .ability_capture_flash(battle, event.target, event.owner);
+        }
+    }
+
     fn record_drawable_event(
         &mut self,
         battle: &Match,

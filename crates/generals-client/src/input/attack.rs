@@ -68,7 +68,23 @@ pub(super) fn force_order(
     ) {
         return;
     }
-    let response = VoiceRequest::new(&battle.simulation, &battle.selected, Voice::Attack, false);
+    if !battle.commands.executing {
+        super::commands::enqueue(
+            battle,
+            Some(mouse),
+            super::commands::Kind::Force {
+                target,
+                point: position,
+            },
+        );
+        return;
+    }
+    let response = VoiceRequest::new(
+        &battle.simulation,
+        battle.command_drawables(),
+        Voice::Attack,
+        false,
+    );
     let members = selection::command_units(battle);
     let result = if let Some(target) = target {
         battle

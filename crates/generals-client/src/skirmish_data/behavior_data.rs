@@ -14,7 +14,22 @@ pub(super) fn load(
     object: &Declaration,
     kind: Kind,
 ) -> Result<BehaviorData, Box<dyn Error>> {
+    let (ocl_powers, power_weapons) = super::power_ocl::load(files, object)?;
     Ok(BehaviorData {
+        particle_uplinks: super::particle_uplink::load(files, object)?,
+        ocl_powers,
+        power_weapons,
+        cash_hack_powers: super::cash_hack::load(object)?,
+        spy_vision_powers: super::spy_vision_power::load(object)?,
+        nuclear_launcher: super::nuclear_launcher::load(files, object)?,
+        special_power_completions: super::special_power_completion::load(files, object)?,
+        weapon_bonuses: super::weapon_bonus_update::load(object)?,
+        leaflet_drops: super::airdrop_payloads::leaflets(object)?,
+        smart_bombs: super::airdrop_payloads::smart_bombs(object)?,
+        emp: super::emp::load(files, object)?,
+        neutron_missile: super::neutron_missile::load(files, object)?,
+        gps_scramblers: super::gps_scrambler::load(files, object)?,
+        dynamic_shroud: super::dynamic_shroud::load(files, object)?,
         create_object_die: super::create_object_die::load(files, object)?,
         eject_pilots: super::eject_pilot::load(files, object)?,
         bridges: super::bridge_behavior::load(files, object)?,

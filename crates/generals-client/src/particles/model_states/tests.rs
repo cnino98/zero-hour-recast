@@ -1,6 +1,229 @@
 use super::*;
 use crate::particles::tests::{system, template};
 
+#[ignore = "requires original game installation"]
+#[test]
+fn installed_paid_mine_draws_bind_original_flares_on_eight_bones() {
+    let (assets, battle) = crate::cleanup_verification::tests::installed();
+    let types = &battle.simulation.catalog;
+    let particles = crate::particles::load(&assets, types).unwrap();
+    for (name, template) in [
+        ("ChinaStandardMine", "MineFX"),
+        ("ChinaEMPMine", "MineFXPurple"),
+        ("ChinaClusterMine", "MineFX"),
+    ] {
+        let kind = types.iter().position(|unit| unit.name == name).unwrap();
+        let [draw] = particles.model_states.bindings[&kind].as_slice() else {
+            panic!("paid mine must have a single original draw");
+        };
+        let [normal, rubble] = draw.states.as_slice() else {
+            panic!("paid mine must have normal and rubble draw states");
+        };
+        assert_eq!(normal.len(), 8);
+        assert!(
+            normal
+                .iter()
+                .all(|&id| particles.templates[id].name == template)
+        );
+        assert!(
+            draw.bones[0]
+                .iter()
+                .zip(1..=8)
+                .all(|(bone, index)| *bone == format!("Mine{index:02}"))
+        );
+        assert!(rubble.is_empty());
+    }
+}
+
+#[ignore = "requires original game installation"]
+#[test]
+fn installed_frenzy_marker_cloud_bursts_and_drains_after_native_deletion() {
+    use crate::{
+        input, progression_verification::earn_combat_rank, skirmish_verification::friendly_entity,
+    };
+    use generals_sim::skirmish::{Faction, Kind};
+
+    let (assets, mut battle, mut animations) =
+        crate::cleanup_verification::tests::installed_with_animations();
+    let game = &mut battle.simulation;
+    let mut particles = crate::particles::load(&assets, &game.catalog).unwrap();
+    assert_stock_frenzy_bindings(&particles, game);
+    game.set_match_options(20_000, 1);
+    game.reset(Faction::China, Faction::China).unwrap();
+    let (army, _) = earn_combat_rank(game, 3).unwrap();
+    let fighter = army[0];
+    let provider = friendly_entity(game, Kind::CommandCenter, 0).unwrap();
+    game.purchase_science(0, "SCIENCE_Frenzy1").unwrap();
+    let point = game.entities[fighter].position;
+    let marker = game.entities.len();
+    let tick = game.tick;
+    let generation = battle.generation;
+    let mut random = random(&mut animations, generation);
+    particles.begin(generation, tick);
+    particles.advance_frame(tick, &mut random, &|point| game.ground_height(point));
+
+    let power = "SuperweaponFrenzy";
+    let mut mouse = queue_frenzy(&mut battle, &assets, provider, point, power);
+    assert_eq!(battle.simulation.entities.len(), marker);
+    assert_eq!(
+        battle.simulation.power_cooldown_remaining(provider, power),
+        0
+    );
+
+    input::commands::step(&mut battle, &mut mouse);
+    let game = &mut battle.simulation;
+    assert_eq!(game.tick, tick + 1);
+    assert_eq!(game.entities.len(), marker + 1);
+    assert!(game.power_cooldown_remaining(provider, power) > 0);
+    assert!(!game.entities[fighter].frenzy_tint());
+    let actor = &game.entities[marker];
+    assert_eq!(
+        game.catalog[actor.type_index].name,
+        "Frenzy_InvisibleMarker_Level1"
+    );
+    assert!(actor.has_drawable());
+    assert!(matches!(
+        game.visibility_status(0, marker),
+        Status::Clear | Status::Partial
+    ));
+    let mut states = BTreeMap::from([(
+        (marker, 0),
+        DrawState {
+            unit: actor.type_index,
+            state: 0,
+            in_view: true,
+            stopped: false,
+            pose: drawable_pose(game, marker),
+            offsets: vec![None],
+            wheels: None,
+            tank: None,
+        },
+    )]);
+    let [x, y] = point;
+    let region = [[x - 200.0, y - 200.0], [x + 200.0, y + 200.0]];
+    let birth = game.tick;
+    particles.begin(generation, birth);
+    particles.sync_drawables(&states, Some((game, region)), &mut random);
+    particles.advance_frame(birth, &mut random, &|point| game.ground_height(point));
+    let emitter = &particles.emitters[0];
+    let system = emitter.id;
+    let count = emitter.particles.len();
+    assert!((50..=70).contains(&count));
+    assert_eq!(emitter.drawable_attachment, Some((marker, 0)));
+    assert_same_frenzy_draw(&mut particles, game, &states, region, (system, count));
+
+    input::commands::step(&mut battle, &mut mouse);
+    let game = &battle.simulation;
+    assert_eq!(game.tick, birth + 1);
+    assert!(!game.entities[marker].has_drawable());
+    assert!(game.entities[fighter].frenzy_tint());
+    states.clear();
+    particles.begin(generation, game.tick);
+    particles.sync_drawables(&states, Some((game, region)), &mut random);
+    particles.advance_frame(game.tick, &mut random, &|point| game.ground_height(point));
+    let emitter = &particles.emitters[0];
+    assert_eq!(emitter.id, system);
+    assert!(emitter.lifecycle.destroyed);
+    assert!(emitter.drawable_attachment.is_none());
+    assert_eq!(emitter.particles.len(), count);
+    for particle in &emitter.particles {
+        assert_eq!(particle.born, birth);
+    }
+
+    // The installed cloud particles live 30–50 frames. Finish that real
+    // lifetime after the attached drawable stops the emitter.
+    for _ in 0..50 {
+        input::commands::step(&mut battle, &mut mouse);
+        let game = &battle.simulation;
+        particles.begin(generation, game.tick);
+        particles.advance_frame(game.tick, &mut random, &|point| game.ground_height(point));
+    }
+    assert!(
+        particles
+            .emitters
+            .iter()
+            .all(|emitter| emitter.id != system)
+    );
+}
+
+fn assert_same_frenzy_draw(
+    particles: &mut Particles,
+    game: &Skirmish,
+    states: &BTreeMap<(usize, usize), DrawState>,
+    region: [[f32; 2]; 2],
+    expected: (u64, usize),
+) {
+    // Degenerate ranges use no RNG in GameClientRandomValueReal.
+    let mut no_extra_random = |low: f32, high: f32| {
+        assert!(low >= high, "second same-frame draw sampled the source RNG");
+        high
+    };
+    particles.sync_drawables(states, Some((game, region)), &mut no_extra_random);
+    particles.advance_frame(game.tick, &mut no_extra_random, &|point| {
+        game.ground_height(point)
+    });
+    let [emitter] = particles.emitters.as_slice() else {
+        panic!("second same-frame draw created another Frenzy emitter");
+    };
+    assert_eq!((emitter.id, emitter.particles.len()), expected);
+}
+
+fn queue_frenzy(
+    battle: &mut Match,
+    assets: &VirtualAssets,
+    provider: usize,
+    point: [f32; 2],
+    power: &str,
+) -> crate::input::Mouse {
+    use crate::{
+        control_bar,
+        input::{self, CommandMode},
+        playtest_ui::{dispatch_command, selected_command},
+    };
+    use bevy::prelude::Vec2;
+
+    let options = generals_assets::game_root()
+        .unwrap()
+        .join("UserData/Options.ini");
+    let mut mouse = input::load(assets, &options, &battle.simulation.catalog).unwrap();
+    let ui = control_bar::load(assets, &battle.simulation.catalog, &options).unwrap();
+    battle.select_objects(&[provider], true);
+    let action = (1..=14)
+        .filter_map(|slot| selected_command(battle, &ui, slot))
+        .find(|command| command.action.power() == Some(power))
+        .unwrap()
+        .action;
+    dispatch_command(battle, &mut mouse, action);
+    assert!(
+        matches!(mouse.pending_command, CommandMode::Power { caster, name, .. }
+        if caster == provider && name == power)
+    );
+    input::targeted_order(battle, &mut mouse, Vec2::from_array(point), None);
+    assert!(matches!(mouse.pending_command, CommandMode::Normal));
+    mouse
+}
+
+fn assert_stock_frenzy_bindings(particles: &Particles, game: &Skirmish) {
+    for name in [
+        "Frenzy_InvisibleMarker_Level1",
+        "Frenzy_InvisibleMarker_Level2",
+        "Frenzy_InvisibleMarker_Level3",
+    ] {
+        let kind = game
+            .catalog
+            .iter()
+            .position(|unit| unit.name == name)
+            .unwrap();
+        let [draw] = particles.model_states.bindings[&kind].as_slice() else {
+            panic!("Frenzy marker must have a single stock draw");
+        };
+        assert_eq!(draw.states.len(), 1);
+        assert_eq!(draw.states[0].len(), 1);
+        assert_eq!(particles.templates[draw.states[0][0]].name, "FrenzyCloud");
+        assert_eq!(draw.bones[0], ["None"]);
+    }
+}
+
 fn fixture() -> (Particles, BTreeMap<(usize, usize), DrawState>) {
     let mut green = template("green");
     green.system_lifetime = 0.0;

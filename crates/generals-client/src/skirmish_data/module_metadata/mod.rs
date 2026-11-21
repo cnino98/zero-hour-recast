@@ -274,7 +274,7 @@ fn selected_ancestry(
 }
 
 fn validate_reskin(declaration: &Declaration) -> Result<(), String> {
-    // Existing runtime admission represents only original Draw/geometry reskins.
+    // Runtime admission retains original Draw, geometry and production limits.
     // Reject unrepresented semantic changes instead of treating reskin as Object.
     for line in &declaration.lines {
         if line.depth == Some(0)
@@ -288,12 +288,16 @@ fn validate_reskin(declaration: &Declaration) -> Result<(), String> {
                         | "GeometryMinorRadius"
                         | "GeometryHeight"
                         | "GeometryIsSmall"
+                        | "MaxSimultaneousOfType"
+                        | "MaxSimultaneousLinkKey"
                 )
             )
         {
             return Err(format!(
-                "{}: unadmitted reskin field at {}",
-                declaration.name, line.line
+                "{}: unadmitted reskin field {:?} at {}",
+                declaration.name,
+                line.tokens.first(),
+                line.line
             ));
         }
     }

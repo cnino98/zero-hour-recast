@@ -41,6 +41,15 @@ pub struct ParticleInspection<'w, 's> {
 }
 
 impl ParticleInspection<'_, '_> {
+    pub fn original_system_retired(&self, name: &str, generation: u32) -> bool {
+        self.particles.generation == generation
+            && self
+                .particles
+                .emitters
+                .iter()
+                .all(|emitter| self.particles.templates[emitter.template].name != name)
+    }
+
     pub fn collapse_dust_finished(
         &self,
         generation: u32,
@@ -100,6 +109,86 @@ impl ParticleInspection<'_, '_> {
     pub fn incendiary(&self, name: &str, generation: u32) -> Result<bool, Box<dyn Error>> {
         for emitter in &self.particles.emitters {
             if self.particles.templates[emitter.template].name == name
+                && self.visible_mesh(emitter, generation)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn attached_alpha_quad_clear(
+        &self,
+        actor: usize,
+        name: &str,
+        generation: u32,
+        camera: (&Camera, &GlobalTransform),
+        viewport: Rect,
+        obstruction: Option<Rect>,
+    ) -> Result<bool, Box<dyn Error>> {
+        for emitter in &self.particles.emitters {
+            let template = &self.particles.templates[emitter.template];
+            if template.name != name
+                || emitter
+                    .object_attachment
+                    .as_ref()
+                    .is_none_or(|(id, _)| *id != actor)
+                || !self.visible_mesh(emitter, generation)?
+            {
+                continue;
+            }
+            if !matches!(template.drawing.style, Style::Billboard)
+                || !matches!(template.drawing.shader, super::Shader::Alpha)
+            {
+                return Err("expected the authored alpha billboard particle system".into());
+            }
+            let (_, mesh, _, _, transform) = self
+                .visuals
+                .iter()
+                .find(|(visual, ..)| visual.system == emitter.id && visual.generation == generation)
+                .ok_or("attached particle mesh vanished")?;
+            let mesh = self
+                .meshes
+                .get(&mesh.0)
+                .ok_or("attached particle mesh vanished")?;
+            let Some(VertexAttributeValues::Float32x3(points)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                return Err("attached particle positions absent".into());
+            };
+            let Some(VertexAttributeValues::Float32x4(colors)) =
+                mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+            else {
+                return Err("attached particle colors absent".into());
+            };
+            if points.len() != emitter.particles.len() * 4 || points.len() != colors.len() {
+                return Err("attached particle mesh lost its authored quad ordering".into());
+            }
+            for (quad, colors) in points.chunks_exact(4).zip(colors.chunks_exact(4)) {
+                if colors[0][3] > 0.0
+                    && project_quad(quad, transform, camera)
+                        .is_some_and(|bounds| clear_quad(bounds, viewport, obstruction))
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn mature_incendiary_at(
+        &self,
+        name: &str,
+        generation: u32,
+        center: [f32; 2],
+    ) -> Result<bool, Box<dyn Error>> {
+        let Some(now) = self.particles.frame else {
+            return Ok(false);
+        };
+        for emitter in &self.particles.emitters {
+            let template = &self.particles.templates[emitter.template];
+            if template.name == name
+                && mature_color_at(emitter, template, center, now)
                 && self.visible_mesh(emitter, generation)?
             {
                 return Ok(true);
@@ -642,6 +731,50 @@ impl ParticleInspection<'_, '_> {
     }
 }
 
+fn project_quad(
+    quad: &[[f32; 3]],
+    transform: &GlobalTransform,
+    camera: (&Camera, &GlobalTransform),
+) -> Option<Rect> {
+    let project = |point| {
+        camera
+            .0
+            .world_to_viewport(camera.1, transform.transform_point(Vec3::from_array(point)))
+            .ok()
+    };
+    let (first, rest) = quad.split_first()?;
+    let first = project(*first)?;
+    rest.iter()
+        .try_fold(Rect::from_corners(first, first), |mut bounds, point| {
+            let point = project(*point)?;
+            bounds.min = bounds.min.min(point);
+            bounds.max = bounds.max.max(point);
+            Some(bounds)
+        })
+}
+
+fn clear_quad(quad: Rect, viewport: Rect, obstruction: Option<Rect>) -> bool {
+    let viewport = viewport.inflate(-12.0);
+    viewport.contains(quad.min)
+        && viewport.contains(quad.max)
+        && obstruction.is_none_or(|bounds| {
+            quad.max.cmple(bounds.min).any() || quad.min.cmpge(bounds.max).any()
+        })
+}
+
+fn mature_color_at(emitter: &Emitter, template: &Template, center: [f32; 2], now: u64) -> bool {
+    let [x, y, _] = emitter.transform.position;
+    // The additive poison particle starts black, brightens at Color2, and
+    // goes dark at Color3. FXList offsets Z without moving the field center.
+    let rise = u64::from(template.color[1].frame);
+    let fade = u64::from(template.color[2].frame);
+    [x, y].map(f32::to_bits) == center.map(f32::to_bits)
+        && emitter.particles.iter().any(|particle| {
+            now.checked_sub(particle.born)
+                .is_some_and(|age| (rise..fade).contains(&age))
+        })
+}
+
 const fn check_material(
     material: &SourceMaterial,
     template: &Template,
@@ -703,11 +836,69 @@ fn check_mesh(mesh: &Mesh) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::check_mesh;
+    use super::{check_mesh, clear_quad, mature_color_at};
     use bevy::{
         asset::RenderAssetUsages, mesh::Indices, prelude::*,
         render::render_resource::PrimitiveTopology,
     };
+
+    #[test]
+    fn actual_paper_bounds_must_clear_the_bomber_and_the_uncovered_viewport() {
+        let rect = |min: [f32; 2], max: [f32; 2]| {
+            Rect::from_corners(Vec2::from_array(min), Vec2::from_array(max))
+        };
+        let viewport = rect([0.0, 0.0], [200.0, 140.0]);
+        let bomber = Some(rect([60.0, 30.0], [120.0, 90.0]));
+        assert!(clear_quad(
+            rect([132.0, 42.0], [146.0, 50.0]),
+            viewport,
+            bomber
+        ));
+        assert!(!clear_quad(
+            rect([116.0, 42.0], [130.0, 50.0]),
+            viewport,
+            bomber
+        ));
+        assert!(!clear_quad(
+            rect([132.0, 120.0], [146.0, 134.0]),
+            viewport,
+            bomber
+        ));
+    }
+
+    #[test]
+    fn scud_plume_observation_requires_original_color_rise_at_the_actual_center() {
+        use crate::particles::{
+            ColorKey, Pose,
+            tests::{system, template},
+        };
+        let mut poison = template("PoisonFieldLarge");
+        poison.lifetime.low = 60.0;
+        poison.lifetime.high = 60.0;
+        poison.color[0] = ColorKey {
+            value: [0.0; 3],
+            frame: 0,
+        };
+        poison.color[1] = ColorKey {
+            value: [47.0, 202.0, 66.0].map(|value| value / 255.0),
+            frame: 20,
+        };
+        poison.color[2] = ColorKey {
+            value: [0.0; 3],
+            frame: 60,
+        };
+        let mut particles = system(vec![poison]);
+        let mut random = |_, high| high;
+        particles.create(0, Pose::at([200.0, 300.0, 11.0]), None, &mut random);
+        particles.logic(100, &mut random, &|_| 10.0);
+        let emitter = &particles.emitters[0];
+        assert_eq!(emitter.particles.len(), 1);
+        let ready = |center, now| mature_color_at(emitter, &particles.templates[0], center, now);
+        assert!(!ready([200.0, 300.0], 119));
+        assert!(ready([200.0, 300.0], 120));
+        assert!(!ready([200.0, 302.0], 120));
+        assert!(!ready([200.0, 300.0], 160));
+    }
 
     fn quad() -> Mesh {
         Mesh::new(
@@ -748,6 +939,72 @@ mod collapse_delay_tests {
     use crate::particles::{Pose, effects::Nugget, load_with_position_effects};
     use generals_assets::virtual_assets::VirtualAssets;
     use std::collections::BTreeSet;
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn installed_daisy_shockwave_mesh_has_lit_additive_rgb_with_zero_alpha() {
+        use crate::particles::{Shader, effects::rng, render};
+        use bevy::{math::Affine3A, mesh::VertexAttributeValues, prelude::Mesh};
+
+        let root = generals_assets::game_root().unwrap();
+        let assets = VirtualAssets::for_zero_hour(
+            root.join("GameData/Command and Conquer Generals"),
+            root.join("GameData/Command and Conquer Generals Zero Hour"),
+        )
+        .unwrap();
+        let name = "FX_DaisyCutterIgnite";
+        let mut particles =
+            load_with_position_effects(&assets, &[], &BTreeSet::from([name.into()])).unwrap();
+        let effect = particles.actor_fx[name];
+        let ground = |_: [f32; 2]| 0.0;
+        let mut random = |low: f32, high: f32| (high - low).mul_add(0.25, low);
+        particles.begin(1, 100);
+        particles.fire(
+            effect,
+            &Pose::at([0.0; 3]),
+            &[],
+            &ground,
+            0.0,
+            &mut rng::real_only(&mut random),
+        );
+        for frame in 100..=135 {
+            particles.begin(1, frame);
+            particles.logic(frame, &mut random, &ground);
+        }
+
+        let emitter = particles
+            .emitters
+            .iter()
+            .find(|emitter| particles.templates[emitter.template].name == "DaisyFlameShockwave")
+            .unwrap();
+        let template = &particles.templates[emitter.template];
+        assert!(matches!(template.drawing.shader, Shader::Additive));
+        assert_eq!(emitter.particles.len(), 100);
+        assert!(
+            emitter
+                .particles
+                .iter()
+                .all(|particle| particle.born == 130 && particle.size > 2.0)
+        );
+        let geometry =
+            render::mesh(emitter, template, Affine3A::IDENTITY, Affine3A::IDENTITY).unwrap();
+        let Some(VertexAttributeValues::Float32x4(colors)) =
+            geometry.attribute(Mesh::ATTRIBUTE_COLOR)
+        else {
+            panic!("authored shockwave lacks source vertex colors");
+        };
+        assert_eq!(colors.len(), 400);
+        assert!(
+            colors
+                .iter()
+                .all(|color| color[3].to_bits() == 0.0_f32.to_bits())
+        );
+        assert!(
+            colors
+                .iter()
+                .any(|color| color[..3].iter().any(|&channel| channel > 0.0))
+        );
+    }
 
     #[ignore = "requires original game installation"]
     #[test]

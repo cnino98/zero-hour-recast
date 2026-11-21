@@ -163,6 +163,8 @@ fn research_shares_dispatch_and_producer_death_refunds_only_remaining_work() {
             cost: 100,
             frames: 1,
             player: true,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         });
     let cash = game.players[0].cash;
     game.queue_upgrade(producer, 0).unwrap();

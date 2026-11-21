@@ -33,10 +33,10 @@ def help_fixture():
     capture_registry = SOURCE.split("const SCREEN_CAPTURES:", 1)[1].split("fn screen_capture", 1)[0]
     return "\n".join([
         "Generals Rust translation", "Installed gameplay checks:",
-        *(f"  --verify-{name}" for name in re.findall(r'"([a-z-]+)"', installed)),
+        *(f"  --verify-{name}" for name in re.findall(r'"([a-z0-9-]+)"', installed)),
         "Performance checks:", *performance.split("\\n")[1:],
         "Native controls, art and audio checks (require a visible game window):",
-        *(f"  {flag}" for flag in re.findall(r'"(--[a-z-]+)"', capture_registry)),
+        *(f"  {flag}" for flag in re.findall(r'"(--[a-z0-9-]+)"', capture_registry)),
     ])
 
 
@@ -52,10 +52,10 @@ class AcceptanceInventoryTests(unittest.TestCase):
         cases = RUNNER.inventory(help_fixture(), SOURCE)
         self.assertEqual(RUNNER.counts(cases), {
             "validation": 1, "installed": 31, "benchmarks": 3, "scaling": 1,
-            "native": 121, "profiles": 3, "total": 160, "cases_requiring_images": 123,
+            "native": 143, "profiles": 3, "total": 182, "cases_requiring_images": 145,
         })
         native = [case for case in cases if case["group"] == "native"]
-        self.assertEqual(sum(case["requires_image"] for case in native), 120)
+        self.assertEqual(sum(case["requires_image"] for case in native), 142)
         self.assertTrue(all(len(case["arguments"]) == 1 for case in native))
         audio = next(case for case in native if case["arguments"] == ["--verify-audio"])
         self.assertFalse(audio["requires_image"])

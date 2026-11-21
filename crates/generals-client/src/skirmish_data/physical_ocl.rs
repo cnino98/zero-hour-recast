@@ -12,7 +12,7 @@ pub(super) use collision::collision_rules;
 #[cfg(test)]
 pub mod tests;
 
-pub(super) const OBJECTS: [&str; 39] = [
+pub(super) const OBJECTS: [&str; 40] = [
     "GenericDebris",
     "AmericaDeadDozerHulk",
     "DeadBattleBusHulk",
@@ -23,6 +23,7 @@ pub(super) const OBJECTS: [&str; 39] = [
     "HelixRubbleHull",
     "NapalmBomb",
     "AmericaJetRaptorHulk",
+    "AmericaJetA10Hulk",
     "AmericaJetAuroraHulk",
     "AmericaJetStealthHulk",
     "ChinaJetMIGHulk",
@@ -175,15 +176,10 @@ fn death_rules(
 
 pub(super) fn load(files: &[ContentFile], name: &str) -> Result<List, Box<dyn Error>> {
     let object = definition(files, "ObjectCreationList", name)?;
-    let mut nuggets = Vec::new();
-    for module in blocks(&object.lines, 0, "CreateDebris")?
-        .into_iter()
-        .chain(blocks(&object.lines, 0, "CreateObject")?)
-    {
-        nuggets.push((module[0].line, nugget(module)?));
-    }
+    let mut modules = blocks(&object.lines, 0, "CreateDebris")?;
+    modules.extend(blocks(&object.lines, 0, "CreateObject")?);
     // `blocks` selects a kind; restore the source declaration sequence across kinds.
-    nuggets.sort_by_key(|(line, _)| *line);
+    modules.sort_by_key(|module| module[0].line);
     for line in &object.lines {
         if line.depth == Some(0)
             && !matches!(
@@ -197,9 +193,9 @@ pub(super) fn load(files: &[ContentFile], name: &str) -> Result<List, Box<dyn Er
     let forces = blocks(&object.lines, 0, "ApplyRandomForce")?;
     if forces.len() > 1
         || forces.first().is_some_and(|force| {
-            nuggets
+            modules
                 .first()
-                .is_some_and(|(line, _)| force[0].line > *line)
+                .is_some_and(|module| force[0].line > module[0].line)
         })
     {
         return Err("only an initial ApplyRandomForce before physical creation is admitted".into());
@@ -208,11 +204,29 @@ pub(super) fn load(files: &[ContentFile], name: &str) -> Result<List, Box<dyn Er
         .first()
         .map(|force| source_force(force))
         .transpose()?;
-    Ok(List {
+    let mut result = List {
         name: name.into(),
         initial_force,
-        nuggets: nuggets.into_iter().map(|(_, nugget)| nugget).collect(),
-    })
+        nuggets: Vec::new(),
+        ordinary_nuggets: Vec::new(),
+    };
+    for module in modules {
+        if module[0].tokens[0] == "CreateObject"
+            && field(module, 1, "ObjectNames").is_some_and(|names| {
+                names.tokens[1..]
+                    .iter()
+                    .any(|name| !OBJECTS.contains(&name.as_str()))
+            })
+        {
+            result.ordinary_nuggets.push((
+                result.nuggets.len(),
+                super::object_creation::parse_object(module)?,
+            ));
+        } else {
+            result.nuggets.push(nugget(module)?);
+        }
+    }
+    Ok(result)
 }
 
 fn validate_nugget_fields(module: &[ContentLine]) -> Result<(), Box<dyn Error>> {

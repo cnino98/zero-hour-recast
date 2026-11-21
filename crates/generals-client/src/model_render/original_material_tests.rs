@@ -113,6 +113,42 @@ fn installed_cairo_pyramid_retains_native_zero_source_color_destination_pass() {
 
 #[ignore = "requires original game installation"]
 #[test]
+fn installed_sneak_tunnel_night_light_keeps_native_screen_pass() {
+    let assets = assets();
+    let model = Model::load(&assets, "ubsnatk_n").unwrap();
+    let index = model
+        .meshes
+        .iter()
+        .position(|mesh| mesh.name == "UBSNATK_N.LIGHT_PLANE01")
+        .unwrap();
+    let source = model.meshes[index].materials.as_ref().unwrap();
+    assert!(
+        source
+            .shaders
+            .iter()
+            .any(|shader| (shader[7], shader[3]) == (1, 3))
+    );
+    let prepared = parts(&model).unwrap();
+    let pass = prepared
+        .iter()
+        .find(|part| {
+            part.binding.as_ref().unwrap().mesh == index
+                && matches!(part.material.alpha_mode, AlphaMode::Premultiplied)
+        })
+        .unwrap();
+    let texture = &pass.texture.as_ref().unwrap().0;
+    assert!(
+        source
+            .textures
+            .iter()
+            .any(|entry| entry.name.eq_ignore_ascii_case(texture))
+    );
+    crate::source_texture::load_mesh(&assets, texture).unwrap();
+    assert!(pass.mesh.count_vertices() >= 3);
+}
+
+#[ignore = "requires original game installation"]
+#[test]
 fn installed_hangar_active_add_detail_remains_explicitly_unsupported() {
     let model = Model::load(&assets(), "cbhangr03").unwrap();
     let mesh = model

@@ -248,6 +248,7 @@ impl Entity {
             .or_else(|| self.pre_attack_animation())
             .or(self.hacking.animation)
             .or(self.maintenance.animation_duration)
+            .or_else(|| self.nuclear_launcher_animation())
     }
 
     #[must_use]
@@ -567,6 +568,10 @@ impl Skirmish {
                 "PowerPlantUpgrade" => self.on_delete_power_upgrade(id, index),
                 "CostModifierUpgrade" => self.delete_cost_modifier(id, index),
                 "SpectreGunshipUpdate" => self.delete_spectre(id),
+                "ParticleUplinkCannonUpdate" => self.delete_particle_uplink(id, ordinal),
+                "MissileLauncherBuildingUpdate" => self.stop_nuclear_launcher_audio(id),
+                "GrantStealthBehavior" => self.delete_gps_scrambler(id),
+                "RadiusDecalUpdate" => self.entities[id].radius_decal = None,
                 "SpawnBehavior" => self.spawn_on_delete(id, ordinal),
                 "StickyBombUpdate" => self.delete_sticky_bomb(id, ordinal),
                 "OverchargeBehavior" => self.on_delete_overcharge(id, ordinal),

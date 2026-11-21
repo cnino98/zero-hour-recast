@@ -3,8 +3,9 @@ use super::{Floating, Match, UiData};
 use bevy::{prelude::*, ui::FocusPolicy};
 
 pub(super) fn record(commands: &mut Commands, battle: &Match, ui: &UiData) {
+    use generals_sim::skirmish::special_ability::FeedbackEffect;
     for event in &battle.simulation.presentation.ability_feedback {
-        if let generals_sim::skirmish::special_ability::FeedbackEffect::CashStolen(amount) =
+        if let FeedbackEffect::CashStolen(amount) | FeedbackEffect::PowerCashStolen(amount) =
             event.effect
             && event.frame == battle.simulation.tick
         {

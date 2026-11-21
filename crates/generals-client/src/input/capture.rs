@@ -61,7 +61,7 @@ pub fn issue(battle: &mut Match, mouse: &mut Mouse, target: usize) -> bool {
     if issued {
         mouse.voices.extend(super::VoiceRequest::special_power(
             &battle.simulation,
-            &battle.selected,
+            battle.command_drawables(),
             &[
                 "SPECIAL_INFANTRY_CAPTURE_BUILDING",
                 "SPECIAL_BLACKLOTUS_CAPTURE_BUILDING",

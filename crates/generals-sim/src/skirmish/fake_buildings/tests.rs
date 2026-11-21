@@ -70,6 +70,8 @@ fn fake_type() -> super::UnitType {
         cost: 375,
         frames: 300,
         player: false,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     unit.behavior
         .death_fx
@@ -334,6 +336,8 @@ fn worker_zero_time_command_upgrade_removes_masks_and_can_switch_repeatedly() {
             cost: 0,
             frames: 0,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         })
         .collect();
     for ordinal in 0..game.catalog[worker].maintenance.command_sets.len() {

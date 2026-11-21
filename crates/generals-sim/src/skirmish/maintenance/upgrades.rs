@@ -358,7 +358,12 @@ impl Skirmish {
                 let actor = &mut self.entities[id];
                 if actor.maintenance.effects.active & WEAPON == 0 {
                     actor.maintenance.effects.active |= WEAPON;
-                    actor.weapon_bonus_changed(&self.catalog[kind], self.tick, extra);
+                    actor.weapon_bonus_changed(
+                        &self.catalog[kind],
+                        self.tick,
+                        extra,
+                        &mut self.random,
+                    );
                 }
             }
             "LocomotorSetUpgrade" => {

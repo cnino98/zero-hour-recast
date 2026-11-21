@@ -59,6 +59,7 @@ fn installed_raptor_and_mig_dispatch_the_original_air_guard_slots() {
             battle.simulation.ground_height([x + 100.0, y]),
         ];
         crate::input::targeted_movement(&mut battle, &mut mouse, Vec3::from_array(point));
+        crate::input::commands::step(&mut battle, &mut mouse);
         assert!(matches!(mouse.pending_command, CommandMode::Normal));
         advance_until(
             &mut battle.simulation,
@@ -119,6 +120,7 @@ fn paid_mob_parent_and_selected_members_keep_original_commands_without_unmasking
         let stop = selected_command(&battle, &data, 14).unwrap().action;
         assert!(matches!(stop, CommandAction::Stop));
         dispatch_command(&mut battle, &mut mouse, stop);
+        crate::input::commands::step(&mut battle, &mut mouse);
         assert!(matches!(
             battle.simulation.entities[setup.nexus].ai.order,
             Order::Idle

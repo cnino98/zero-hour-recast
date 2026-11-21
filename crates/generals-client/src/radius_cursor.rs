@@ -18,7 +18,7 @@ use bevy::{
     window::PrimaryWindow,
 };
 use generals_assets::{
-    content::{self, ContentLine},
+    content::{self, ContentFile, ContentLine},
     virtual_assets::VirtualAssets,
 };
 use std::error::Error;
@@ -28,11 +28,11 @@ pub mod verification;
 
 #[derive(Resource)]
 pub struct RadiusCursor {
-    styles: [Style; 6],
+    styles: Vec<Style>,
     current: usize,
     cleanup_radius: f32,
     helix_radius: f32,
-    spectre_radii: Vec<(String, f32)>,
+    power_radii: Vec<(String, usize, f32)>,
     mesh: Handle<Mesh>,
     radius: Option<f32>,
     position: Vec2,
@@ -98,15 +98,17 @@ pub fn load(assets: &VirtualAssets) -> Result<RadiusCursor, Box<dyn Error>> {
                     .is_some_and(|key| key == "RadiusCursorRadius")
         })
         .ok_or("Ambulance special power has no RadiusCursorRadius")?;
+    let mut styles = vec![
+        load_style(assets, lines, "GuardAreaRadiusCursor")?,
+        load_style(assets, lines, "AmbulanceRadiusCursor")?,
+        load_style(assets, lines, "AttackScatterAreaRadiusCursor")?,
+        load_style(assets, lines, "ClearMinesRadiusCursor")?,
+        load_style(assets, lines, "HelixNapalmBombRadiusCursor")?,
+        load_style(assets, lines, "SpectreGunshipRadiusCursor")?,
+    ];
+    let power_radii = load_power_radii(assets, lines, &powers, &mut styles)?;
     Ok(RadiusCursor {
-        styles: [
-            load_style(assets, lines, "GuardAreaRadiusCursor")?,
-            load_style(assets, lines, "AmbulanceRadiusCursor")?,
-            load_style(assets, lines, "AttackScatterAreaRadiusCursor")?,
-            load_style(assets, lines, "ClearMinesRadiusCursor")?,
-            load_style(assets, lines, "HelixNapalmBombRadiusCursor")?,
-            load_style(assets, lines, "SpectreGunshipRadiusCursor")?,
-        ],
+        styles,
         current: 0,
         cleanup_radius: finite_number(scalar(radius)?)?,
         helix_radius: finite_number(scalar(
@@ -117,31 +119,86 @@ pub fn load(assets: &VirtualAssets) -> Result<RadiusCursor, Box<dyn Error>> {
             )
             .ok_or("Helix radius missing")?,
         )?)?,
-        spectre_radii: powers[0]
-            .declarations
-            .iter()
-            .filter(|power| power.kind == "SpecialPower")
-            .filter(|power| {
-                crate::skirmish_data::field(&power.lines, 0, "Enum")
-                    .and_then(|line| line.tokens.get(1))
-                    .is_some_and(|name| {
-                        matches!(
-                            name.as_str(),
-                            "SPECIAL_SPECTRE_GUNSHIP" | "AIRF_SPECIAL_SPECTRE_GUNSHIP"
-                        )
-                    })
-            })
-            .map(|power| {
-                let radius = crate::skirmish_data::field(&power.lines, 0, "RadiusCursorRadius")
-                    .map_or(Ok(0.0), |line| finite_number(scalar(line)?))?;
-                Ok((power.name.clone(), radius))
-            })
-            .collect::<Result<_, Box<dyn Error>>>()?,
+        power_radii,
         mesh: Handle::default(),
         radius: None,
         position: Vec2::ZERO,
         generation: u32::MAX,
     })
+}
+
+type PowerRadii = Vec<(String, usize, f32)>;
+
+fn load_power_radii(
+    assets: &VirtualAssets,
+    lines: &[ContentLine],
+    powers: &[ContentFile],
+    styles: &mut Vec<Style>,
+) -> Result<PowerRadii, Box<dyn Error>> {
+    let buttons = content::scan(assets.read("data/ini/commandbutton.ini")?)?;
+    let mut power_radii = Vec::new();
+    for button in buttons
+        .declarations
+        .iter()
+        .filter(|button| button.kind == "CommandButton")
+    {
+        let Some(name) = crate::skirmish_data::field(&button.lines, 0, "SpecialPower")
+            .map(scalar)
+            .transpose()?
+        else {
+            continue;
+        };
+        if !crate::control_bar::supports_radius_power(name)
+            || power_radii.iter().any(|(power, _, _)| power == name)
+        {
+            continue;
+        }
+        let Some(cursor) = crate::skirmish_data::field(&button.lines, 0, "RadiusCursorType")
+            .map(scalar)
+            .transpose()?
+        else {
+            continue;
+        };
+        let template = definition(powers, "SpecialPower", name)?;
+        let radius = crate::skirmish_data::field(&template.lines, 0, "RadiusCursorRadius")
+            .map_or(Ok(0.0), |line| finite_number(scalar(line)?))?;
+        if radius <= 0.0 {
+            continue;
+        }
+        let style = match cursor {
+            "SPECTREGUNSHIP" => 5,
+            other => {
+                let name = match other {
+                    "SCUDSTORM" => "ScudStormRadiusCursor",
+                    "RADAR" => "RadarRadiusCursor",
+                    "AMBUSH" => "AmbushRadiusCursor",
+                    "ANTHRAXBOMB" => "AnthraxBombRadiusCursor",
+                    "DAISYCUTTER" => "DaisyCutterRadiusCursor",
+                    "PARADROP" => "ParadropRadiusCursor",
+                    "CLUSTERMINES" => "ClusterMinesRadiusCursor",
+                    "EMPPULSE" => "EMPPulseRadiusCursor",
+                    "A10STRIKE" => "A10StrikeRadiusCursor",
+                    "CARPETBOMB" => "CarpetBombRadiusCursor",
+                    "NUCLEARMISSILE" => "NuclearMissileRadiusCursor",
+                    "ARTILLERYBARRAGE" => "ArtilleryRadiusCursor",
+                    "FRENZY" => "FrenzyRadiusCursor",
+                    "SPYDRONE" => "SpyDroneRadiusCursor",
+                    "SPYSATELLITE" => "SpySatelliteRadiusCursor",
+                    "EMERGENCY_REPAIR" => "EmergencyRepairRadiusCursor",
+                    _ => {
+                        return Err(format!(
+                            "unsupported admitted special power radius cursor {other}"
+                        )
+                        .into());
+                    }
+                };
+                styles.push(load_style(assets, lines, name)?);
+                styles.len() - 1
+            }
+        };
+        power_radii.push((name.to_owned(), style, radius));
+    }
+    Ok(power_radii)
 }
 
 fn load_style(
@@ -315,7 +372,7 @@ pub fn update(
     let (terrain, data, promotions, radar) = view;
     let (mut meshes, mut materials) = assets;
     let (mut visibility, mut visual_material) = visual.into_inner();
-    let (current, spectre_radius) = cursor.command_style(&mouse.pending_command, hint.is_some());
+    let (current, power_radius) = cursor.command_style(&mouse.pending_command, hint.is_some());
     if cursor.current != current {
         cursor.current = current;
         cursor.radius = None;
@@ -330,7 +387,7 @@ pub fn update(
         || battle.simulation.end_game_at.is_some()
         || battle.placing.is_some()
         || (hint.is_none()
-            && spectre_radius.is_none()
+            && power_radius.is_none()
             && !matches!(
                 mouse.pending_command,
                 CommandMode::Guard
@@ -366,7 +423,7 @@ pub fn update(
         visibility.set_if_neq(Visibility::Hidden);
         return;
     }
-    let radius = selected_radius(&battle, &cursor, spectre_radius);
+    let radius = power_radius.or_else(|| selected_radius(&battle, &cursor));
     let Some(radius) = radius else {
         cursor.radius = None;
         visibility.set_if_neq(Visibility::Hidden);
@@ -396,7 +453,14 @@ pub fn update(
     }
     // handleRadiusCursor retains its position and pulse without an intersection.
     if rebuild {
-        rebuild_mesh(&cursor, &battle, &data, &terrain, &mut meshes);
+        rebuild_mesh(
+            &cursor,
+            &battle,
+            &mouse.pending_command,
+            &data,
+            &terrain,
+            &mut meshes,
+        );
     }
     visibility.set_if_neq(Visibility::Inherited);
 }
@@ -404,6 +468,7 @@ pub fn update(
 fn rebuild_mesh(
     cursor: &RadiusCursor,
     battle: &Match,
+    command: &CommandMode,
     data: &UiData,
     terrain: &Terrain,
     meshes: &mut Assets<Mesh>,
@@ -412,7 +477,10 @@ fn rebuild_mesh(
         .template
         .color
         .unwrap_or_else(|| {
-            let id = battle.selected[0];
+            let id = match *command {
+                CommandMode::Power { caster, .. } => caster,
+                _ => battle.selected[0],
+            };
             let owner = battle.simulation.entities[id].owner;
             data.results.colors
                 [battle.simulation.player_colors[owner].expect("selected player color")]
@@ -424,17 +492,12 @@ fn rebuild_mesh(
     );
 }
 
-fn selected_radius(
-    battle: &Match,
-    cursor: &RadiusCursor,
-    spectre_radius: Option<f32>,
-) -> Option<f32> {
+fn selected_radius(battle: &Match, cursor: &RadiusCursor) -> Option<f32> {
     let only_owner = cursor.styles[cursor.current].template.only_owner;
     battle.selected.first().and_then(|&id| {
         let actor = battle.simulation.entities.get(id)?;
         (actor.alive() && (!only_owner || actor.owner == 0))
             .then(|| match cursor.current {
-                5 => spectre_radius.unwrap_or(0.0),
                 4 => cursor.helix_radius,
                 1 => cursor.cleanup_radius,
                 2 => battle.simulation.catalog[actor.type_index]
@@ -453,19 +516,16 @@ fn selected_radius(
 
 impl RadiusCursor {
     fn command_style(&self, command: &CommandMode, hint: bool) -> (usize, Option<f32>) {
-        let spectre_radius = if let CommandMode::Power { name, .. } = command {
-            self.spectre_radii
-                .iter()
-                .find(|(power, _)| power == name)
-                .map(|(_, radius)| *radius)
-        } else {
-            None
-        };
-        let current = if hint {
-            0
-        } else if spectre_radius.is_some() {
-            5
-        } else {
+        if hint {
+            return (0, None);
+        }
+        if let CommandMode::Power { name, .. } = command
+            && let Some((_, style, radius)) =
+                self.power_radii.iter().find(|(power, _, _)| power == *name)
+        {
+            return (*style, Some(*radius));
+        }
+        let current = {
             match command {
                 CommandMode::HelixBomb => 4,
                 CommandMode::Cleanup => 1,
@@ -474,7 +534,7 @@ impl RadiusCursor {
                 _ => 0,
             }
         };
-        (current, spectre_radius)
+        (current, None)
     }
 }
 

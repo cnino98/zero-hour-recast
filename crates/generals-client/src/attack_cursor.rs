@@ -19,7 +19,7 @@ pub mod verification;
 
 #[derive(Resource)]
 pub struct AttackCursor {
-    cursors: [Cursor; 21],
+    cursors: [Cursor; 22],
     current: Option<usize>,
     started: Option<Duration>,
 }
@@ -104,6 +104,7 @@ pub fn load(assets: &VirtualAssets) -> Result<AttackCursor, Box<dyn Error>> {
             load("PlaceRemoteCharge")?,
             load("PlaceChargeInvalid")?,
             load("DisguiseAsVehicle")?,
+            load("TankHunterTNTAttack")?,
         ],
         current: None,
         started: None,
@@ -239,6 +240,42 @@ pub fn context(battle: &mut Match, mouse: &Mouse) -> Option<usize> {
     context_at(battle, mouse, mouse.world_position)
 }
 
+fn power_cursor(
+    battle: &mut Match,
+    hovered: Option<usize>,
+    position: Option<Vec3>,
+    caster: usize,
+    name: &str,
+    target_object: bool,
+) -> usize {
+    let valid = crate::input::locally_controlled(battle, caster)
+        && if target_object {
+            hovered.is_some_and(|target| {
+                battle
+                    .simulation
+                    .can_use_power_at_object(caster, name, target)
+            })
+        } else {
+            position.is_some_and(|point| {
+                battle
+                    .simulation
+                    .can_use_power_at_location(caster, name, point.to_array())
+            })
+        };
+    if valid {
+        match name {
+            "SuperweaponCashHack" => 6,
+            "SpecialAbilityBoobyTrap" => 21,
+            "SuperweaponParticleUplinkCannon" => 14,
+            _ => 5,
+        }
+    } else if name == "SpecialAbilityBoobyTrap" {
+        19
+    } else {
+        3
+    }
+}
+
 fn context_at(battle: &mut Match, mouse: &Mouse, position: Option<Vec3>) -> Option<usize> {
     if !battle.started
         || battle.paused
@@ -248,29 +285,21 @@ fn context_at(battle: &mut Match, mouse: &Mouse, position: Option<Vec3>) -> Opti
         return None;
     }
     if !mouse.waypoint_mode {
-        if let CommandMode::Power { caster, name, .. } = &mouse.pending_command
-            && battle
-                .simulation
-                .entities
-                .get(*caster)
-                .is_some_and(|object| {
-                    battle.simulation.catalog[object.type_index]
-                        .special_powers
-                        .iter()
-                        .any(|rules| rules.name == *name)
-                })
+        if let CommandMode::Power {
+            caster,
+            name,
+            target_object,
+            ..
+        } = mouse.pending_command
         {
-            return Some(
-                if position.is_some_and(|position| {
-                    battle
-                        .simulation
-                        .can_use_power_at_location(*caster, name, position.to_array())
-                }) {
-                    5
-                } else {
-                    3
-                },
-            );
+            return Some(power_cursor(
+                battle,
+                mouse.hovered,
+                position,
+                caster,
+                name,
+                target_object,
+            ));
         }
         if matches!(mouse.pending_command, CommandMode::Normal)
             && position.is_some_and(|position| {

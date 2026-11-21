@@ -26,7 +26,7 @@ fn paid_demo_trap_native_commands_preserve_the_warning_and_final_weapon_callback
         let manual = selected_command(&battle, &data, 2).unwrap().action;
         dispatch_command(&mut battle, &mut mouse, manual);
         for _ in 0..5 {
-            battle.simulation.step();
+            crate::input::commands::step(&mut battle, &mut mouse);
             assert!(!check.observe(&battle.simulation).unwrap());
             assert!(battle.simulation.entities[check.setup.trap].alive());
         }
@@ -35,7 +35,7 @@ fn paid_demo_trap_native_commands_preserve_the_warning_and_final_weapon_callback
             .action;
         dispatch_command(&mut battle, &mut mouse, command);
         for _ in 0..60 {
-            battle.simulation.step();
+            crate::input::commands::step(&mut battle, &mut mouse);
             check.observe(&battle.simulation).unwrap();
             if check.explosion.is_some() {
                 break;

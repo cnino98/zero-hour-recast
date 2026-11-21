@@ -405,7 +405,7 @@ impl AircraftFrame<'_, '_> {
             // An offscreen child cannot erase its actor's other visible parts
             // from the occluder union. Complete-body acceptance above remains
             // stricter and still requires every selected body part to render.
-            if let Some(actor) = self.child_bounds_matching(
+            if let Some(actor) = self.project_children(
                 children,
                 |child| {
                     self.parts
@@ -413,7 +413,7 @@ impl AircraftFrame<'_, '_> {
                         .is_ok_and(|(_, _, _, visible, _)| visible.get())
                 },
                 true,
-            )? && !separated_bomb(viewport, actor, bounds)
+            )? && !separated_bomb(viewport, actor.bounds, bounds)
             {
                 return Ok(None);
             }

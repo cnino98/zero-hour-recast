@@ -41,6 +41,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         .remove_resource::<Mouse>()
         .ok_or("pointer resource absent")?;
     dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(0));
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         300,
@@ -57,6 +58,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         ),
         "Technical context boarding failed",
     )?;
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         3000,
@@ -105,6 +107,7 @@ fn verify_salvage_input(
         input::context_order(battle, None, Some(PickTarget::Unit(crate_id)), mouse),
         "Original salvage context command failed",
     )?;
+    input::commands::step(battle, mouse);
     require(
         mouse
             .voices
@@ -122,9 +125,10 @@ fn verify_salvage_input(
         "Salvage context did not retain source movement",
     )?;
     dispatch_command(battle, mouse, CommandAction::Stop);
+    input::commands::step(battle, mouse);
     require(
         battle.simulation.entities[crate_id].crate_present(),
-        "Unadvanced salvage command collected crate without contact",
+        "Cancelled salvage command collected crate without contact",
     )?;
     mouse.hovered = None;
     println!(

@@ -21,7 +21,7 @@ struct Check {
     center: usize,
     mode: usize,
     began: u64,
-    issued: bool,
+    issued: Option<u64>,
     frame: Option<f32>,
     advanced: bool,
     heard: bool,
@@ -35,7 +35,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         center: setup.center,
         mode: 0,
         began,
-        issued: false,
+        issued: None,
         frame: None,
         advanced: false,
         heard: false,
@@ -81,7 +81,7 @@ fn inspect_audio(mut check: ResMut<Check>, battle: Res<Match>, audio: StrategyAu
     let battle = battle.into_inner();
     // Observe before playback retires completed sinks, including while new draw
     // pipelines compile. Audio output uses real time and continues during stalls.
-    if check.issued && check.mode < PLANS.len() {
+    if check.issued.is_some() && check.mode < PLANS.len() {
         let type_index = battle.simulation.entities[check.center].type_index;
         check.heard |= audio.played(type_index, check.mode);
     }
@@ -125,22 +125,24 @@ impl View<'_, '_> {
                 selected && visual.generation == battle.generation
             })
             .ok_or("original Strategy Center drawable missing")?;
-        if !check.issued {
+        let Some(issued) = check.issued else {
             self.verify_buttons(battle)?;
             playtest_ui::dispatch_command(
                 battle,
                 mouse,
                 CommandAction::BattlePlan(PLANS[check.mode]),
             );
-            require(
-                battle.simulation.entities[check.center].battle_plan_desired()
-                    == Some(PLANS[check.mode]),
-                "original battle-plan control did not dispatch",
-            )?;
-            check.issued = true;
+            check.issued = Some(battle.simulation.tick);
             time.unpause();
             return Ok(());
+        };
+        if battle.simulation.tick == issued {
+            return Ok(());
         }
+        require(
+            actor.battle_plan_desired() == Some(PLANS[check.mode]),
+            "original battle-plan control did not dispatch",
+        )?;
         require(
             battle.simulation.tick - check.began < 3000,
             "native battle plan timed out",
@@ -181,7 +183,7 @@ impl View<'_, '_> {
         check.frame = None;
         check.advanced = false;
         check.heard = false;
-        check.issued = false;
+        check.issued = None;
         if check.mode == 3 {
             time.pause();
             capture.finish_scenario();

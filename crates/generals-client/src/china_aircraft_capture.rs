@@ -20,6 +20,7 @@ use std::error::Error;
 struct Check {
     setup: Setup,
     phase: u8,
+    attack_pending: bool,
     ready: [bool; 4],
     shots: [usize; 4],
     sounds: [bool; 4],
@@ -35,6 +36,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
     app.insert_resource(Check {
         setup,
         phase: 0,
+        attack_pending: false,
         ready: [false; 4],
         shots: [0; 4],
         sounds: [false; 4],
@@ -47,7 +49,12 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
 
 pub fn register(app: &mut App) {
     app.add_systems(PreUpdate, (begin, audio, storm_audio).chain());
-    app.add_systems(FixedUpdate, record.after(crate::laser_beam::record));
+    app.add_systems(
+        FixedUpdate,
+        (record_order, record)
+            .chain()
+            .after(crate::laser_beam::record),
+    );
     app.add_systems(
         PostUpdate,
         inspect
@@ -96,7 +103,7 @@ fn begin(mut check: ResMut<Check>, mut control: Control) {
             }
             check.phase = 2;
             control.time.unpause();
-        } else if check.phase == 2 {
+        } else if check.phase == 2 && !check.attack_pending {
             stage_formation(&mut check, &control.battle)?;
             if check.ready.into_iter().all(|ready| ready)
                 && control
@@ -124,8 +131,9 @@ fn begin(mut check: ResMut<Check>, mut control: Control) {
                         .is_some_and(|request| matches!(request.voice(), Voice::Attack)),
                     "MiG attack input omitted original voice",
                 )?;
-                check.phase = 3;
+                check.attack_pending = true;
                 check.began = control.battle.simulation.tick;
+                control.time.unpause();
             }
         } else if check.phase == 4 {
             check.phase = 5;
@@ -195,6 +203,31 @@ fn storm_audio(mut check: ResMut<Check>, audio: FiringAudioInspection) {
     if check.phase >= 3 && check.phase != 255 {
         check.sounds[3] |= audio.ambient(["FireStormLoop"])[0];
     }
+}
+
+fn record_order(mut check: ResMut<Check>, battle: Res<Match>, mut exit: MessageWriter<AppExit>) {
+    let battle = battle.into_inner();
+    if !check.attack_pending || battle.simulation.tick <= check.began || check.phase == 255 {
+        return;
+    }
+    if let Err(error) = require(
+        check.setup.migs.iter().all(|&id| {
+            matches!(battle.simulation.entities[id].ai.order,
+                generals_sim::skirmish::Order::Attack(target) if target == check.setup.target)
+        }),
+        "queued MiG group attack did not reach its original target",
+    ) {
+        error!(
+            "Native China aircraft input phase {}: {error}; {}",
+            check.phase,
+            china_aircraft_verification::details(&battle.simulation, &check.setup)
+        );
+        check.phase = 255;
+        exit.write(AppExit::error());
+        return;
+    }
+    check.attack_pending = false;
+    check.phase = 3;
 }
 
 fn record(mut check: ResMut<Check>, battle: Res<Match>) {

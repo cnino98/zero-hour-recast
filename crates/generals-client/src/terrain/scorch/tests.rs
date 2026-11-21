@@ -124,3 +124,39 @@ fn buffers_reject_whole_mark_and_prioritize_newest_before_stopping_at_native_lim
     assert_eq!(outside.count_vertices(), 0);
     assert!(outside.indices().unwrap().is_empty());
 }
+
+#[test]
+fn zero_radius_birth_keeps_buffer_budget_without_invalid_uv_or_visible_triangles() {
+    let terrain = crate::terrain::tests::terrain().unwrap();
+    let mesh = terrain.scorch_mesh(
+        &VecDeque::from([mark([5.0, 5.0, 0.0], 5.0, 4), mark([5.0, 5.0, 0.0], 0.0, 4)]),
+        [1.0; 4],
+    );
+    assert_eq!(mesh.count_vertices(), 8);
+    let Some(VertexAttributeValues::Float32x2(uv)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else {
+        panic!("scorch UVs");
+    };
+    assert!(uv.iter().flatten().all(|value| value.is_finite()));
+    assert_eq!(&uv[..4], &[[0.0; 2]; 4]);
+    assert_eq!(
+        &uv[4..],
+        &[
+            [0.375, 0.375],
+            [0.625, 0.375],
+            [0.375, 0.625],
+            [0.625, 0.625]
+        ]
+    );
+    assert_eq!(
+        mesh.indices().unwrap().iter().collect::<Vec<_>>(),
+        [0, 0, 0, 0, 0, 0, 4, 7, 6, 4, 5, 7]
+    );
+    let mut full = Geometry {
+        positions: vec![[0.0; 3]; MAX_VERTICES - 3],
+        uv: Vec::new(),
+        indices: Vec::new(),
+    };
+    assert!(!full.append(&terrain, &mark([5.0, 5.0, 0.0], 0.0, 4)));
+    assert_eq!(full.positions.len(), MAX_VERTICES - 3);
+    assert!(full.indices.is_empty());
+}

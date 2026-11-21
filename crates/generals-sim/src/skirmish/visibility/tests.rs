@@ -207,3 +207,20 @@ fn local_defeat_reveals_permanently_and_forces_radar_without_a_provider() {
     assert!(!game.has_radar(0));
     assert!(matches!(game.visibility_cell(0, point), Status::Shrouded));
 }
+
+#[test]
+fn particle_beam_reveal_leaves_owner_fog_without_an_allied_looker() {
+    let mut game = super::super::tests::game();
+    game.visibility = map(game.players.len());
+    let point = [200.0, 200.0];
+    game.particle_uplink_reveal(0, point, 80.0);
+    assert!(matches!(game.visibility.cell(0, point), Status::Fogged));
+    assert!(matches!(game.visibility.cell(1, point), Status::Shrouded));
+    assert!(game.visibility.pending.is_empty());
+    let scout = game.visibility.look([5, 5], 40.0, vec![0]);
+    game.particle_uplink_reveal(0, point, 80.0);
+    assert!(matches!(game.visibility.cell(0, point), Status::Clear));
+    game.visibility.unlook(scout, 0);
+    game.visibility.expire(151);
+    assert!(matches!(game.visibility.cell(0, point), Status::Fogged));
+}

@@ -198,6 +198,10 @@ pub(super) fn supported(name: &str) -> bool {
         "Upgrade_AmericaCountermeasures",
         "Upgrade_ChinaAircraftArmor",
         "Upgrade_ChinaMines",
+        "Upgrade_ChinaEMPMines",
+        "Upgrade_ChinaUraniumShells",
+        "Upgrade_ChinaNuclearTanks",
+        "Upgrade_ChinaNeutronShells",
         "Upgrade_ChinaSatelliteHackOne",
         "Upgrade_ChinaSatelliteHackTwo",
         "Upgrade_GLAToxinShells",
@@ -214,9 +218,13 @@ pub(super) fn supported(name: &str) -> bool {
         "Upgrade_GLAJunkRepair",
         "Upgrade_GLAAPBullets",
         "Upgrade_AmericaBunkerBusters",
+        "Upgrade_AmericaMOAB",
         "Upgrade_GLAArmTheMob",
         "Upgrade_GLAWorkerShoes",
         "Upgrade_GLACamoNetting",
+        "Upgrade_GLACamouflage",
+        "Upgrade_GLAInfantryRebelBoobyTrapAttack",
+        "Upgrade_GLARadarVanScan",
     ]
     .contains(&name)
 }

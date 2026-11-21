@@ -318,6 +318,8 @@ fn drone_death_releases_paid_upgrade_without_refund_and_allows_replacement() {
         cost: 300,
         frames: 150,
         player: false,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     unit.behavior.drone_upgrades.push(Upgrade {
         trigger: "Battle".into(),
@@ -343,6 +345,8 @@ fn drone_death_releases_paid_upgrade_without_refund_and_allows_replacement() {
             cost: 500,
             frames: 150,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         });
     game.finish_research(parent, 1);
     assert!(!game.can_research(parent, 0));
@@ -541,6 +545,8 @@ fn scout_creation_rotates_the_authored_backpack_offset_before_enslaving() {
             cost: 100,
             frames: 150,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         });
         unit.behavior.drone_upgrades.push(Upgrade {
             trigger: "Scout".into(),
@@ -559,6 +565,9 @@ fn scout_creation_rotates_the_authored_backpack_offset_before_enslaving() {
                     force_magnitude: [0.0; 2],
                     force_pitch: [0.0; 2],
                     spin_rate: -1.0,
+                    formation_distances: [0.0; 3],
+                    fade_frames: 0,
+                    fade_sound: String::new(),
                     names: vec!["Drone".into()],
                     count: 1,
                     offset: [-8.0, 0.0, 10.0],

@@ -25,7 +25,7 @@ impl Skirmish {
         source: usize,
         list: &List,
     ) -> Result<Vec<usize>, &'static str> {
-        self.create_physical_ocl_at(source, list, self.object_position(source))
+        self.create_physical_ocl_from(source, list, self.object_position(source), true)
     }
 
     pub(in crate::skirmish) fn create_physical_ocl_at(
@@ -34,11 +34,35 @@ impl Skirmish {
         list: &List,
         point: [f32; 3],
     ) -> Result<Vec<usize>, &'static str> {
+        self.create_physical_ocl_from(source, list, point, false)
+    }
+
+    fn create_physical_ocl_from(
+        &mut self,
+        source: usize,
+        list: &List,
+        point: [f32; 3],
+        source_transform: bool,
+    ) -> Result<Vec<usize>, &'static str> {
         if let Some(force) = &list.initial_force {
             self.apply_ocl_source_force(source, force);
         }
         let mut created = Vec::new();
-        for nugget in &list.nuggets {
+        let mut ordinary = list.ordinary_nuggets.iter().peekable();
+        for (index, physical) in list.nuggets.iter().map(Some).chain([None]).enumerate() {
+            while ordinary.peek().is_some_and(|(order, _)| *order == index) {
+                let (_, nugget) = ordinary.next().expect("next authored OCL nugget");
+                self.create_ordinary_death_nugget(
+                    source,
+                    nugget,
+                    point,
+                    source_transform,
+                    &mut created,
+                );
+            }
+            let Some(nugget) = physical else {
+                break;
+            };
             if nugget.names.is_empty() {
                 continue;
             }

@@ -94,6 +94,7 @@ fn installed_bomb_truck_paid_disguise_and_all_payload_combinations() {
             assert!(matches!(action, CommandAction::BombTruckDetonate));
             move_near(&mut battle.simulation, truck, range);
             dispatch_command(&mut battle, &mut mouse, action);
+            crate::input::commands::step(&mut battle, &mut mouse);
             check_detonation(&mut battle.simulation, truck, high, effect, field);
             if !upgraded && !bio && !high {
                 assert!(!battle.simulation.entities[blast_target].alive());
@@ -212,10 +213,15 @@ fn check_payload_upgrade(
     );
     afford(&mut battle.simulation, 500);
     let cash = battle.simulation.players[0].cash;
+    let income = battle.simulation.players[0].statistics.money_earned;
     let action = selected_command(battle, data, slot).unwrap().action;
     assert!(matches!(action, CommandAction::Research(value) if value == index));
     dispatch_command(battle, mouse, action);
-    assert_eq!(battle.simulation.players[0].cash, cash - 500);
+    assert_eq!(battle.simulation.players[0].cash, cash);
+    crate::input::commands::step(battle, mouse);
+    // The admitted logic frame can also deliver ordinary supply income.
+    let earned = battle.simulation.players[0].statistics.money_earned - income;
+    assert_eq!(battle.simulation.players[0].cash, cash - 500 + earned);
     advance_until(&mut battle.simulation, 160, name, |game| {
         game.object_has_upgrade(truck, name)
     })
@@ -254,6 +260,7 @@ fn check_disguise(
         Some(technical),
     );
     assert!(matches!(mouse.pending_command, CommandMode::Normal));
+    crate::input::commands::step(battle, mouse);
     advance_until(
         &mut battle.simulation,
         120,

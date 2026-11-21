@@ -323,6 +323,8 @@ fn starts_active_constructor_removal_only_resets_preceding_constructed_behaviors
         cost: 0,
         frames: 1,
         player: false,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     let id = game.spawn(5, 0, [300.0; 2], true);
     assert_eq!(

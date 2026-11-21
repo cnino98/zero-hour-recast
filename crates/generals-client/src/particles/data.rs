@@ -74,6 +74,10 @@ pub fn load_with_position_effects(
     for name in super::detectors::names(types) {
         super::dependencies::append(&mut names, name);
     }
+    for name in super::gps_scrambler::names(types) {
+        super::dependencies::append(&mut names, name);
+    }
+    append_power_particles(types, &mut names);
     for name in super::dependencies::weapon_particles(assets, types)? {
         super::dependencies::append(&mut names, &name);
     }
@@ -115,6 +119,7 @@ pub fn load_with_position_effects(
         phase: 0.0,
         scale,
         bindings: effects.bindings,
+        missile_ignition: effects.missile_ignition,
         bone_systems: std::collections::BTreeMap::new(),
         bodies: body_particles,
         detectors,
@@ -123,6 +128,7 @@ pub fn load_with_position_effects(
         lists: effects.lists,
         propaganda: effects.propaganda,
         actor_fx: effects.actor_fx,
+        gps_scramblers: BTreeMap::new(),
         sounds: Vec::new(),
         pulses: crate::light_pulse::Pool::new(),
         scorches: crate::scorch::Scorches::load(assets)?,
@@ -130,6 +136,38 @@ pub fn load_with_position_effects(
         shake: super::view_shake::Shake::load(&definition(&global, "GameData", "")?.lines)?,
         reported_streak: std::collections::BTreeSet::new(),
     })
+}
+
+fn append_power_particles(types: &[generals_sim::skirmish::UnitType], names: &mut Vec<String>) {
+    for unit in types {
+        for rules in &unit.behavior.particle_uplinks {
+            for name in rules
+                .effects
+                .outer_flares
+                .iter()
+                .chain(&rules.effects.connector_flares)
+                .chain(&rules.effects.base_flares)
+                .filter(|name| !name.is_empty())
+            {
+                super::dependencies::append(names, name);
+            }
+        }
+        if let Some(rules) = &unit.behavior.emp
+            && !rules.sparks.is_empty()
+        {
+            super::dependencies::append(names, &rules.sparks);
+        }
+        if let Some(rules) = &unit.behavior.neutron_missile
+            && !rules.exhaust.is_empty()
+        {
+            super::dependencies::append(names, &rules.exhaust);
+        }
+        for rules in &unit.behavior.leaflet_drops {
+            if !rules.particle.is_empty() {
+                super::dependencies::append(names, &rules.particle);
+            }
+        }
+    }
 }
 
 fn append_module_particles(

@@ -35,6 +35,7 @@ pub enum Derived {
     BattleBus(Box<super::battle_bus::DeathRules>),
     Jet(Box<super::aircraft_death::Jet>),
     Helicopter(Box<super::helicopter_death::Rules>),
+    Neutron(Box<super::neutron_missile::DeathRules>),
 }
 
 pub struct SlowDeath {

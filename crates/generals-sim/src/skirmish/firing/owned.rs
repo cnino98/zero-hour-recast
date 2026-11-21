@@ -104,6 +104,7 @@ impl WeaponState {
         shot_rate: f32,
         reload_rate: f32,
         shared: bool,
+        random: &mut [u32; 6],
     ) -> ShotCompletion {
         if matches!(rules.damage_type, crate::skirmish::DamageType::Disarm) {
             self.clip_remaining = self.clip_remaining.wrapping_sub(1);
@@ -151,9 +152,7 @@ impl WeaponState {
                 shared: None,
             };
         }
-        let delay = crate::skirmish::progression::real_unsigned(
-            ((rules.delay * 30.0).ceil() / shot_rate).floor(),
-        );
+        let delay = rules.sample_shot_delay(random, shot_rate);
         self.status = WeaponStatus::BetweenShots;
         self.last_reload_started = u64::from(now);
         self.possible_next_shot = u64::from(now.wrapping_add(delay));
@@ -169,6 +168,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ranged_shot_delay_draws_after_payload_but_fixed_and_clip_reload_do_not_draw() {
+        let mut rules = WeaponRules::unarmed();
+        rules.clip_size = 2;
+        rules.reload_seconds = 1.0;
+        rules.delay_frames = Some([3, 30]);
+        let mut stream = [0, 0, 0, 0, 0, 11];
+        let mut state = WeaponState::new(2);
+        state.finish_owned_shot(&rules, 100, 1.5, 1.0, false, &mut stream);
+        // The first native unsigned value is 11, giving 14 of [3, 30].
+        // floor(14 / 1.5) is nine frames; the shared stream advances once.
+        assert_eq!(state.possible_next_shot, 109);
+        assert_eq!(stream, [11, 11, 11, 11, 11, 12]);
+
+        let checkpoint = stream;
+        state.finish_owned_shot(&rules, 109, 1.5, 1.0, false, &mut stream);
+        assert_eq!(state.possible_next_shot, 139);
+        assert_eq!(stream, checkpoint);
+
+        rules.delay_frames = Some([8, 8]);
+        state.finish_owned_shot(&rules, 139, 1.5, 1.0, false, &mut stream);
+        assert_eq!(state.possible_next_shot, 144);
+        assert_eq!(stream, checkpoint);
+    }
+
+    #[test]
     fn dedicated_finite_clip_exhaustion_uses_reload_deadline_and_infinite_clip_still_decrements() {
         let mut rules = WeaponRules::unarmed();
         rules.clip_size = 2;
@@ -181,7 +205,7 @@ mod tests {
         assert!(matches!(state.owned_status(10), WeaponStatus::Ready));
         assert!(
             state
-                .finish_owned_shot(&rules, 10, 1.0, 1.0, false)
+                .finish_owned_shot(&rules, 10, 1.0, 1.0, false, &mut [0; 6])
                 .shared
                 .is_none()
         );
@@ -189,7 +213,7 @@ mod tests {
         assert!(matches!(state.owned_status(13), WeaponStatus::Ready));
         assert_eq!(
             state
-                .finish_owned_shot(&rules, 13, 1.0, 1.0, true)
+                .finish_owned_shot(&rules, 13, 1.0, 1.0, true, &mut [0; 6])
                 .shared
                 .map(|(_, deadline)| deadline),
             Some(28)
@@ -199,7 +223,7 @@ mod tests {
         assert!(matches!(state.owned_status(28), WeaponStatus::Ready));
         rules.clip_size = 0;
         state.reload_owned(&rules, 28, 1.0, true, false);
-        state.finish_owned_shot(&rules, 28, 1.0, 1.0, false);
+        state.finish_owned_shot(&rules, 28, 1.0, 1.0, false, &mut [0; 6]);
         assert_eq!(state.clip_remaining, 0x7fff_fffe);
     }
 
@@ -208,7 +232,7 @@ mod tests {
         let mut rules = WeaponRules::unarmed();
         rules.delay = 0.0;
         let mut state = WeaponState::new(0);
-        state.finish_owned_shot(&rules, u32::MAX, 1.0, 1.0, false);
+        state.finish_owned_shot(&rules, u32::MAX, 1.0, 1.0, false, &mut [0; 6]);
         assert_eq!(state.possible_next_shot, u64::from(u32::MAX));
         assert!(matches!(state.owned_status(u32::MAX), WeaponStatus::Ready));
     }
@@ -229,7 +253,7 @@ mod payload_tests {
         state.reload_owned(&rules, 40, 1.0, true, false);
         state.last_shot = Some(30);
         state.barrel = 2;
-        state.finish_owned_shot(&rules, 40, 1.0, 1.0, false);
+        state.finish_owned_shot(&rules, 40, 1.0, 1.0, false, &mut [0; 6]);
         assert_eq!(state.clip_remaining, 1);
         assert_eq!(state.last_shot, Some(30));
         assert_eq!(state.barrel, 2);
@@ -251,9 +275,9 @@ mod captured_bonus_tests {
         let mut state = WeaponState::new(0);
         state.clip_remaining = 0;
         state.reload_owned(&rules, 100, 1.0, true, false);
-        state.finish_owned_shot(&rules, 100, 1.0, 2.0, false);
+        state.finish_owned_shot(&rules, 100, 1.0, 2.0, false, &mut [0; 6]);
         assert_eq!(state.possible_next_shot, 130);
-        state.finish_owned_shot(&rules, 130, 1.0, 2.0, false);
+        state.finish_owned_shot(&rules, 130, 1.0, 2.0, false, &mut [0; 6]);
         assert_eq!(state.possible_next_shot, 160);
         assert_eq!(state.clip_remaining, 2);
         assert!(matches!(state.status, WeaponStatus::Reloading));

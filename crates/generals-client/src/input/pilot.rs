@@ -24,7 +24,7 @@ pub fn issue(battle: &mut Match, mouse: &mut Mouse, target: usize, slot: usize) 
     }
     let response = VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         Voice::SnipePilot,
         false,
     );

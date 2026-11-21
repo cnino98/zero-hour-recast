@@ -189,7 +189,7 @@ mod tests {
         input::targeted_order(&mut battle, &mut mouse, target, Some(setup.vehicle));
         assert!(matches!(mouse.pending_command, input::CommandMode::Normal));
         battle.clear_drawable_selection();
-        battle.simulation.step();
+        input::commands::step(&mut battle, &mut mouse);
 
         let mut audio =
             source_audio::load(&assets, &battle.simulation.catalog, Path::new("")).unwrap();

@@ -46,12 +46,19 @@ pub(super) fn member(unit: &UnitType, valid: &[String], invalid: &[String]) -> b
 }
 
 impl Entity {
-    fn set_battle_plan_mask(&mut self, unit: &UnitType, mask: u8, frame: u64, extra: u32) {
+    fn set_battle_plan_mask(
+        &mut self,
+        unit: &UnitType,
+        mask: u8,
+        frame: u64,
+        extra: u32,
+        random: &mut [u32; 6],
+    ) {
         // Player's callback sets/clears each source condition in this order.
         for flag in [1, 2, 4] {
             if (self.battle_bonuses.mask ^ mask) & flag != 0 {
                 self.battle_bonuses.mask ^= flag;
-                self.weapon_bonus_changed(unit, frame, extra);
+                self.weapon_bonus_changed(unit, frame, extra, random);
             }
         }
     }
@@ -96,7 +103,7 @@ impl Skirmish {
         if member(unit, &army.valid, &army.invalid) {
             actor.battle_bonuses.armor *= army.armor;
             actor.battle_bonuses.sight *= army.sight;
-            actor.set_battle_plan_mask(unit, army.mask, self.tick, extra);
+            actor.set_battle_plan_mask(unit, army.mask, self.tick, extra, &mut self.random);
         }
     }
 
@@ -112,7 +119,7 @@ impl Skirmish {
             let actor = &mut self.entities[id];
             actor.battle_bonuses.armor *= 1.0 / army.armor.max(0.01);
             actor.battle_bonuses.sight *= 1.0 / army.sight.max(0.01);
-            actor.set_battle_plan_mask(unit, 0, self.tick, extra);
+            actor.set_battle_plan_mask(unit, 0, self.tick, extra, &mut self.random);
         }
         self.initialize_battle_bonuses(id);
         if let Some(plan) = plan {
@@ -251,7 +258,13 @@ impl Skirmish {
                 actor.battle_bonuses.armor *= armor;
                 actor.battle_bonuses.sight *= sight;
                 // SH 05/02/2026: preserve the other simultaneous plan flags.
-                actor.set_battle_plan_mask(&self.catalog[actor.type_index], mask, self.tick, extra);
+                actor.set_battle_plan_mask(
+                    &self.catalog[actor.type_index],
+                    mask,
+                    self.tick,
+                    extra,
+                    &mut self.random,
+                );
             }
         }
     }

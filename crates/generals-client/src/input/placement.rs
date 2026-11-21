@@ -61,6 +61,7 @@ pub struct Placement {
     anchor: Option<[IVec2; 2]>,
     position: Option<Vec2>,
     legal: bool,
+    power: Option<&'static str>,
 }
 
 impl Placement {
@@ -72,6 +73,19 @@ impl Placement {
             anchor: None,
             position: None,
             legal: true,
+            power: None,
+        }
+    }
+
+    pub const fn special_power(
+        type_index: usize,
+        caster: usize,
+        angle: f32,
+        name: &'static str,
+    ) -> Self {
+        Self {
+            power: Some(name),
+            ..Self::new(type_index, caster, angle)
         }
     }
 
@@ -166,7 +180,7 @@ fn snap_facing(angle: f32) -> f32 {
     (steps + 0.5).floor() * std::f32::consts::FRAC_PI_4
 }
 
-pub(super) fn pointer(
+pub fn pointer(
     battle: &mut Match,
     mouse: &mut Mouse,
     view: &View,
@@ -184,6 +198,7 @@ pub(super) fn pointer(
     let project = |point: IVec2| view.terrain_point(point.as_vec2() / scale);
     let index = placement.type_index;
     let builder = placement.builder;
+    let power = placement.power;
     // GameEngine updates the client's place icon before propagating messages.
     // A release therefore commits the displayed angle, even if its raw motion
     // is received in the same update as the release.
@@ -193,9 +208,21 @@ pub(super) fn pointer(
         battle.simulation.tick,
         project,
         |point, angle| {
+            let point = point.to_array();
+            if power.is_some() {
+                let height = battle.simulation.ground_height(point);
+                return super::locally_controlled(battle, builder)
+                    && battle.simulation.can_place_sneak_attack(
+                        builder,
+                        index,
+                        [point[0], point[1], height],
+                        angle,
+                        false,
+                    );
+            }
             battle
                 .simulation
-                .can_build_facing(builder, index, point.to_array(), angle)
+                .can_build_facing(builder, index, point, angle)
         },
     );
     if buttons.just_pressed(MouseButton::Left) && !over_ui && placement.anchor.is_none() {
@@ -221,6 +248,9 @@ pub(super) fn pointer(
 }
 
 fn commit(battle: &mut Match, mouse: &mut Mouse, placement: &mut Placement, point: Vec2) -> bool {
+    if let Some(name) = placement.power {
+        return commit_power(battle, mouse, placement, point, name);
+    }
     // MSG_DOZER_CONSTRUCT is materialized once at commit, never by preview queries.
     if let Err(error) = battle
         .simulation
@@ -245,6 +275,25 @@ fn commit(battle: &mut Match, mouse: &mut Mouse, placement: &mut Placement, poin
         placement.anchor = None;
         mouse.pending_command = super::CommandMode::Normal;
         return false;
+    }
+    if !battle.commands.executing {
+        super::commands::enqueue(
+            battle,
+            Some(mouse),
+            super::commands::Kind::Build {
+                unit: placement.type_index,
+                point,
+                angle: placement.angle,
+            },
+        );
+        mouse.voices.push(VoiceRequest::new(
+            &battle.simulation,
+            &battle.selected,
+            Voice::Build,
+            mouse.waypoint_mode,
+        ));
+        mouse.pending_command = super::CommandMode::Normal;
+        return true;
     }
     drop(battle.command_message_members());
     match battle.simulation.build_facing(
@@ -281,5 +330,58 @@ fn commit(battle: &mut Match, mouse: &mut Mouse, placement: &mut Placement, poin
     }
 }
 
+fn commit_power(
+    battle: &mut Match,
+    mouse: &mut Mouse,
+    placement: &mut Placement,
+    point: Vec2,
+    name: &str,
+) -> bool {
+    if !super::locally_controlled(battle, placement.builder) {
+        mouse.pending_command = super::CommandMode::Normal;
+        return true;
+    }
+    let point = point.to_array();
+    let height = battle.simulation.ground_height(point);
+    let position = [point[0], point[1], height];
+    if let Some(failure) = battle.simulation.sneak_attack_placement_failure(
+        placement.builder,
+        placement.type_index,
+        position,
+        placement.angle,
+        true,
+    ) {
+        placement.anchor = None;
+        // The release keeps placement active, with the original legal-build feedback.
+        mouse
+            .sneak_placement_rejections
+            .push((battle.simulation.tick, failure));
+        mouse.voices.push(VoiceRequest::new(
+            &battle.simulation,
+            &[placement.builder],
+            Voice::NoBuild,
+            false,
+        ));
+        return false;
+    }
+    // PlaceEventTranslator dismisses the placement icon when it sends the
+    // request. ActionManager subsequently checks the reference's default angle.
+    super::commands::enqueue(
+        battle,
+        Some(mouse),
+        super::commands::Kind::Power {
+            caster: placement.builder,
+            name: name.to_owned(),
+            specific: true,
+            target: generals_sim::skirmish::PowerTarget::Construction {
+                position,
+                angle: placement.angle,
+            },
+        },
+    );
+    mouse.pending_command = super::CommandMode::Normal;
+    true
+}
+
 #[cfg(test)]
-mod tests;
+pub mod tests;

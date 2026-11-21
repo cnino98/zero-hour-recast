@@ -6,12 +6,11 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 
-pub struct Decal {
-    pub texture: String,
-    pub opacity: [f32; 2],
-    pub throb_frames: u32,
-    pub color: [u8; 4],
-    pub only_owner: bool,
+pub use super::radius_decal::Template as Decal;
+
+enum ActiveDestination {
+    Spectre,
+    ParticleUplink(usize),
 }
 
 pub struct Rules {
@@ -267,18 +266,11 @@ impl Skirmish {
 
     #[must_use]
     pub fn can_override_special_power_destination(&self, id: usize, position: [f32; 3]) -> bool {
-        self.entities.get(id).is_some_and(|object| {
-            object.exists()
-                && object.spectre_retarget_active()
-                && !matches!(
-                    self.visibility_cell(object.owner, [position[0], position[1]]),
-                    super::visibility::Status::Shrouded
-                )
-        })
+        self.active_power_destination(id, position).is_some()
     }
 
     /// `ActionManager` destination admission followed by the source group's
-    /// active update callback. Disabled Spectres accept the command but ignore it.
+    /// active update callback. Disabled providers accept the command but ignore it.
     /// # Panics
     /// An active Spectre must retain its authored gunship rules.
     pub fn override_special_power_destination(
@@ -287,8 +279,12 @@ impl Skirmish {
         position: [f32; 3],
         local_player: usize,
     ) -> bool {
-        if !self.can_override_special_power_destination(id, position) {
+        let Some(module) = self.active_power_destination(id, position) else {
             return false;
+        };
+        if let ActiveDestination::ParticleUplink(ordinal) = module {
+            self.set_particle_uplink_destination(id, ordinal, position);
+            return true;
         }
         let owner = self.entities[id].owner;
         self.set_spectre_target(id, position);
@@ -302,6 +298,36 @@ impl Skirmish {
             self.object_sound(id, voice, super::object_sounds::Action::Play);
         }
         true
+    }
+
+    fn active_power_destination(&self, id: usize, position: [f32; 3]) -> Option<ActiveDestination> {
+        let object = self.entities.get(id).filter(|object| object.exists())?;
+        if !position.into_iter().all(f32::is_finite)
+            || matches!(
+                self.visibility_cell(object.owner, [position[0], position[1]]),
+                super::visibility::Status::Shrouded
+            )
+        {
+            return None;
+        }
+        // Object::findSpecialPowerWithOverridableDestinationActive picks the
+        // first active SpecialPowerUpdateInterface in authored module order.
+        let mut uplink = 0;
+        for module in &self.catalog[object.type_index].behavior_modules {
+            match module.family.as_str() {
+                "SpectreGunshipUpdate" if object.spectre_retarget_active() => {
+                    return Some(ActiveDestination::Spectre);
+                }
+                "ParticleUplinkCannonUpdate" => {
+                    if self.particle_uplink_can_steer(id, uplink) {
+                        return Some(ActiveDestination::ParticleUplink(uplink));
+                    }
+                    uplink += 1;
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     pub(in crate::skirmish) fn set_spectre_target(&mut self, id: usize, position: [f32; 3]) {

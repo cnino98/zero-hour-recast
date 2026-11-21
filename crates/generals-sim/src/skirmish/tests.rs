@@ -20,7 +20,13 @@ fn fixture_kind_flags(kind: Kind) -> Vec<String> {
 }
 
 pub(super) fn fixture_type(faction: Faction, kind: Kind) -> UnitType {
-    let mut unit = UnitType {
+    let mut unit = fixture_data(faction, kind);
+    register_fixture_updates(&mut unit);
+    unit
+}
+
+fn fixture_data(faction: Faction, kind: Kind) -> UnitType {
+    UnitType {
         command_set: String::new(),
         pristine_draws: Vec::new(),
         sway_updates: 0,
@@ -118,9 +124,7 @@ pub(super) fn fixture_type(faction: Faction, kind: Kind) -> UnitType {
         production_doors: parking::DoorRules::NONE,
         factory_bib: FactoryBib::NONE,
         energy: 0,
-    };
-    register_fixture_updates(&mut unit);
-    unit
+    }
 }
 
 fn register_fixture_updates(unit: &mut UnitType) {
@@ -145,6 +149,20 @@ fn register_fixture_updates(unit: &mut UnitType) {
 
 fn fixture_behavior(kind: Kind) -> BehaviorData {
     BehaviorData {
+        particle_uplinks: Vec::new(),
+        ocl_powers: Vec::new(),
+        power_weapons: Vec::new(),
+        cash_hack_powers: Vec::new(),
+        spy_vision_powers: Vec::new(),
+        nuclear_launcher: None,
+        special_power_completions: Vec::new(),
+        weapon_bonuses: Vec::new(),
+        leaflet_drops: Vec::new(),
+        smart_bombs: Vec::new(),
+        emp: None,
+        neutron_missile: None,
+        gps_scramblers: Vec::new(),
+        dynamic_shroud: Vec::new(),
         create_object_die: Vec::new(),
         eject_pilots: Vec::new(),
         bridges: Vec::new(),

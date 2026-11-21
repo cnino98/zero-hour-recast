@@ -8,6 +8,8 @@ fn research_game(player: bool) -> (Skirmish, usize) {
         cost: 100,
         frames: 2,
         player,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     let second = game.spawn(0, 0, [450.0, 350.0], true);
     game.update_power();
@@ -32,6 +34,28 @@ fn player_cancel_and_completion_clear_status_after_queue_and_before_upgrade_call
     assert!(game.players[0].upgrades_in_progress.is_empty());
     assert!(game.has_upgrade(0, "Upgrade_ProductionStatus"));
     assert!(!game.can_research(0, 0));
+}
+
+#[test]
+fn research_can_ignore_only_the_authored_brownout_disable() {
+    let (mut game, _) = research_game(true);
+    let producer = 0;
+    game.entities[producer].disabled_status |= 1 << 6;
+    let cash = game.players[0].cash;
+    assert!(game.queue_upgrade(producer, 0).is_err());
+    assert_eq!(game.players[0].cash, cash);
+
+    game.catalog[0].maintenance.research[0].ignores_underpowered = true;
+    assert!(game.can_research(producer, 0));
+    game.set_emp_disabled_until(producer, 100);
+    assert!(game.queue_upgrade(producer, 0).is_err());
+    assert_eq!(game.players[0].cash, cash);
+
+    game.tick = 100;
+    game.expire_emp();
+    assert!(game.can_research(producer, 0));
+    game.queue_upgrade(producer, 0).unwrap();
+    assert_eq!(game.players[0].cash, cash - 100);
 }
 
 #[test]
@@ -144,4 +168,21 @@ fn actual_player_create_grant_completes_pending_status_and_repeated_grants_do_no
     assert!(game.entities[0].queue.is_empty());
     assert_eq!(game.players[0].cash, cash);
     assert!(game.has_upgrade(0, "Upgrade_ProductionStatus"));
+}
+
+#[test]
+fn science_research_requires_all_authored_sciences_before_charging() {
+    let (mut game, producer) = research_game(true);
+    game.catalog[0].maintenance.research[0].sciences = vec!["Daisy".into(), "RankFive".into()];
+    let cash = game.players[0].cash;
+    assert!(game.queue_upgrade(producer, 0).is_err());
+    game.players[0].sciences.push("Daisy".into());
+    assert!(game.queue_upgrade(producer, 0).is_err());
+    assert_eq!(game.players[0].cash, cash);
+    assert!(game.entities[producer].queue.is_empty());
+    game.players[0].sciences.push("RankFive".into());
+    game.queue_upgrade(producer, 0).unwrap();
+    assert_eq!(game.players[0].cash, cash - 100);
+    game.cancel_upgrade(0, producer, 0).unwrap();
+    assert_eq!(game.players[0].cash, cash);
 }

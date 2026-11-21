@@ -662,8 +662,11 @@ impl Skirmish {
                     };
                     let target = &self.entities[other];
                     return format!(
-                        "fixed cell={:?} owner={other} position={:?} goal={:?} radius={radius} centered={centered}",
+                        "fixed cell={:?} object={other} template={} player={} producer={:?} position={:?} goal={:?} radius={radius} centered={centered}",
                         [occupied.x, occupied.y],
+                        self.catalog[target.type_index].name,
+                        target.owner,
+                        target.producer(),
                         target.position,
                         target.ai.path_endpoint
                     );

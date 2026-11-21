@@ -83,7 +83,16 @@ pub(super) fn load(
         if text(upgrade, 0, "ButtonImage")? != text(&button.lines, 0, "ButtonImage")? {
             return Err("upgrade queue image differs from its command image".into());
         }
+        let sciences = field(&button.lines, 0, "Science")
+            .map_or_else(Vec::new, |line| line.tokens[1..].to_vec());
+        let ignores_underpowered = field(&button.lines, 0, "Options").is_some_and(|line| {
+            line.tokens[1..]
+                .iter()
+                .any(|option| option == "IGNORES_UNDERPOWERED")
+        });
         result.push(Research {
+            sciences,
+            ignores_underpowered,
             name: name.into(),
             cost: text(upgrade, 0, "BuildCost")?.parse()?,
             frames,

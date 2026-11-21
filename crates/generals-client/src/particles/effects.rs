@@ -1,7 +1,7 @@
 mod bones;
 pub(super) mod death;
 #[cfg(test)]
-mod exhaust_tests;
+pub mod exhaust_tests;
 pub(super) mod rng;
 mod scorch;
 #[cfg(test)]
@@ -36,6 +36,7 @@ pub(super) struct Callback<'a> {
 
 pub(super) struct LoadedEffects {
     pub bindings: Vec<Vec<Option<WeaponEffects>>>,
+    pub missile_ignition: Vec<Option<usize>>,
     pub lists: Vec<Vec<Nugget>>,
     pub actor_fx: std::collections::BTreeMap<String, usize>,
     pub propaganda: Vec<[Option<usize>; 2]>,
@@ -44,7 +45,6 @@ pub(super) struct LoadedEffects {
 pub(super) struct WeaponEffects {
     pub(super) fire: [Option<usize>; 2],
     exhaust: [Option<usize>; 2],
-    ignition: Option<usize>,
     detonation: Option<usize>,
     garrison_kill: Option<usize>,
 }
@@ -109,7 +109,24 @@ pub(super) fn load(
     let files = source_files(assets)?;
     let mut bindings = Vec::new();
     let mut lists = Vec::new();
+    let resolve =
+        |name: &str, lists: &mut Vec<Vec<Nugget>>| -> Result<Option<usize>, Box<dyn Error>> {
+            if name.eq_ignore_ascii_case("NONE") {
+                return Ok(None);
+            }
+            let fx = crate::skirmish_data::fx_definition(&files, name)?
+                .ok_or_else(|| format!("missing FXList {name}"))?;
+            let list = parse_list(&files, &fx.lines, templates, lists, true)?;
+            let index = lists.len();
+            lists.push(list);
+            Ok(Some(index))
+        };
+    let mut missile_ignition = Vec::with_capacity(types.len());
     for unit in types {
+        missile_ignition.push(resolve(
+            ignition_fx(&files, unit)?.unwrap_or("NONE"),
+            &mut lists,
+        )?);
         let mut slots = (0..unit.weapon_template_count())
             .map(|_| None)
             .collect::<Vec<_>>();
@@ -121,19 +138,6 @@ pub(super) fn load(
                 continue;
             };
             let weapon = &definition(&files, "Weapon", &rules.name)?.lines;
-            let resolve = |name: &str,
-                           lists: &mut Vec<Vec<Nugget>>|
-             -> Result<Option<usize>, Box<dyn Error>> {
-                if name.eq_ignore_ascii_case("NONE") {
-                    return Ok(None);
-                }
-                let fx = crate::skirmish_data::fx_definition(&files, name)?
-                    .ok_or_else(|| format!("missing FXList {name}"))?;
-                let list = parse_list(&files, &fx.lines, templates, lists, true)?;
-                let index = lists.len();
-                lists.push(list);
-                Ok(Some(index))
-            };
             let normal = value(weapon, "FireFX")?.unwrap_or("NONE");
             let heroic = veterancy(weapon, "VeterancyFireFX")?.unwrap_or(normal);
             let fire = [resolve(normal, &mut lists)?, resolve(heroic, &mut lists)?];
@@ -144,14 +148,6 @@ pub(super) fn load(
                 template_index(templates, heroic),
             ];
             let projectile = value(weapon, "ProjectileObject")?.unwrap_or("NONE");
-            let ignition = if projectile == "NONE" {
-                None
-            } else {
-                ignition_fx(&files, projectile)?
-                    .map(|name| resolve(name, &mut lists))
-                    .transpose()?
-                    .flatten()
-            };
             let detonation = resolve(
                 value(weapon, "ProjectileDetonationFX")?.unwrap_or("NONE"),
                 &mut lists,
@@ -160,7 +156,6 @@ pub(super) fn load(
             *output = Some(WeaponEffects {
                 fire,
                 exhaust,
-                ignition,
                 detonation,
                 garrison_kill,
             });
@@ -171,17 +166,26 @@ pub(super) fn load(
     let actor_fx = super::actor_fx::load(&files, types, templates, &mut lists)?;
     Ok(LoadedEffects {
         bindings,
+        missile_ignition,
         lists,
         actor_fx,
         propaganda,
     })
 }
 
-fn ignition_fx<'a>(
+pub(super) fn ignition_fx<'a>(
     files: &'a [ContentFile],
-    name: &str,
+    unit: &UnitType,
 ) -> Result<Option<&'a str>, Box<dyn Error>> {
-    let projectile = definition(files, "Object", name)?;
+    use generals_sim::skirmish::FlightRules;
+    if !unit
+        .projectile_rules
+        .iter()
+        .any(|rules| matches!(rules, FlightRules::Missile(_)))
+    {
+        return Ok(None);
+    }
+    let projectile = definition(files, "Object", &unit.name)?;
     let module = blocks(&projectile.lines, 0, "Behavior")?
         .into_iter()
         .find(|lines| {
@@ -387,6 +391,10 @@ impl Particles {
         animations: &mut Animations,
     ) {
         self.begin(generation, simulation.tick);
+        if let ProjectileFxStage::Ignition { projectile_type } = event.stage {
+            self.ignite_projectile(simulation, generation, event, projectile_type, animations);
+            return;
+        }
         let Some(binding) = self.bindings[event.weapon_type][event.weapon_index].as_ref() else {
             return;
         };
@@ -396,12 +404,6 @@ impl Particles {
         };
         if matches!(event.stage, ProjectileFxStage::Created) {
             // MissileAIUpdate creates its exhaust at ignition, not launch.
-            return;
-        }
-        if matches!(event.stage, ProjectileFxStage::Ignition) {
-            let ignition = binding.ignition;
-            let exhaust = binding.exhaust[usize::from(event.veterancy == 3)];
-            self.ignite_projectile(simulation, generation, event, ignition, exhaust, animations);
             return;
         }
         if matches!(event.stage, ProjectileFxStage::Lasered) {
@@ -417,7 +419,9 @@ impl Particles {
             ProjectileFxStage::Detonation => binding.detonation,
             ProjectileFxStage::GarrisonKill => binding.garrison_kill,
             ProjectileFxStage::Created => unreachable!("creation handled before FX visibility"),
-            ProjectileFxStage::Ignition => unreachable!("ignition handled before FX visibility"),
+            ProjectileFxStage::Ignition { .. } => {
+                unreachable!("ignition handled before FX visibility")
+            }
             ProjectileFxStage::Lasered => unreachable!("laser death handled separately"),
         };
         if let Some(index) = index {
@@ -454,19 +458,22 @@ impl Particles {
         simulation: &generals_sim::skirmish::Skirmish,
         generation: u32,
         event: &generals_sim::skirmish::ProjectileFxEvent,
-        ignition: Option<usize>,
-        exhaust: Option<usize>,
+        projectile_type: usize,
         animations: &mut Animations,
     ) {
         let pose = Pose {
             position: event.position,
             axes: event.axes,
         };
+        let ignition = self.missile_ignition[projectile_type];
+        let exhaust = self.bindings[event.weapon_type][event.weapon_index]
+            .as_ref()
+            .and_then(|binding| binding.exhaust[usize::from(event.veterancy == 3)]);
         // MissileAIUpdate::doIgnitionState (480–484): visible IgnitionFX first,
         // then unconditional attached-system creation. Shroud suppresses later
         // exhaust emission through the attached missile, not its constructor.
         if let Some(index) = ignition
-            && death::visible(simulation, event)
+            && death::visible(simulation, event, projectile_type)
         {
             self.fire(
                 index,
@@ -830,6 +837,7 @@ pub fn step(
         &mut rng::source(&mut animations, battle.generation),
     );
     let mut random = random(&mut animations, battle.generation);
+    particles.gps_scrambler_effects(simulation, &mut random);
     particles.emit_detector_scans(scans, &mut random);
     particles.shake.advance();
     particles.flush_effect_sounds(&mut audio);

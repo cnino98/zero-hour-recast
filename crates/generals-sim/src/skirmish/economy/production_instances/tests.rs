@@ -12,6 +12,8 @@ fn factory() -> (Skirmish, usize) {
         cost: 100,
         frames: 6,
         player: false,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     game.catalog[kind]
         .additional_production

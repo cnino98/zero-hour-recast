@@ -2,6 +2,8 @@ use super::{Action, Layer, PromotionIcon, UiData, at, faction_index, selected_co
 use crate::{control_bar::Command, playtest::Match};
 use bevy::{prelude::*, ui::FocusPolicy, ui_render::ui_material::MaterialNode};
 
+type OverlayFilter = (Without<Action>, Without<super::power_shortcuts::Tray>);
+
 #[derive(Component)]
 pub struct CommandOverlay {
     slot: usize,
@@ -125,8 +127,8 @@ pub(super) fn available(battle: &mut Match, command: &Command) -> bool {
     if let Some(power) = command.action.power() {
         return battle
             .selected
-            .first()
-            .is_some_and(|&caster| battle.simulation.can_use_power(caster, power));
+            .iter()
+            .any(|&caster| battle.simulation.can_use_power(caster, power));
     }
     let Some(index) = command.action.product() else {
         return true;
@@ -226,10 +228,15 @@ fn selection_disabled(battle: &Match, command: &Command) -> bool {
             | CommandAction::Stop
             | CommandAction::Rally
             | CommandAction::SwitchWeapon(_)
+            | CommandAction::Research(_)
     ) && !battle.selected.is_empty()
         && battle.selected.iter().all(|&id| {
             let actor = &battle.simulation.entities[id];
-            actor.hacked() || actor.paralyzed() || actor.subdued()
+            if command.action.power().is_some() {
+                battle.simulation.object_disabled(id)
+            } else {
+                actor.hacked() || actor.paralyzed() || actor.subdued()
+            }
         })
 }
 
@@ -244,13 +251,31 @@ pub fn update(
     battle: ResMut<Match>,
     data: Res<UiData>,
     mut icons: ResMut<Assets<PromotionIcon>>,
-    mut buttons: Query<(&Action, &MaterialNode<PromotionIcon>, &mut Node)>,
+    mut buttons: Query<
+        (&Action, &MaterialNode<PromotionIcon>, &mut Node),
+        Without<super::power_shortcuts::Tray>,
+    >,
     interactions: Query<&Interaction, With<Action>>,
-    mut overlays: Query<(&CommandOverlay, &mut ImageNode, &mut Node), Without<Action>>,
+    mut overlays: Query<(&CommandOverlay, &mut ImageNode, &mut Node), OverlayFilter>,
+    powers: (
+        Query<(&super::power_shortcuts::Tray, &mut Node), Without<Action>>,
+        super::superweapon_timers::View,
+    ),
 ) {
     let battle = battle.into_inner();
     let data = data.into_inner();
+    let (mut trays, countdown) = powers;
+    countdown.update(battle, data);
+    for (tray, mut node) in &mut trays {
+        super::power_shortcuts::update_tray(battle, data, tray, &mut node);
+    }
     for (action, handle, mut node) in &mut buttons {
+        if let Action::PowerShortcut { faction, slot } = *action {
+            super::power_shortcuts::update_button(
+                battle, data, faction, slot, &mut icons, handle, &mut node,
+            );
+            continue;
+        }
         let Action::Slot(slot) = *action else {
             continue;
         };
@@ -348,9 +373,18 @@ fn update_state(icon: &mut PromotionIcon, battle: &mut Match, data: &UiData, com
     }
     weapon_reload_clock(icon, battle, data, command.action);
     if let Some(power) = command.action.power() {
-        let caster = battle.selected[0];
-        if !battle.simulation.can_use_power(caster, power) {
-            icon.state.z = (battle.simulation.power_progress(caster, power) * 100.0).trunc();
+        let (gray, clock) = capture_clock(battle.selected.iter().copied().map(|id| {
+            let required = command
+                .required_upgrade
+                .as_ref()
+                .is_none_or(|upgrade| required_upgrade_met(&battle.simulation, id, upgrade));
+            let restricted = battle.simulation.object_disabled(id);
+            let progress = required.then(|| battle.simulation.power_progress(id, power));
+            (progress, restricted)
+        }));
+        icon.state.x = if gray { 1.0 } else { 0.0 };
+        if let Some(percent) = clock {
+            icon.state.z = percent;
             icon.clock_color =
                 data.schemes[faction_index(battle.simulation.players[0].faction)].clock_color;
         }
@@ -472,13 +506,21 @@ fn capture_clock(entries: impl Iterator<Item = (Option<f32>, bool)>) -> (bool, O
     (!available && !not_ready, clock)
 }
 
-fn command_image<'a>(battle: &Match, data: &'a UiData, command: &'a Command) -> &'a str {
+pub(super) fn command_image<'a>(battle: &Match, data: &'a UiData, command: &'a Command) -> &'a str {
     if matches!(
         command.action,
         crate::control_bar::CommandAction::ExitContainer(_)
     ) {
         return transport::image(battle, data, command);
     }
+    winning_science(battle, data, command).map_or(&command.image, |button| &button.image)
+}
+
+fn winning_science<'a>(
+    battle: &Match,
+    data: &'a UiData,
+    command: &Command,
+) -> Option<&'a crate::control_bar::ScienceButton> {
     let player = &battle.simulation.players[0];
     // populateContextCommand stops at the first unowned science in the ordered list.
     let best = command
@@ -490,9 +532,18 @@ fn command_image<'a>(battle: &Match, data: &'a UiData, command: &'a Command) -> 
         data.promotions.buttons[faction_index(player.faction)]
             .iter()
             .find(|button| &button.science == science)
-            .map(|button| button.image.as_str())
     })
-    .unwrap_or(&command.image)
+}
+
+pub(super) fn power_text<'a>(
+    battle: &Match,
+    data: &'a UiData,
+    command: &'a Command,
+) -> (&'a str, &'a str) {
+    winning_science(battle, data, command)
+        .map_or((&command.label, &command.description), |button| {
+            (&button.label, &button.description)
+        })
 }
 
 #[cfg(test)]
@@ -724,6 +775,8 @@ mod tests {
                     cost: 10,
                     frames: 1,
                     player,
+                    sciences: Vec::new(),
+                    ignores_underpowered: false,
                 });
         }
         let mut command = Command {
@@ -810,12 +863,16 @@ mod tests {
             cost: 10,
             frames: 1,
             player: true,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         });
         game.catalog[kind].maintenance.research.push(Research {
             name: "Upgrade_TargetButtonObject".into(),
             cost: 10,
             frames: 1,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         });
         assert!(game.location_weapon_ready(ranger, 0));
         let mut command = Command {

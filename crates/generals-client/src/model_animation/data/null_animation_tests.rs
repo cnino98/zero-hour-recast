@@ -60,7 +60,7 @@ fn original_real_and_fake_arms_dealer_keep_static_snow_garrison_models() {
             player.state = state_index;
             let pose = crate::model_animation::world_pose(
                 &mut player,
-                state,
+                draw,
                 &animations.models,
                 &animations.clips,
             )
@@ -86,7 +86,7 @@ fn original_real_and_fake_arms_dealer_keep_static_snow_garrison_models() {
             assert!(
                 crate::model_animation::world_pose(
                     &mut player,
-                    state,
+                    draw,
                     &animations.models,
                     &animations.clips,
                 )
@@ -100,14 +100,9 @@ fn original_real_and_fake_arms_dealer_keep_static_snow_garrison_models() {
 
 #[ignore = "requires original game installation"]
 #[test]
-fn shared_render_object_rejects_mixed_real_and_missing_handles() {
+fn reused_render_object_keeps_the_active_clip_and_recreated_turrets_clear_it() {
     let assets = installed();
-    for turret_changes in [false, true] {
-        let turret = if turret_changes {
-            "Turret=OtherTurret\n"
-        } else {
-            ""
-        };
+    for turret in ["", "Turret=OtherTurret\n"] {
         let file = content::scan(Asset {
             path: "bounded.ini".into(),
             origin: "native retained RenderObj and null Get_HAnim contract".into(),
@@ -117,38 +112,106 @@ fn shared_render_object_rejects_mixed_real_and_missing_handles() {
         }).unwrap();
         let modules = blocks(&file.declarations[0].lines, 0, "Draw").unwrap();
         let mut draw = parse(modules[0]).unwrap();
-        let result = preload_draw(&assets, &mut draw, &mut Vec::new(), &mut BTreeMap::new());
-        if turret_changes {
-            result.unwrap();
-            assert_ne!(draw.states[0].render_model, draw.states[1].render_model);
-        } else {
-            assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("mixes valid and unavailable animations")
+        let mut models = Vec::new();
+        let mut clips = BTreeMap::new();
+        preload_draw(&assets, &mut draw, &mut models, &mut clips).unwrap();
+        let mut player = super::super::Player::new([0.0; 2], 0);
+        let mut random = super::super::playback::Random::new(0);
+        assert!(super::super::playback::select(
+            &mut player,
+            &draw,
+            &clips,
+            0,
+            &mut random
+        ));
+        assert!(super::super::playback::select(
+            &mut player,
+            &draw,
+            &clips,
+            1,
+            &mut random
+        ));
+        let active = player
+            .animation(&draw)
+            .and_then(|(_, motion)| clips.get(&motion.name));
+        if turret.is_empty() {
+            assert_eq!(draw.states[0].render_model, draw.states[1].render_model);
+            assert_eq!(
+                active.unwrap().name.to_ascii_lowercase(),
+                "ubarmdeal.ubarmdeal"
             );
+        } else {
+            assert_ne!(draw.states[0].render_model, draw.states[1].render_model);
+            assert!(active.is_none());
         }
     }
 }
 
 #[ignore = "requires original game installation"]
 #[test]
-fn one_state_cannot_choose_between_real_and_missing_handles() {
+fn original_launcher_closing_keeps_the_waiting_pose_for_its_unavailable_clip() {
+    use super::super::{Player, playback};
+
     let assets = installed();
-    let file = content::scan(Asset {
-        path: "bounded.ini".into(),
-        origin: "native retained RenderObj and null Get_HAnim contract".into(),
-        bytes: b"Object Bounded\nDraw=W3DModelDraw Draw\nDefaultConditionState\nModel=UBArmDeal\nIdleAnimation=UBArmDeal.UBArmDeal\nIdleAnimation=UBArmDlEG_DS.UBArmDlEG_DS\nEnd\nEnd\nEnd\n".to_vec(),
-    }).unwrap();
-    let modules = blocks(&file.declarations[0].lines, 0, "Draw").unwrap();
+    let files = source_files(&assets).unwrap();
+    let object = definition(&files, "Object", "ChinaNuclearMissileLauncher").unwrap();
+    let modules = blocks(&object.lines, 0, "Draw").unwrap();
     let mut draw = parse(modules[0]).unwrap();
-    let error =
-        preload_draw(&assets, &mut draw, &mut Vec::new(), &mut BTreeMap::new()).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("mixes valid and unavailable animations")
+    let mut models = Vec::new();
+    let mut clips = BTreeMap::new();
+    preload_draw(&assets, &mut draw, &mut models, &mut clips).unwrap();
+
+    let conditions = |door| {
+        [door, "REALLYDAMAGED", "RUBBLE", "NIGHT", "SNOW"]
+            .map(str::to_owned)
+            .into()
+    };
+    let waiting = draw.select(&conditions("DOOR_1_WAITING_TO_CLOSE"));
+    let closing = draw.select(&conditions("DOOR_1_CLOSING"));
+    assert_ne!(waiting, closing);
+    assert_eq!(
+        draw.states[waiting].render_model,
+        draw.states[closing].render_model
+    );
+    let missing = &draw.states[closing].motions[0].name;
+    assert_eq!(missing, "nbnmissle_a3ens.nbnmissle_a3enss");
+    assert!(!clips.contains_key(missing));
+
+    let mut player = Player::new([0.0; 2], 0);
+    let mut random = playback::Random::new(0);
+    assert!(playback::select(
+        &mut player,
+        &draw,
+        &clips,
+        waiting,
+        &mut random
+    ));
+    let clip = &clips[&draw.states[waiting].motions[0].name];
+    let frame = i32::from(clip.frame_count - 1);
+    playback::manual_frame(&mut player, &draw, &clips, Some((1, frame)));
+    let model = &models[draw.states[waiting].model.unwrap()];
+    let waiting_bone = model
+        .controlled_bone_position("RockPos01", Some(clip), player.frame, &[])
+        .unwrap()
+        .unwrap();
+    assert!(playback::select(
+        &mut player,
+        &draw,
+        &clips,
+        closing,
+        &mut random
+    ));
+    let (active, motion) = player.animation(&draw).unwrap();
+    assert_eq!(active.mode, "MANUAL");
+    assert_eq!(motion.name, draw.states[waiting].motions[0].name);
+    let closing_model = &models[draw.states[closing].model.unwrap()];
+    let retained_bone = closing_model
+        .controlled_bone_position("RockPos01", clips.get(&motion.name), player.frame, &[])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retained_bone.map(f32::to_bits),
+        waiting_bone.map(f32::to_bits)
     );
 }
 
@@ -202,13 +265,11 @@ fn mismatched_export_cannot_replace_a_valid_retained_animation() {
     }).unwrap();
     let modules = blocks(&file.declarations[0].lines, 0, "Draw").unwrap();
     let mut draw = parse(modules[0]).unwrap();
-    let error =
-        preload_draw(&assets, &mut draw, &mut Vec::new(), &mut BTreeMap::new()).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("mixes valid and unavailable animations")
-    );
+    let mut clips = BTreeMap::new();
+    preload_draw(&assets, &mut draw, &mut Vec::new(), &mut clips).unwrap();
+    assert!(clips.contains_key(&draw.states[0].motions[0].name));
+    assert!(!clips.contains_key(&draw.states[1].motions[0].name));
+    assert_eq!(draw.states[0].render_model, draw.states[1].render_model);
 }
 
 #[ignore = "requires original game installation"]
@@ -252,13 +313,11 @@ fn absent_file_cannot_replace_a_valid_retained_animation() {
     }).unwrap();
     let modules = blocks(&file.declarations[0].lines, 0, "Draw").unwrap();
     let mut draw = parse(modules[0]).unwrap();
-    let error =
-        preload_draw(&assets, &mut draw, &mut Vec::new(), &mut BTreeMap::new()).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("mixes valid and unavailable animations")
-    );
+    let mut clips = BTreeMap::new();
+    preload_draw(&assets, &mut draw, &mut Vec::new(), &mut clips).unwrap();
+    assert!(clips.contains_key(&draw.states[0].motions[0].name));
+    assert!(!clips.contains_key(&draw.states[1].motions[0].name));
+    assert_eq!(draw.states[0].render_model, draw.states[1].render_model);
 }
 
 #[test]

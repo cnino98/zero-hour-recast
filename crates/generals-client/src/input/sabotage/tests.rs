@@ -51,6 +51,7 @@ fn installed_sabotage_button_and_context_enter_hostile_with_exact_cursor_gates()
     mouse.hovered = Some(target);
     assert_eq!(attack_cursor::context(&mut battle, &mouse), Some(10));
     input::targeted_order(&mut battle, &mut mouse, position.into(), Some(target));
+    input::commands::step(&mut battle, &mut mouse);
     assert!(
         matches!(battle.simulation.entities[actor].ai.order, Order::Enter(goal) if goal == target)
     );
@@ -71,6 +72,7 @@ fn installed_sabotage_button_and_context_enter_hostile_with_exact_cursor_gates()
         Some(input::PickTarget::Unit(target)),
         &mut mouse
     ));
+    input::commands::step(&mut battle, &mut mouse);
     assert!(
         matches!(battle.simulation.entities[actor].ai.order, Order::Enter(goal) if goal == target)
     );

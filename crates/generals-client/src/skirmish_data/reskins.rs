@@ -13,7 +13,7 @@ pub(super) fn parent(files: &[ContentFile], name: &str) -> Option<String> {
 pub(super) fn resolve(files: &mut [ContentFile]) -> Result<(), Box<dyn Error>> {
     // ThingFactory::parseObjectDefinition copies the template and marks modules
     // copied-from-default. The first new Draw removes the copied Draw interface.
-    // Original represented reskins replace Draw modules and optional geometry.
+    // Represented reskins replace Draw modules and can override template fields.
     let mut resolved = Vec::new();
     for file in files.iter() {
         for child in &file.declarations {
@@ -28,6 +28,7 @@ pub(super) fn resolve(files: &mut [ContentFile]) -> Result<(), Box<dyn Error>> {
                         | "GLAHoleBlackMarket"
                         | "GLAHoleTunnelNetwork"
                         | "GLAHoleStingerSite"
+                        | "GLAHoleScudStorm"
                         | "GLAVehicleTechnicalChassisTwo"
                         | "GLAVehicleTechnicalChassisThree"
                         | "SCUDMissilePlusOne"
@@ -62,6 +63,8 @@ pub(super) fn resolve(files: &mut [ContentFile]) -> Result<(), Box<dyn Error>> {
                                     | "GeometryMinorRadius"
                                     | "GeometryHeight"
                                     | "GeometryIsSmall"
+                                    | "MaxSimultaneousOfType"
+                                    | "MaxSimultaneousLinkKey"
                             )
                         )
                 })
@@ -77,7 +80,11 @@ pub(super) fn resolve(files: &mut [ContentFile]) -> Result<(), Box<dyn Error>> {
                 }
                 let replaced = source.depth == Some(0)
                     && source.tokens.first().is_some_and(|key| {
-                        key.starts_with("Geometry")
+                        (key.starts_with("Geometry")
+                            || matches!(
+                                key.as_str(),
+                                "MaxSimultaneousOfType" | "MaxSimultaneousLinkKey"
+                            ))
                             && child.lines.iter().any(|line| {
                                 line.depth == Some(0) && line.tokens.first() == Some(key)
                             })
@@ -256,7 +263,7 @@ mod tests {
     #[test]
     fn reskin_replaces_draws_and_retains_nested_module_boundaries() {
         let mut files = vec![content::scan(Asset {
-            path: "fixture.ini".into(), origin: "fixture".into(), bytes: b"Object GLAHole\nDraw = W3DModelDraw Original\nDefaultConditionState\nModel = Old\nEnd\nEnd\nPrerequisites\nObject = GLACommandCenter\nEnd\nBehavior = RebuildHoleBehavior Rebuild\nWorkerObjectName = GLAInfantryWorker\nEnd\nEnd\nObjectReskin GLAHoleBarracks GLAHole\nDraw = W3DModelDraw Replacement\nDefaultConditionState\nModel = New\nEnd\nEnd\nEnd\nObjectReskin GLAHoleScudStorm GLAHole\nGeometryMajorRadius = 100\nEnd\n".to_vec(),
+            path: "fixture.ini".into(), origin: "fixture".into(), bytes: b"Object GLAHole\nDraw = W3DModelDraw Original\nDefaultConditionState\nModel = Old\nEnd\nEnd\nPrerequisites\nObject = GLACommandCenter\nEnd\nBehavior = RebuildHoleBehavior Rebuild\nWorkerObjectName = GLAInfantryWorker\nEnd\nEnd\nObjectReskin GLAHoleBarracks GLAHole\nDraw = W3DModelDraw Replacement\nDefaultConditionState\nModel = New\nEnd\nEnd\nEnd\n".to_vec(),
         }).unwrap()];
         resolve(&mut files).unwrap();
         let child = definition(&files, "Object", "GLAHoleBarracks").unwrap();
@@ -300,12 +307,37 @@ mod tests {
         ];
         resolve(&mut files).unwrap();
         assert!(holes.contains(&"GLAHoleStingerSite"));
+        assert!(holes.contains(&"GLAHoleScudStorm"));
         for name in holes {
             let child = definition(&files, "Object", name).unwrap();
             assert!(child.parent.is_none());
             assert_eq!(blocks(&child.lines, 0, "Draw").unwrap().len(), 1);
             assert_eq!(blocks(&child.lines, 0, "Behavior").unwrap().len(), 1);
         }
+    }
+
+    #[test]
+    fn scud_hole_reskin_keeps_rebuild_and_uses_superweapon_link_and_both_draws() {
+        use super::super::support::{max_simultaneous, max_simultaneous_link};
+        use generals_sim::skirmish::TypeLimit;
+        let mut files = vec![content::scan(Asset {
+            path: "factionbuilding.ini".into(),
+            origin: "Scud Storm hole inheritance fixture".into(),
+            bytes: b"Object GLAHole\nMaxSimultaneousOfType=2\nMaxSimultaneousLinkKey=Hole\nBehavior=RebuildHoleBehavior Rebuild\nWorkerObjectName=GLAInfantryWorker\nEnd\nEnd\nObjectReskin GLAHoleScudStorm GLAHole\nDraw=W3DModelDraw Hole\nConditionState=NONE\nModel=UBHole\nEnd\nEnd\nDraw=W3DModelDraw Rubble\nConditionState=NONE\nModel=UBScudStrm_R\nEnd\nEnd\nMaxSimultaneousOfType=DeterminedBySuperweaponRestriction\nMaxSimultaneousLinkKey=Superweapon\nEnd\n".to_vec(),
+        }).unwrap()];
+        resolve(&mut files).unwrap();
+        let child = definition(&files, "Object", "GLAHoleScudStorm").unwrap();
+        assert_eq!(parent(&files, &child.name).as_deref(), Some("GLAHole"));
+        assert_eq!(blocks(&child.lines, 0, "Draw").unwrap().len(), 2);
+        assert_eq!(blocks(&child.lines, 0, "Behavior").unwrap().len(), 1);
+        assert!(matches!(
+            max_simultaneous(&child.lines).unwrap(),
+            TypeLimit::Superweapon
+        ));
+        assert_eq!(
+            max_simultaneous_link(&child.lines).unwrap().as_deref(),
+            Some("Superweapon")
+        );
     }
     #[ignore = "requires original game installation"]
     #[test]

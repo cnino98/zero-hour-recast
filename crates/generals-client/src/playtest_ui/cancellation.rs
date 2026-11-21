@@ -131,6 +131,29 @@ pub(super) fn activate(action: &Action, battle: &mut Match) -> bool {
     if !battle.started || battle.paused || battle.simulation.end_game_at.is_some() {
         return true;
     }
+    if !battle.commands.executing {
+        use crate::input::commands::{self, Kind};
+        let kind = match *action {
+            Action::CancelConstruction => foundation(battle).map(|_| Kind::CancelConstruction),
+            Action::CancelUpgrade(Some((producer, index))) => battle
+                .simulation
+                .entities
+                .get(producer)
+                .and_then(|actor| {
+                    battle.simulation.catalog[actor.type_index]
+                        .maintenance
+                        .research
+                        .get(index)
+                })
+                .map(|upgrade| Kind::CancelUpgrade(upgrade.name.clone())),
+            Action::CancelProduction(Some((_, id))) => Some(Kind::CancelProduction(id)),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            commands::enqueue(battle, None, kind);
+        }
+        return true;
+    }
     let result = match *action {
         Action::CancelConstruction => foundation(battle).map(|building| {
             drop(battle.command_message_members());

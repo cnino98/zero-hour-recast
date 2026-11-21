@@ -109,6 +109,18 @@ pub enum Event {
         found: bool,
         feedback: Option<ScanFeedback>,
     },
+    GrantFlash {
+        object: usize,
+    },
+    GrantEmitter {
+        object: usize,
+        ordinal: usize,
+        position: [f32; 3],
+    },
+    DestroyGrantEmitter {
+        object: usize,
+        ordinal: usize,
+    },
 }
 
 pub(super) struct State {
@@ -258,8 +270,8 @@ impl Skirmish {
         }
     }
 
-    fn receive_stealth_grant(&mut self, id: usize, active: bool, frames: u32) {
-        let now = self.tick;
+    pub(super) fn receive_stealth_grant(&mut self, id: usize, active: bool, frames: u32) {
+        let now = u64::from(self.update_frame());
         if self.catalog[self.entities[id].type_index]
             .behavior
             .stealth

@@ -23,6 +23,7 @@ const SOURCE_NAMES: &[&str] = &[
     "object/glamiscunit",
     "object/hulk",
     "object/weaponobjects",
+    "object/specialpowerobjects",
     "object/system",
     "object/gc_chem_glasystem",
     "object/americainfantry",
@@ -128,6 +129,14 @@ fn runtime_dependencies<'a>(
     selected: &[&str],
 ) -> Result<Vec<&'a str>, BoxError> {
     let mut additions = super::projectile_templates::dependencies(files, selected)?;
+    for name in super::power_ocl::dependencies(files, selected)?
+        .into_iter()
+        .chain(super::particle_uplink::dependencies(files, selected)?)
+    {
+        if !selected.contains(&name) && !additions.contains(&name) {
+            additions.push(name);
+        }
+    }
     for name in super::hazards::field_templates(files, selected)? {
         if !selected.contains(&name) && !additions.contains(&name) {
             additions.push(name);
@@ -220,11 +229,15 @@ fn aircraft_dependencies<'a>(
     for name in selected {
         let object = super::definition(files, "Object", name)?;
         for module in super::blocks(&object.lines, 0, "Behavior")? {
-            if module[0]
-                .tokens
-                .get(1)
-                .is_some_and(|family| family == "SpecialAbility")
-            {
+            if module[0].tokens.get(1).is_some_and(|family| {
+                matches!(
+                    family.as_str(),
+                    "SpecialAbility"
+                        | "OCLSpecialPower"
+                        | "SpyVisionSpecialPower"
+                        | "CashHackSpecialPower"
+                )
+            }) {
                 for rules in super::special_power::load(files, object)? {
                     if rules.view_range != 0.0
                         && rules.view_frames != 0
@@ -288,7 +301,10 @@ fn slow_death_dependencies<'a>(
             if module[0].tokens.get(1).is_none_or(|family| {
                 !matches!(
                     family.as_str(),
-                    "SlowDeathBehavior" | "JetSlowDeathBehavior" | "HelicopterSlowDeathBehavior"
+                    "SlowDeathBehavior"
+                        | "JetSlowDeathBehavior"
+                        | "HelicopterSlowDeathBehavior"
+                        | "NeutronMissileSlowDeathBehavior"
                 )
             }) {
                 continue;

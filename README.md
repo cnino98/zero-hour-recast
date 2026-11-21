@@ -4,9 +4,11 @@ Zero Hour Recast is a work-in-progress Rust and Bevy translation of *Command & C
 
 ## Development releases
 
-Version 0.2.0 is the ground, aircraft and delivery checkpoint. Development releases
-remain incomplete and are marked as pre-releases. Each release identifies a source
-revision; original game assets are supplied separately using the layout below.
+Local development checkpoint 0.3.0 adds the base factions' upgrades and general
+powers, plus the Particle Cannon, Nuclear Missile and SCUD Storm. The latest
+published prerelease is 0.2.1, which fixed main-menu startup. Development builds
+remain incomplete; work next covers maps, skirmish AI and visibility. Releases
+identify a source revision and use game assets from your own installation.
 Version 1.0 is reserved for completion of the skirmish scope and final acceptance
 in the [roadmap](ROADMAP.md).
 

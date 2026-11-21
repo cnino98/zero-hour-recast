@@ -46,6 +46,7 @@ fn installed_helix_command_voice_survives_step_cancel_and_selection_change_witho
         );
         assert!(matches!(mouse.pending_command, CommandMode::Normal));
     }
+    input::commands::step(&mut battle, &mut mouse);
     assert_eq!(mouse.voices.len(), 2);
     assert_eq!(mouse.voices[0].candidates.first().unwrap().0, unready);
     assert!(
@@ -56,9 +57,13 @@ fn installed_helix_command_voice_survives_step_cancel_and_selection_change_witho
             .iter()
             .all(|event| event.name != "HelixVoiceAttack")
     );
-    battle.simulation.stop(caster).unwrap();
+    crate::playtest_ui::dispatch_command(
+        &mut battle,
+        &mut mouse,
+        crate::control_bar::CommandAction::Stop,
+    );
     battle.clear_drawable_selection();
-    battle.simulation.step();
+    input::commands::step(&mut battle, &mut mouse);
     deliver(&mut audio, &mut mouse);
     assert_eq!(audio.requests.len(), 2);
     for request in &audio.requests {

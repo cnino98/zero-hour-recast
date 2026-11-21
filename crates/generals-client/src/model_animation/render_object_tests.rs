@@ -136,7 +136,16 @@ fn paid_battle_bus_landing_replaces_live_parts_with_loaded_second_life_model() {
     }));
 }
 
-fn stationed_defenders(game: &mut Skirmish) -> Vec<usize> {
+struct Stationed {
+    base: usize,
+    riders: Vec<usize>,
+    factory: usize,
+    target_kind: usize,
+    target: usize,
+}
+
+fn stationed_defenders(game: &mut Skirmish) -> Stationed {
+    game.set_match_options(50_000, 1);
     game.reset(Faction::Usa, Faction::China).unwrap();
     let worker = friendly_entity(game, Kind::Builder, 0).unwrap();
     construct(game, worker, Kind::PowerPlant, 0).unwrap();
@@ -154,23 +163,22 @@ fn stationed_defenders(game: &mut Skirmish) -> Vec<usize> {
         .unwrap();
         riders.push(rider);
     }
-    let enemy_builder = friendly_entity(game, Kind::Builder, 1).unwrap();
-    construct(game, enemy_builder, Kind::PowerPlant, 1).unwrap();
-    construct(game, enemy_builder, Kind::SupplyCenter, 1).unwrap();
-    let factory = construct(game, enemy_builder, Kind::Factory, 1).unwrap();
-    let kind = template(game, "ChinaTankBattleMaster").unwrap();
-    let target = produce_type(game, factory, kind, 1).unwrap();
-    // Durability isolates repeated firing from match outcome. The target uses
-    // real movement so its height, collision cells and pathfinder claims agree.
-    game.entities[target].health = 100_000.0;
-    game.entities[target].max_health = 100_000.0;
+    let factory = construct(game, worker, Kind::Factory, 0).unwrap();
+    let target_kind = template(game, "AmericaTankCrusader").unwrap();
+    let target = produce_type(game, factory, target_kind, 0).unwrap();
     stage_stationed_target(game, base, &riders, target);
-    riders
+    Stationed {
+        base,
+        riders,
+        factory,
+        target_kind,
+        target,
+    }
 }
 
 fn stage_stationed_target(game: &mut Skirmish, base: usize, riders: &[usize], target: usize) {
     let center = game.entities[base].position;
-    let footprint = game.type_for(1, Kind::CommandCenter).unwrap();
+    let footprint = game.type_for(0, Kind::CommandCenter).unwrap();
     // The renderer regression needs four clear firing lines. Placement alone
     // does not prove LOS; accept a site only after ordinary AI attack onEnter.
     for offset in [
@@ -189,14 +197,22 @@ fn stage_stationed_target(game: &mut Skirmish, base: usize, riders: &[usize], ta
         }
         game.stop(base).unwrap();
         game.move_to(target, wanted).unwrap();
-        advance_until(game, 18000, "durable firing target arrival", |game| {
+        advance_until(game, 18000, "paid firing target arrival", |game| {
             let position = game.entities[target].position;
             let dx = position[0] - wanted[0];
             let dy = position[1] - wanted[1];
             let squared = [dx, dy].map(|distance| distance * distance);
             squared[0] + squared[1] < 225.0 && matches!(game.entities[target].ai.order, Order::Idle)
         })
-        .unwrap();
+        .unwrap_or_else(|error| {
+            let actor = &game.entities[target];
+            panic!(
+                "{error}: target at {:?}, health {}, last attacker {:?}",
+                actor.position,
+                actor.health,
+                actor.last_attacker()
+            );
+        });
         let position = game.object_position(target);
         assert_eq!(
             game.object_transform(target).0.map(f32::to_bits),
@@ -206,7 +222,9 @@ fn stage_stationed_target(game: &mut Skirmish, base: usize, riders: &[usize], ta
             position[2].to_bits(),
             game.ground_height([position[0], position[1]]).to_bits()
         );
-        game.group_attack_objects(&[base], target, false).unwrap();
+        // A friendly vehicle can reach the station lanes without unsolicited
+        // opportunity fire. The native forced-object command starts the shot.
+        game.group_attack_objects(&[base], target, true).unwrap();
         if riders.iter().all(
             |&id| matches!(game.entities[id].ai.order, Order::Attack(victim) if victim == target),
         ) {
@@ -216,9 +234,9 @@ fn stage_stationed_target(game: &mut Skirmish, base: usize, riders: &[usize], ta
     panic!("no legal nearby target site exposes all four native station firing lines");
 }
 
-fn fixture() -> (App, Vec<usize>, Vec<Entity>) {
+fn fixture() -> (App, Stationed, Vec<Entity>) {
     let (assets, mut battle) = crate::cleanup_verification::tests::installed();
-    let riders = stationed_defenders(&mut battle.simulation);
+    let setup = stationed_defenders(&mut battle.simulation);
     let mut models = Vec::new();
     let mut animations = load(&assets, &mut models, &battle.simulation.catalog).unwrap();
     let mut app = App::new();
@@ -227,7 +245,8 @@ fn fixture() -> (App, Vec<usize>, Vec<Entity>) {
     let geometry =
         animation_fixture::geometry(&models, &mut app.world_mut().resource_mut::<Assets<Mesh>>());
     animations.retain_models(models, 123);
-    let roots = riders
+    let roots = setup
+        .riders
         .iter()
         .map(|&index| {
             app.world_mut()
@@ -250,7 +269,7 @@ fn fixture() -> (App, Vec<usize>, Vec<Entity>) {
         .insert_resource(clock)
         .insert_resource(battle)
         .add_systems(Update, update);
-    (app, riders, roots)
+    (app, setup, roots)
 }
 
 fn identities(app: &App, roots: &[Entity]) -> Vec<(Entity, AssetId<Mesh>)> {
@@ -269,15 +288,23 @@ fn reference_playback(
 ) {
     let battle = app.world().resource::<Match>();
     let animations = app.world().resource::<Animations>();
-    for (&root, player) in roots.iter().zip(players) {
-        let id = app.world().get::<UnitVisual>(root).unwrap().index;
+    let mut ordered: Vec<_> = roots
+        .iter()
+        .map(|&root| app.world().get::<UnitVisual>(root).unwrap().index)
+        .zip(players)
+        .collect();
+    // GameClient's drawable list links each new birth at its head.
+    ordered.sort_unstable_by_key(|(id, _)| {
+        std::cmp::Reverse(battle.simulation.entities[*id].drawable_birth())
+    });
+    for (id, player) in ordered {
         let actor = &battle.simulation.entities[id];
         let draw = &animations.draws[actor.type_index][0];
         let flags = object_conditions(battle, actor, animations.damage_thresholds);
         playback::select(player, draw, &animations.clips, draw.select(&flags), random);
         playback::update(
             player,
-            &draw.states[player.state],
+            draw,
             &animations.clips,
             actor.position,
             &app.world().resource::<Clock>().time(battle.simulation.tick),
@@ -353,9 +380,10 @@ fn check_geometry(app: &App, root: Entity, reference: &Player) -> usize {
 #[ignore = "requires original game installation"]
 #[test]
 fn four_stationed_missile_defenders_keep_meshes_through_real_repeated_firing_states() {
-    let (mut app, riders, roots) = fixture();
+    let (mut app, mut setup, roots) = fixture();
     let battle = app.world().resource::<Match>();
-    let mut reference: Vec<_> = riders
+    let mut reference: Vec<_> = setup
+        .riders
         .iter()
         .map(|&id| {
             Player::new(
@@ -372,13 +400,22 @@ fn four_stationed_missile_defenders_keep_meshes_through_real_repeated_firing_sta
     let assets = app.world().resource::<Assets<Mesh>>().len();
     let mut states = vec![BTreeSet::new(); 4];
     let mut shots = [0; 4];
-    for _ in 0..900 {
+    let mut replacements = 0;
+    for frame in 0..1200 {
         {
             let mut battle = app.world_mut().resource_mut::<Match>();
-            battle.simulation.step();
-            for (count, &id) in shots.iter_mut().zip(&riders) {
-                *count += battle
-                    .simulation
+            let game = &mut battle.simulation;
+            if !game.entities[setup.target].alive()
+                && replacements < 7
+                && shots.iter().any(|&count| count < 8)
+            {
+                setup.target = produce_type(game, setup.factory, setup.target_kind, 0).unwrap();
+                stage_stationed_target(game, setup.base, &setup.riders, setup.target);
+                replacements += 1;
+            }
+            game.step();
+            for (count, &id) in shots.iter_mut().zip(&setup.riders) {
+                *count += game
                     .presentation
                     .shots
                     .iter()
@@ -396,6 +433,9 @@ fn four_stationed_missile_defenders_keep_meshes_through_real_repeated_firing_sta
         assert_eq!(app.world().resource::<Assets<Mesh>>().len(), assets);
         for ((&root, reference), states) in roots.iter().zip(&reference).zip(&mut states) {
             states.insert(check_geometry(&app, root, reference));
+        }
+        if frame >= 899 && shots.iter().all(|&count| count >= 8) {
+            break;
         }
     }
     assert!(shots.iter().all(|&count| count >= 8), "shots={shots:?}");

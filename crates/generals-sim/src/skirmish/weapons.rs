@@ -71,6 +71,7 @@ pub struct WeaponRules {
     pub aim_delta: f32,
     pub target_pitch: [f32; 2],
     pub delay: f32,
+    pub delay_frames: Option<[u32; 2]>,
     pub pre_attack_frames: u32,
     pub pre_attack_type: Prefire,
     pub continue_attack_range: f32,
@@ -137,6 +138,7 @@ impl WeaponRules {
             aim_delta: 0.0,
             target_pitch: [-std::f32::consts::PI, std::f32::consts::PI],
             delay: 0.0,
+            delay_frames: None,
             pre_attack_frames: 0,
             pre_attack_type: Prefire::Shot,
             continue_attack_range: 0.0,
@@ -158,9 +160,30 @@ impl WeaponRules {
     }
 }
 
+impl WeaponRules {
+    /// `WeaponTemplate::getDelayBetweenShots`: choose the inclusive native
+    /// frame range before applying the fire-time rate bonus and flooring.
+    pub(in crate::skirmish) fn sample_shot_delay(&self, random: &mut [u32; 6], rate: f32) -> u32 {
+        let base = self.delay_frames.map_or_else(
+            || (self.delay * 30.0).ceil(),
+            |[minimum, maximum]| {
+                let sampled = minimum + super::startup::random_between(random, maximum - minimum);
+                super::progression::integer_real(sampled)
+            },
+        );
+        super::progression::real_unsigned((base / rate).floor())
+    }
+}
+
 impl UnitType {
     #[must_use]
     pub fn weapon_template(&self, index: usize) -> Option<&WeaponRules> {
+        if index >= self.power_weapon_start() {
+            return self
+                .behavior
+                .power_weapons
+                .get(index - self.power_weapon_start());
+        }
         if index >= self.collision_weapon_start() {
             return self
                 .behavior
@@ -241,6 +264,10 @@ impl UnitType {
 
     #[must_use]
     pub fn weapon_template_count(&self) -> usize {
+        self.power_weapon_start() + self.behavior.power_weapons.len()
+    }
+
+    pub(in crate::skirmish) fn power_weapon_start(&self) -> usize {
         self.collision_weapon_start() + self.behavior.collision_weapons.len()
     }
 
@@ -313,6 +340,10 @@ impl UnitType {
     }
 
     pub fn weapon_template_mut(&mut self, index: usize) -> Option<&mut WeaponRules> {
+        let start = self.power_weapon_start();
+        if index >= start {
+            return self.behavior.power_weapons.get_mut(index - start);
+        }
         let collide_start = self.collision_weapon_start();
         if index >= collide_start {
             return self
@@ -893,6 +924,9 @@ pub(super) fn validate(unit: &UnitType) -> Result<(), &'static str> {
             || !weapon.aim_delta.is_finite()
             || weapon.target_pitch.iter().any(|value| !value.is_finite())
             || weapon.damage > 1_000_000.0
+            || weapon
+                .delay_frames
+                .is_some_and(|[minimum, maximum]| minimum > maximum)
         {
             return Err("Invalid weapon source values");
         }

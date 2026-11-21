@@ -42,6 +42,7 @@ pub(super) fn load(
                     | "BattleBusSlowDeathBehavior"
                     | "JetSlowDeathBehavior"
                     | "HelicopterSlowDeathBehavior"
+                    | "NeutronMissileSlowDeathBehavior"
             )
         })
     }) && !fake
@@ -70,7 +71,8 @@ pub(super) fn load(
             "SlowDeathBehavior"
             | "BattleBusSlowDeathBehavior"
             | "JetSlowDeathBehavior"
-            | "HelicopterSlowDeathBehavior",
+            | "HelicopterSlowDeathBehavior"
+            | "NeutronMissileSlowDeathBehavior",
         ) = module[0].tokens.get(1).map(String::as_str)
         {
             let mut rule = slow(files, module, &mut rules.weapons)?;
@@ -84,6 +86,9 @@ pub(super) fn load(
                 "HelicopterSlowDeathBehavior" => Derived::Helicopter(Box::new(
                     super::helicopter_death::load(files, object, module)?,
                 )),
+                "NeutronMissileSlowDeathBehavior" => {
+                    Derived::Neutron(Box::new(super::neutron_missile::load_death(files, module)?))
+                }
                 _ => Derived::None,
             };
             rules.slow.push(rule);
@@ -161,6 +166,7 @@ fn slow(
             | "BattleBusSlowDeathBehavior"
             | "JetSlowDeathBehavior"
             | "HelicopterSlowDeathBehavior"
+            | "NeutronMissileSlowDeathBehavior"
     );
     for line in module
         .iter()
@@ -365,6 +371,25 @@ fn derived_field(family: &str, key: &str) -> bool {
                 | "SoundDeathLoop"
                 | "MaxBraking"
         ),
+        "NeutronMissileSlowDeathBehavior" => {
+            key == "FXList"
+                || key == "ScorchMarkSize"
+                || key.strip_prefix("Blast").is_some_and(|field| {
+                    matches!(field.as_bytes().first(), Some(b'1'..=b'9'))
+                        && matches!(
+                            &field[1..],
+                            "Enabled"
+                                | "Delay"
+                                | "ScorchDelay"
+                                | "InnerRadius"
+                                | "OuterRadius"
+                                | "MaxDamage"
+                                | "MinDamage"
+                                | "ToppleSpeed"
+                                | "PushForce"
+                        )
+                })
+        }
         _ => false,
     }
 }

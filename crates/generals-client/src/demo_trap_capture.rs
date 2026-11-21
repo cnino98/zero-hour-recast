@@ -20,6 +20,7 @@ struct Check {
     setup: Setup,
     proximity: bool,
     stage: u8,
+    submitted_frame: Option<u64>,
     health: f32,
     warning: Option<u64>,
     explosion: Option<(u64, [f32; 3])>,
@@ -34,6 +35,7 @@ impl Check {
             setup,
             proximity,
             stage: 0,
+            submitted_frame: None,
             warning: None,
             explosion: None,
             audio: [false; 2],
@@ -133,7 +135,11 @@ fn record(
     if check.stage == 255 {
         return;
     }
-    match check.observe(&battle.into_inner().simulation) {
+    let game = &battle.into_inner().simulation;
+    if check.stage == 5 && check.submitted_frame.is_some_and(|frame| game.tick > frame) {
+        clock.pause();
+    }
+    match check.observe(game) {
         Ok(true) => clock.pause(),
         Ok(false) => {}
         Err(error) => {

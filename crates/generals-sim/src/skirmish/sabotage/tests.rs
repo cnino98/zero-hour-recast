@@ -386,6 +386,89 @@ fn command_center_resets_existing_shared_timers_but_creates_missing_timers_ready
 }
 
 #[test]
+fn native_sabotage_restarts_each_target_module_without_triggering_or_unpausing_it() {
+    use crate::skirmish::{special_power, tests::register_behavior};
+
+    for (effect, kind) in [
+        (Effect::Superweapon, "FS_SUPERWEAPON"),
+        (Effect::CommandCenter, "COMMANDCENTER"),
+    ] {
+        let (mut game, actor, _) = fixture(effect, kind);
+        for (name, shared, paused) in [
+            ("TargetLocal", false, false),
+            ("TargetPaused", false, true),
+            ("TargetSharedExisting", true, false),
+            ("TargetSharedMissing", true, false),
+        ] {
+            let unit = &mut game.catalog[0];
+            unit.special_powers.push(special_power::Rules {
+                name: name.into(),
+                tag: name.into(),
+                power_type: "SPECIAL_SCUD_STORM".into(),
+                required_science: String::new(),
+                view_range: 0.0,
+                view_frames: 0,
+                view_template: None,
+                initiate_sound: String::new(),
+                target_sound: String::new(),
+                module_initiate_sound: String::new(),
+                academy_classification: "ACT_NONE".into(),
+                update_starts_attack: false,
+                timer: special_power::Timer {
+                    reload_frames: 9000,
+                    shared,
+                    public: true,
+                },
+                startup: special_power::Startup {
+                    paused,
+                    ready: false,
+                },
+                script_only: false,
+            });
+            register_behavior(unit, "OCLSpecialPower", 0x0100);
+            unit.behavior_modules.last_mut().unwrap().tag = name.into();
+        }
+        let target = game.spawn(0, 1, [400.0, 300.0], true);
+        let sibling = game.spawn(0, 1, [470.0, 300.0], true);
+        let ally = game.spawn(0, 0, [400.0, 400.0], true);
+        game.update_visibility();
+        game.players[1]
+            .special_power_ready
+            .insert("TargetSharedExisting".into(), 30);
+        game.players[1]
+            .special_power_ready
+            .remove("TargetSharedMissing");
+        game.players[1]
+            .special_power_ready
+            .insert("Unrelated".into(), 777);
+        game.players[0]
+            .special_power_ready
+            .insert("TargetSharedExisting".into(), 333);
+        game.tick = 100;
+        game.sabotage(actor, target).unwrap();
+        assert!(game.sabotage_contact(actor, target));
+        assert_eq!(game.special_power_remaining(target, "TargetLocal"), 9000);
+        assert_eq!(game.special_power_remaining(sibling, "TargetLocal"), 8900);
+        assert_eq!(game.special_power_remaining(ally, "TargetLocal"), 8900);
+        assert!(!game.special_power_ready(target, "TargetPaused"));
+        assert_eq!(
+            game.players[1].special_power_ready["TargetSharedExisting"],
+            9100
+        );
+        assert_eq!(
+            game.players[1].special_power_ready["TargetSharedMissing"],
+            100
+        );
+        assert_eq!(game.players[1].special_power_ready["Unrelated"], 777);
+        assert_eq!(
+            game.players[0].special_power_ready["TargetSharedExisting"],
+            333
+        );
+        assert!(game.special_power_triggers.is_empty());
+    }
+}
+
+#[test]
 fn fake_building_takes_detonated_damage_with_saboteur_kill_attribution() {
     let (mut game, actor, target) = fixture(Effect::FakeBuilding, "FS_FAKE");
     let destroyed = game.players[0].statistics.buildings_destroyed;

@@ -97,7 +97,7 @@ impl Animations {
                     for frame in [0.0, 0.0, 0.5, 1.0] {
                         player.frame = frame;
                         if let Some(pose) =
-                            super::world_pose(&mut player, state, &self.models, &self.clips)
+                            super::world_pose(&mut player, draw, &self.models, &self.clips)
                         {
                             previous = Some(pose);
                         }

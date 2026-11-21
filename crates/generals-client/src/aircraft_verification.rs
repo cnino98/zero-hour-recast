@@ -414,6 +414,7 @@ mod tests {
             Some(PickTarget::Unit(setup.target)),
             &mut mouse,
         ));
+        input::commands::step(&mut battle, &mut mouse);
         assert!(
             matches!(battle.simulation.entities[setup.comanche].ai.order, Order::Attack(id) if id == setup.target)
         );

@@ -213,6 +213,7 @@ impl Skirmish {
             shot_rate,
             reload_rate,
             unit.weapon_set_rules.share_reload,
+            &mut self.random,
         );
         // The remaining order adapters read a countdown; the native deadline stays authoritative.
         let frames = super::ai_dispatch::native_frame(state.possible_next_shot).saturating_sub(now);
@@ -500,6 +501,16 @@ impl Skirmish {
                 "JetSlowDeathBehavior" => self.jet_slow_death_on_die(target, ordinal),
                 "HelicopterSlowDeathBehavior" => self.helicopter_slow_death_on_die(target, ordinal),
                 "BattleBusSlowDeathBehavior" => self.battle_bus_slow_death_on_die(target, ordinal),
+                "NeutronMissileUpdate" => self.on_neutron_missile_die(target),
+                "NeutronMissileSlowDeathBehavior" => {
+                    let index =
+                        self.slow_death_index(target, "NeutronMissileSlowDeathBehavior", ordinal);
+                    self.native_slow_death_on_die(target, index);
+                }
+                "SpecialPowerCompletionDie" => {
+                    self.special_power_completion_on_die(target, ordinal);
+                }
+                "LeafletDropBehavior" => self.leaflet_disable(target, ordinal),
                 "SpawnBehavior" => self.spawn_on_die(target, ordinal),
                 "ProductionUpdate" => self.refund_production_instance(target, ordinal),
                 "TunnelContain" => self.tunnel_on_die(target),

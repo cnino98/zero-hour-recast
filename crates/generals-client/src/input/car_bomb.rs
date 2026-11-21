@@ -44,7 +44,7 @@ pub fn issue(battle: &mut Match, mouse: &mut Mouse, target: usize, context: bool
     } else {
         Voice::EnterHostile
     };
-    let response = VoiceRequest::new(&battle.simulation, &battle.selected, voice, false);
+    let response = VoiceRequest::new(&battle.simulation, battle.command_drawables(), voice, false);
     let mut issued = false;
     for id in battle.command_message_members() {
         if locally_controlled(battle, id) && battle.simulation.can_make_car_bomb(id, target) {

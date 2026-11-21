@@ -134,12 +134,21 @@ impl Skirmish {
                 self.sabotage_power(victim);
             }
             Effect::Superweapon | Effect::CommandCenter => {
+                // Both native CrateCollide variants call startPowerRecharge
+                // on every target SpecialPowerModule, including paused powers.
+                let provider = &self.catalog[self.entities[target].type_index];
+                for ordinal in 0..provider.special_powers.len() {
+                    self.recharge_special_power(target, ordinal);
+                }
                 if let Some(progression) = &self.progression {
-                    let powers = &self.catalog[self.entities[target].type_index]
-                        .progression
-                        .powers;
+                    let provider = &self.catalog[self.entities[target].type_index];
                     for (index, power) in progression.powers.iter().enumerate() {
-                        if powers.contains(&power.name) {
+                        if provider.progression.powers.contains(&power.name)
+                            && !provider
+                                .special_powers
+                                .iter()
+                                .any(|rules| rules.name == power.name)
+                        {
                             let timer = &mut self.players[victim].power_ready_at[index];
                             *timer = Some(if timer.is_some() {
                                 self.tick + u64::from(power.reload_frames)

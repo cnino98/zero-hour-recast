@@ -215,11 +215,22 @@ fn approach(
         18_000,
         "paid Saboteur approaching enemy building",
         |game| {
-            let current = game.entities[actor].position;
-            (current[0] - point[0]).hypot(current[1] - point[1]) < 15.0
-                && game.visible_to(0, target)
+            // The pathfinder can choose a nearby clear cell for this point.
+            // Wait for the actual move to finish before issuing the enter goal.
+            let unit = &game.entities[actor];
+            matches!(unit.ai.order, Order::Idle)
+                && (unit.position[0] - origin[0]).hypot(unit.position[1] - origin[1]) > 0.0
+                && game.can_sabotage(actor, target)
         },
-    )?;
+    )
+    .map_err(|error| {
+        format!(
+            "{error}; target={} center={center:?} requested={point:?} visible={}; {}",
+            game.catalog[game.entities[target].type_index].name,
+            game.visible_to(0, target),
+            generals_sim::skirmish::diagnostics::movement_details(game, actor)
+        )
+    })?;
     game.stop(actor)?;
     require(
         game.entities[actor].alive(),
@@ -649,19 +660,26 @@ fn issue_context_command(
     battle: &mut Match,
     mouse: &mut Mouse,
 ) -> Result<(), Box<dyn Error>> {
+    if let Some(submitted) = check.command {
+        if battle.simulation.tick == submitted {
+            return Ok(());
+        }
+        require(
+            matches!(battle.simulation.entities[check.setup.actor].ai.order,
+                Order::Enter(id) if id == check.setup.factory),
+            "native context command did not route through original enter goal",
+        )?;
+        battle.observer_player = Some(1);
+        check.stage = 2;
+        return Ok(());
+    }
     queue_factory(&mut battle.simulation, &check.setup)?;
     let target = check.setup.factory;
     require(
         input::context_order(battle, None, Some(PickTarget::Unit(target)), mouse),
         "native hostile-building context command rejected Saboteur",
     )?;
-    require(
-        matches!(battle.simulation.entities[check.setup.actor].ai.order, Order::Enter(id) if id == target),
-        "native context command did not route through original enter goal",
-    )?;
     check.command = Some(battle.simulation.tick);
-    battle.observer_player = Some(1);
-    check.stage = 2;
     Ok(())
 }
 
@@ -773,6 +791,9 @@ fn inspect(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::skirmish_verification::construct_type;
+
     #[ignore = "requires original game installation"]
     #[test]
     fn installed_paid_saboteur_contacts_preserve_theft_and_factory_duration() {
@@ -786,5 +807,87 @@ mod tests {
         let root = &generals_assets::game_root().unwrap();
         let mut game = crate::opponent_verification::load_game(root, super::MAP_NAME).unwrap();
         super::verify_fake_building(&mut game).unwrap();
+    }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_saboteur_restarts_each_original_superweapon_countdown() -> Result<(), Box<dyn Error>> {
+        let root = generals_assets::game_root()?;
+        let mut game = crate::opponent_verification::load_game(&root, MAP_NAME)?;
+        game.set_match_options(50_000, 1);
+        for (faction, tech, provider, power) in [
+            (
+                Faction::Usa,
+                "AmericaStrategyCenter",
+                "AmericaParticleCannonUplink",
+                "SuperweaponParticleUplinkCannon",
+            ),
+            (
+                Faction::China,
+                "ChinaPropagandaCenter",
+                "ChinaNuclearMissileLauncher",
+                "SuperweaponNeutronMissile",
+            ),
+            (
+                Faction::Gla,
+                "GLAPalace",
+                "GLAScudStorm",
+                "SuperweaponScudStorm",
+            ),
+        ] {
+            game.reset(Faction::Gla, faction)?;
+            let worker = friendly_entity(&game, Kind::Builder, 0)?;
+            construct(&mut game, worker, Kind::SupplyCenter, 0)?;
+            let barracks = construct(&mut game, worker, Kind::Barracks, 0)?;
+            construct(&mut game, worker, Kind::Factory, 0)?;
+            let actor_type = template(&game, "GLAInfantrySaboteur")?;
+            let actor = produce_type(&mut game, barracks, actor_type, 0)?;
+
+            let builder = friendly_entity(&game, Kind::Builder, 1)?;
+            if faction != Faction::Gla {
+                for _ in 0..3 {
+                    construct(&mut game, builder, Kind::PowerPlant, 1)?;
+                }
+            }
+            construct(&mut game, builder, Kind::SupplyCenter, 1)?;
+            construct(&mut game, builder, Kind::Factory, 1)?;
+            let tech = template(&game, tech)?;
+            construct_type(&mut game, builder, tech, 1)?;
+            let provider = template(&game, provider)?;
+            let target = construct_type(&mut game, builder, provider, 1)?;
+            let rule = game.catalog[provider]
+                .special_powers
+                .iter()
+                .find(|rule| rule.name == power)
+                .ok_or("missing authored superweapon recharge rule")?;
+            let reload = rule.timer.reload_frames;
+            let site = game
+                .placement_near(provider, game.entities[builder].position)
+                .ok_or("no second-superweapon placement candidate")?;
+            let cash = game.players[1].cash;
+            assert!(game.build(builder, provider, site).is_err());
+            assert_eq!(game.players[1].cash, cash);
+            approach(&mut game, actor, target, 30.0)?;
+            advance_until(
+                &mut game,
+                reload + 1,
+                "paid target superweapon before sabotage",
+                |game| game.can_use_power(target, power),
+            )?;
+            let health = game.entities[target].health.to_bits();
+            let lost = game.players[0].statistics.units_lost;
+            game.sabotage(actor, target)?;
+            let (_, _, module) = contact(&mut game, actor, target)?;
+            assert!(matches!(
+                game.catalog[actor_type].behavior.sabotage[module].effect,
+                Effect::Superweapon
+            ));
+            assert_eq!(game.entities[target].health.to_bits(), health);
+            assert_eq!(game.players[0].statistics.units_lost, lost);
+            assert!(!game.can_use_power(target, power));
+            assert_eq!(game.power_cooldown_remaining(target, power), reload);
+            assert!(game.special_power_triggers.is_empty());
+        }
+        Ok(())
     }
 }

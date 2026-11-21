@@ -18,9 +18,6 @@ pub(super) fn descriptor(family: &str) -> Option<Descriptor> {
         | "AssaultTransportAIUpdate"
         | "DeliverPayloadAIUpdate"
         | "MissileAIUpdate" => (0, 1 << 3, &[]),
-        "SpectreGunshipUpdate" | "SpectreGunshipDeploymentUpdate" => {
-            (2, (1 << 10) | (1 << 6) | (1 << 2) | (1 << 1), &[])
-        }
         "SupplyWarehouseDockUpdate"
         | "SupplyCenterDockUpdate"
         | "RepairDockUpdate"
@@ -76,7 +73,8 @@ pub(super) fn descriptor(family: &str) -> Option<Descriptor> {
         | "SlowDeathBehavior"
         | "JetSlowDeathBehavior"
         | "HelicopterSlowDeathBehavior"
-        | "BattleBusSlowDeathBehavior" => (2, (1 << 13) - 1, &[FOREVER]),
+        | "BattleBusSlowDeathBehavior"
+        | "NeutronMissileSlowDeathBehavior" => (2, (1 << 13) - 1, &[FOREVER]),
         "NeutronBlastBehavior"
         | "StructureCollapseUpdate"
         | "StructureToppleUpdate"
@@ -97,6 +95,30 @@ pub(super) fn descriptor(family: &str) -> Option<Descriptor> {
             (2, 1 << 3, &[])
         }
         "PropagandaTowerBehavior" => (2, (1 << 13) - 1, &[1]),
+        _ => return power_descriptor(family),
+    };
+    Some(Descriptor {
+        phase,
+        disabled_types,
+        constructor_wakes,
+    })
+}
+
+fn power_descriptor(family: &str) -> Option<Descriptor> {
+    let (phase, disabled_types, constructor_wakes): (u32, u32, &[u32]) = match family {
+        "SpectreGunshipUpdate"
+        | "SpectreGunshipDeploymentUpdate"
+        | "ParticleUplinkCannonUpdate" => (2, (1 << 10) | (1 << 6) | (1 << 2) | (1 << 1), &[]),
+        "MissileLauncherBuildingUpdate"
+        | "EMPUpdate"
+        | "NeutronMissileUpdate"
+        | "LeafletDropBehavior" => (2, 0, &[]),
+        "GrantStealthBehavior"
+        | "DynamicShroudClearingRangeUpdate"
+        | "SmartBombTargetHomingUpdate"
+        // WeaponBonusUpdate's constructor calls setWakeFrame(UPDATE_SLEEP_NONE).
+        | "WeaponBonusUpdate" => (2, 0, &[1]),
+        "RadiusDecalUpdate" => (2, 0, &[FOREVER]),
         _ => return None,
     };
     Some(Descriptor {
@@ -370,16 +392,6 @@ fn validate_death_registration(
             unit.name
         ));
     }
-    if unit
-        .behavior_modules
-        .iter()
-        .any(|module| matches!(module.family.as_str(), "NeutronMissileSlowDeathBehavior"))
-    {
-        return Err(format!(
-            "{}: mixed ordinary and derived SlowDeath selectors require the derived interface",
-            unit.name
-        ));
-    }
     if unit.kind_of.iter().any(|kind| kind == "PROJECTILE")
         && rules.slow.iter().any(|rule| rule.fling.is_some())
     {
@@ -426,7 +438,9 @@ fn validate_exits(unit: &crate::skirmish::UnitType) -> Result<(), String> {
     Ok(())
 }
 
-fn instance_counts(unit: &crate::skirmish::UnitType) -> [(&'static str, usize); 53] {
+fn instance_counts(
+    unit: &crate::skirmish::UnitType,
+) -> impl Iterator<Item = (&'static str, usize)> {
     let behavior = &unit.behavior;
     [
         (
@@ -525,6 +539,35 @@ fn instance_counts(unit: &crate::skirmish::UnitType) -> [(&'static str, usize); 
             usize::from(behavior.propaganda.is_some()),
         ),
     ]
+    .into_iter()
+    .chain(power_instance_counts(unit))
+}
+
+fn power_instance_counts(unit: &crate::skirmish::UnitType) -> [(&'static str, usize); 9] {
+    let behavior = &unit.behavior;
+    [
+        (
+            "ParticleUplinkCannonUpdate",
+            unit.behavior.particle_uplinks.len(),
+        ),
+        ("LeafletDropBehavior", behavior.leaflet_drops.len()),
+        ("SmartBombTargetHomingUpdate", behavior.smart_bombs.len()),
+        ("WeaponBonusUpdate", behavior.weapon_bonuses.len()),
+        (
+            "MissileLauncherBuildingUpdate",
+            usize::from(behavior.nuclear_launcher.is_some()),
+        ),
+        ("EMPUpdate", usize::from(behavior.emp.is_some())),
+        (
+            "NeutronMissileUpdate",
+            usize::from(behavior.neutron_missile.is_some()),
+        ),
+        ("GrantStealthBehavior", behavior.gps_scramblers.len()),
+        (
+            "DynamicShroudClearingRangeUpdate",
+            behavior.dynamic_shroud.len(),
+        ),
+    ]
 }
 
 fn validate_instance_counts(unit: &crate::skirmish::UnitType) -> Result<(), String> {
@@ -617,8 +660,6 @@ impl Skirmish {
             "ProneUpdate" => self.update_prone(owner, ordinal),
             "SupplyWarehouseCripplingBehavior" => self.update_supply_crippling(owner, ordinal),
             "DemoTrapUpdate" => self.update_demo_trap(owner, ordinal),
-            "SpectreGunshipUpdate" => self.update_spectre(owner),
-            "SpectreGunshipDeploymentUpdate" => self.update_spectre_deployment(owner, ordinal),
             "PowerPlantUpdate" => self.update_power_plant(owner, ordinal),
             "OverchargeBehavior" => self.update_overcharge(owner, ordinal),
             "AutoDepositUpdate" => self.update_auto_deposit(owner, ordinal),
@@ -664,6 +705,30 @@ impl Skirmish {
             "StealthDetectorUpdate" => self.update_stealth_detector(owner, ordinal),
             "PropagandaTowerBehavior" => self.update_propaganda_module(owner),
             "BattlePlanUpdate" => self.update_battle_plan_module(owner),
+            _ => self.update_power_module(owner, registration, ordinal),
+        }
+    }
+
+    fn update_power_module(&mut self, owner: usize, registration: usize, ordinal: usize) -> i32 {
+        let ModuleRegistration::Behavior { family, .. } =
+            &self.catalog[self.entities[owner].type_index].update_modules[registration]
+        else {
+            unreachable!("helper dispatched as declared behavior");
+        };
+        match family.as_str() {
+            "SpectreGunshipUpdate" => self.update_spectre(owner),
+            "SpectreGunshipDeploymentUpdate" => self.update_spectre_deployment(owner, ordinal),
+            "ParticleUplinkCannonUpdate" => self.update_particle_uplink(owner, ordinal),
+            "MissileLauncherBuildingUpdate" => self.update_nuclear_launcher(owner),
+            "EMPUpdate" => self.update_emp(owner),
+            "NeutronMissileUpdate" => self.update_neutron_missile(owner),
+            "NeutronMissileSlowDeathBehavior" => self.update_neutron_death(owner, ordinal),
+            "GrantStealthBehavior" => self.update_gps_scrambler(owner, ordinal),
+            "DynamicShroudClearingRangeUpdate" => self.update_dynamic_shroud(owner, ordinal),
+            "RadiusDecalUpdate" => self.update_radius_decal(owner),
+            "LeafletDropBehavior" => self.update_leaflet_drop(owner, ordinal),
+            "SmartBombTargetHomingUpdate" => self.update_smart_bomb(owner, ordinal),
+            "WeaponBonusUpdate" => self.update_weapon_bonus(owner, ordinal),
             _ => unreachable!("unbound update family passed admission"),
         }
     }
@@ -726,7 +791,15 @@ impl Skirmish {
                     .count();
                 self.construct_death_fx(owner, ordinal);
             }
-            if self.catalog[type_index].behavior_modules[index].family == "SpecialAbility" {
+            if matches!(
+                self.catalog[type_index].behavior_modules[index]
+                    .family
+                    .as_str(),
+                "SpecialAbility"
+                    | "OCLSpecialPower"
+                    | "SpyVisionSpecialPower"
+                    | "CashHackSpecialPower"
+            ) {
                 let tag = &self.catalog[type_index].behavior_modules[index].tag;
                 if let Some(ordinal) = self.catalog[type_index]
                     .special_powers
@@ -897,8 +970,6 @@ impl Skirmish {
                 self.construct_slow_death(owner, self.slow_death_index(owner, family, ordinal));
             }
             "DemoTrapUpdate" => self.construct_demo_trap(owner, ordinal),
-            "SpectreGunshipUpdate" => self.construct_spectre(owner),
-            "SpectreGunshipDeploymentUpdate" => self.construct_spectre_deployment(owner),
             "PowerPlantUpdate" => self.construct_power_plant(owner, ordinal),
             "OverchargeBehavior" => self.construct_overcharge(owner, ordinal),
             "AutoDepositUpdate" => self.construct_auto_deposit(owner, ordinal),
@@ -943,6 +1014,31 @@ impl Skirmish {
             | "NeutronBlastBehavior"
             | "FireSpreadUpdate"
             | "TechBuildingBehavior" => {}
+            _ => self.construct_power_module(owner, registration, ordinal),
+        }
+    }
+    fn construct_power_module(&mut self, owner: usize, registration: usize, ordinal: usize) {
+        let ModuleRegistration::Behavior { family, .. } =
+            &self.catalog[self.entities[owner].type_index].update_modules[registration]
+        else {
+            unreachable!("helper dispatched as declared behavior");
+        };
+        match family.as_str() {
+            "SpectreGunshipUpdate" => self.construct_spectre(owner),
+            "SpectreGunshipDeploymentUpdate" => self.construct_spectre_deployment(owner),
+            "ParticleUplinkCannonUpdate" => self.construct_particle_uplink(owner, ordinal),
+            "EMPUpdate" => self.construct_emp(owner),
+            "LeafletDropBehavior" => self.construct_leaflet_drop(owner, ordinal),
+            "SmartBombTargetHomingUpdate" => self.construct_smart_bomb(owner),
+            "GrantStealthBehavior" => self.construct_gps_scrambler(owner),
+            "DynamicShroudClearingRangeUpdate" => self.construct_dynamic_shroud(owner, ordinal),
+            "NeutronMissileSlowDeathBehavior" => {
+                self.construct_slow_death(owner, self.slow_death_index(owner, family, ordinal));
+            }
+            "WeaponBonusUpdate"
+            | "MissileLauncherBuildingUpdate"
+            | "NeutronMissileUpdate"
+            | "RadiusDecalUpdate" => {}
             _ => unreachable!("unbound update constructor {family} passed admission"),
         }
     }

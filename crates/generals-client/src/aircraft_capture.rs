@@ -34,9 +34,11 @@ struct Check {
 
 enum Stage {
     Waiting,
+    RaptorOrder,
     Raptor,
     RaptorCaptured,
     Approach,
+    ComancheOrder,
     Comanche,
     RocketPods,
     Done,
@@ -67,7 +69,12 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
 pub fn register(app: &mut App) {
     rocket_pods::register(app);
     app.add_systems(PreUpdate, (begin, inspect_audio).chain());
-    app.add_systems(FixedUpdate, record_shots.after(crate::laser_beam::record));
+    app.add_systems(
+        FixedUpdate,
+        (record_order, record_shots)
+            .chain()
+            .after(crate::laser_beam::record),
+    );
     app.add_systems(
         PostUpdate,
         inspect.after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
@@ -91,7 +98,7 @@ fn begin(mut check: ResMut<Check>, mut control: Control) {
     }
     let actor = if matches!(
         check.stage,
-        Stage::Waiting | Stage::Raptor | Stage::RaptorCaptured
+        Stage::Waiting | Stage::RaptorOrder | Stage::Raptor | Stage::RaptorCaptured
     ) {
         check.setup.raptor
     } else {
@@ -169,9 +176,9 @@ fn begin(mut check: ResMut<Check>, mut control: Control) {
                 "aircraft attack did not request original voice",
             )?;
             check.stage = if matches!(check.stage, Stage::Waiting) {
-                Stage::Raptor
+                Stage::RaptorOrder
             } else {
-                Stage::Comanche
+                Stage::ComancheOrder
             };
             check.began = control.battle.simulation.tick;
             control.time.unpause();
@@ -183,6 +190,35 @@ fn begin(mut check: ResMut<Check>, mut control: Control) {
         error!("Native aircraft input: {error}");
         control.exit.write(AppExit::error());
     }
+}
+
+fn record_order(mut check: ResMut<Check>, battle: Res<Match>, mut exit: MessageWriter<AppExit>) {
+    let battle = battle.into_inner();
+    if !matches!(check.stage, Stage::RaptorOrder | Stage::ComancheOrder)
+        || battle.simulation.tick <= check.began
+    {
+        return;
+    }
+    let actor = if matches!(check.stage, Stage::RaptorOrder) {
+        check.setup.raptor
+    } else {
+        check.setup.comanche
+    };
+    if let Err(error) = require(
+        matches!(battle.simulation.entities[actor].ai.order,
+            generals_sim::skirmish::Order::Attack(target) if target == check.setup.target),
+        "queued aircraft attack did not reach its original target",
+    ) {
+        check.stage = Stage::Done;
+        error!("Native aircraft input: {error}");
+        exit.write(AppExit::error());
+        return;
+    }
+    check.stage = if matches!(check.stage, Stage::RaptorOrder) {
+        Stage::Raptor
+    } else {
+        Stage::Comanche
+    };
 }
 
 fn record_shots(mut check: ResMut<Check>, battle: Res<Match>) {
@@ -400,9 +436,11 @@ fn missile(
 fn diagnostic(check: &Check, battle: &Match, focus: Vec2, ready: bool) -> String {
     let stage = match check.stage {
         Stage::Waiting => "waiting",
+        Stage::RaptorOrder => "raptor attack queued",
         Stage::Raptor => "raptor",
         Stage::RaptorCaptured => "raptor captured",
         Stage::Approach => "comanche approach",
+        Stage::ComancheOrder => "comanche attack queued",
         Stage::Comanche => "comanche",
         Stage::RocketPods => "rocket pods",
         Stage::Done => "done",

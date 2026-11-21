@@ -103,6 +103,29 @@ impl TerrainContext<'_> {
         self.terrain.map_or(0.0, |terrain| terrain.sample(point))
     }
 
+    pub(in crate::skirmish) fn water_surface(&self, point: [f32; 2], ground: f32) -> f32 {
+        self.layers
+            .parachute_water_height(point, ground)
+            .unwrap_or(ground)
+    }
+
+    pub(in crate::skirmish) fn flight_layer_surface(
+        &self,
+        point: [f32; 2],
+        height: f32,
+        mut layer: u8,
+    ) -> f32 {
+        let ground = self.ground_height(point);
+        if layer == 1 {
+            layer = self.layers.get_highest_layer_for_destination(
+                [point[0], point[1], height],
+                ground,
+                false,
+            );
+        }
+        self.layers.destination_layer_height(layer, point, ground)
+    }
+
     pub(in crate::skirmish) fn aligned(
         &self,
         position: [f32; 3],

@@ -264,6 +264,7 @@ fn list() -> List {
     List {
         name: "OCL_RaptorDeathInitial".into(),
         initial_force: None,
+        ordinary_nuggets: Vec::new(),
         nuggets: vec![Nugget {
             names: vec!["AVRaptor_D4".into()],
             debris_mass: Some(3.0),
@@ -289,6 +290,68 @@ fn list() -> List {
             lifetime: None,
         }],
     }
+}
+
+#[test]
+fn mixed_death_list_creates_rangers_before_debris_only_for_live_players() {
+    use crate::skirmish::object_creation::{
+        IGNORE_PRIMARY_OBSTACLE, Object, PRESERVE_LAYER, REQUIRES_LIVE_PLAYER,
+    };
+
+    let (mut game, source) = fixture();
+    let ranger = game.catalog.len();
+    let mut infantry = fixture_type(Faction::Usa, Kind::Infantry);
+    infantry.name = "AmericaInfantryRanger".into();
+    game.catalog.push(infantry);
+    let sink = game.spawn(6, 0, [600.0, 600.0], true);
+    game.entities[source].set_experience_sink(Some(sink));
+    let mut list = list();
+    list.nuggets[0].count = 3;
+    list.ordinary_nuggets.push((
+        0,
+        Object {
+            names: vec!["AmericaInfantryRanger".into()],
+            count: 6,
+            offset: [0.0; 3],
+            disposition: super::SEND_OUT,
+            health: [1.0; 2],
+            lifetime: [0; 2],
+            flags: REQUIRES_LIVE_PLAYER | IGNORE_PRIMARY_OBSTACLE | PRESERVE_LAYER,
+            container: String::new(),
+            invulnerable_time: 0,
+            force_intensity: 4.0,
+            force_magnitude: [0.0; 2],
+            force_pitch: [0.0; 2],
+            spin_rate: -1.0,
+            formation_distances: [0.0; 3],
+            fade_frames: 0,
+            fade_sound: String::new(),
+        },
+    ));
+    let live = game.create_physical_ocl(source, &list).unwrap();
+    assert_eq!(live.len(), 9);
+    assert!(live[..6].iter().all(|&id| {
+        game.entities[id].type_index == ranger
+            && game.entities[id].owner == 0
+            && game.entities[id].producer() == Some(source)
+    }));
+    assert!(
+        live[6..]
+            .iter()
+            .all(|&id| game.entities[id].physical_model().is_some())
+    );
+    assert!(
+        live.iter()
+            .all(|&id| game.entities[id].experience_sink.is_none())
+    );
+    game.defeated[0] = true;
+    let defeated = game.create_physical_ocl(source, &list).unwrap();
+    assert_eq!(defeated.len(), 3);
+    assert!(
+        defeated
+            .iter()
+            .all(|&id| game.entities[id].physical_model().is_some())
+    );
 }
 
 #[test]
@@ -948,6 +1011,7 @@ fn initial_random_force_runs_before_model_choice_and_null_physics_draws_nothing(
     let force_only = List {
         name: "SourceForce".into(),
         initial_force: list.initial_force.clone(),
+        ordinary_nuggets: Vec::new(),
         nuggets: Vec::new(),
     };
     game.create_physical_ocl(source, &force_only).unwrap();
@@ -1026,6 +1090,9 @@ fn ordinary_create_object_keeps_layer_inherits_force_and_uses_native_flying_rng_
                 force_magnitude: [0.0; 2],
                 force_pitch: [0.0; 2],
                 spin_rate: -1.0,
+                formation_distances: [0.0; 3],
+                fade_frames: 0,
+                fade_sound: String::new(),
             }],
         },
     );
@@ -1094,6 +1161,9 @@ fn ordinary_send_out_uses_ground_height_and_horizontal_force_without_airborne_se
                     force_magnitude: [0.0; 2],
                     force_pitch: [0.0; 2],
                     spin_rate: -1.0,
+                    formation_distances: [0.0; 3],
+                    fade_frames: 0,
+                    fade_sound: String::new(),
                 }],
             },
         );

@@ -30,6 +30,7 @@ struct BuildCheck {
     site: Option<Vec2>,
     cash: u32,
     foundation: Option<usize>,
+    admitted: Option<u64>,
 }
 
 pub fn register(app: &mut App) {
@@ -211,8 +212,9 @@ fn advance_build(world: &mut World, check: &mut Check) -> Result<(), &'static st
         22 => plan_build(world, check)?,
         23 => click_build_ground(world, check)?,
         24 => {
-            verify_build(world, check)?;
-            snapshot(world, check, "shell-flow-paid-build.png");
+            if verify_build(world, check)? {
+                snapshot(world, check, "shell-flow-paid-build.png");
+            }
         }
         25 => {
             let id = check
@@ -282,6 +284,7 @@ fn prepare_build(world: &mut World, check: &mut Check) -> Result<(), &'static st
                 point: None,
                 site: None,
                 foundation: None,
+                admitted: None,
                 cash: battle.simulation.players[0].cash,
             });
             Ok(())
@@ -399,12 +402,18 @@ fn click_build_ground(world: &mut World, check: &mut Check) -> Result<(), &'stat
     Ok(())
 }
 
-fn verify_build(world: &World, check: &mut Check) -> Result<(), &'static str> {
+fn verify_build(world: &World, check: &mut Check) -> Result<bool, &'static str> {
     let build = check.build.as_mut().ok_or("missing fresh builder check")?;
     let battle = world.resource::<Match>();
     let game = &battle.simulation;
     if battle.placing.is_some() {
-        return Err("ordinary ground release did not commit Power Plant placement");
+        return Ok(false);
+    }
+    // Update dismisses placement when it queues the build; a later FixedUpdate
+    // executes it. First can observe either side of that command boundary.
+    let admitted = *build.admitted.get_or_insert(game.tick);
+    if game.tick <= admitted {
+        return Ok(false);
     }
     let site = build.site.ok_or("missing build site")?;
     let mut foundations = game.entities.iter().enumerate().filter(|(_, unit)| {
@@ -431,7 +440,7 @@ fn verify_build(world: &World, check: &mut Check) -> Result<(), &'static str> {
         build.cash,
         game.players[0].cash
     );
-    Ok(())
+    Ok(true)
 }
 
 fn click_stage(world: &mut World, check: &mut Check) -> Result<(), &'static str> {
@@ -596,4 +605,106 @@ fn probe_menu(mut commands: Commands, shell: Res<Shell>, mut probes: ResMut<Menu
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        input,
+        skirmish_verification::{construction_position, friendly_entity},
+    };
+    use generals_sim::skirmish::{Faction, Kind};
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_build_observer_waits_for_update_admission_then_fixed_execution_and_rejects_lost_queue()
+    {
+        for retained in [true, false] {
+            let (assets, mut battle) = crate::cleanup_verification::tests::installed();
+            battle
+                .simulation
+                .reset(Faction::Usa, Faction::China)
+                .unwrap();
+            let builder = friendly_entity(&battle.simulation, Kind::Builder, 0).unwrap();
+            let product =
+                crate::strategy_verification::template(&battle.simulation, "AmericaPowerPlant")
+                    .unwrap();
+            let site = construction_position(&battle.simulation, builder, product, 0).unwrap();
+            let angle = battle.simulation.catalog[product].placement_angle;
+            let cash = battle.simulation.players[0].cash;
+            let mut mouse = input::load(
+                &assets,
+                std::path::Path::new(""),
+                &battle.simulation.catalog,
+            )
+            .unwrap();
+            battle.select_objects(&[builder], true);
+            battle.placing = Some(input::placement::Placement::new(product, builder, angle));
+            let mut check = Check {
+                stage: 24,
+                phase: 0,
+                began: None,
+                build: Some(BuildCheck {
+                    builder,
+                    product,
+                    slot: 1,
+                    point: None,
+                    site: Some(site.into()),
+                    cash,
+                    foundation: None,
+                    admitted: None,
+                }),
+            };
+            let mut world = World::new();
+            world.insert_resource(battle);
+            // FixedUpdate may run before Update admits the ground release.
+            input::commands::step(&mut world.resource_mut::<Match>(), &mut mouse);
+            assert!(!verify_build(&world, &mut check).unwrap());
+            assert!(check.build.as_ref().unwrap().admitted.is_none());
+            {
+                let mut battle = world.resource_mut::<Match>();
+                input::commands::enqueue(
+                    &mut battle,
+                    Some(&mouse),
+                    input::commands::Kind::Build {
+                        unit: product,
+                        point: site.into(),
+                        angle,
+                    },
+                );
+                battle.placing = None;
+                if !retained {
+                    battle.commands.clear();
+                }
+            }
+            // Admission is not execution, even across repeated rendered frames.
+            assert!(!verify_build(&world, &mut check).unwrap());
+            assert!(!verify_build(&world, &mut check).unwrap());
+            assert_eq!(world.resource::<Match>().simulation.players[0].cash, cash);
+            assert!(check.build.as_ref().unwrap().foundation.is_none());
+            assert!(
+                world
+                    .resource::<Match>()
+                    .simulation
+                    .entities
+                    .iter()
+                    .all(|unit| { unit.owner != 0 || unit.type_index != product })
+            );
+            input::commands::step(&mut world.resource_mut::<Match>(), &mut mouse);
+            if retained {
+                assert!(verify_build(&world, &mut check).unwrap());
+                let id = check.build.as_ref().unwrap().foundation.unwrap();
+                let game = &world.resource::<Match>().simulation;
+                assert!(!game.entities[id].complete());
+                assert_eq!(game.entities[id].type_index, product);
+                assert_eq!(cash - game.build_cost(0, product), game.players[0].cash);
+            } else {
+                assert_eq!(
+                    verify_build(&world, &mut check).unwrap_err(),
+                    "no Power Plant at the clicked site"
+                );
+            }
+        }
+    }
 }

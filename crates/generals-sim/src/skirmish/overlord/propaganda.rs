@@ -126,7 +126,12 @@ impl Skirmish {
         } else {
             actor.attachment.bonuses &= !bit;
         }
-        actor.weapon_bonus_changed(&self.catalog[actor.type_index], self.tick, extra);
+        actor.weapon_bonus_changed(
+            &self.catalog[actor.type_index],
+            self.tick,
+            extra,
+            &mut self.random,
+        );
     }
 
     fn scan_propaganda(&mut self, source: usize, upgraded: bool) {

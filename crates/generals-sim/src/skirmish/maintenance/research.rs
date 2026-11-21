@@ -5,6 +5,8 @@ pub struct Research {
     pub cost: u32,
     pub frames: u32,
     pub player: bool,
+    pub sciences: Vec<String>,
+    pub ignores_underpowered: bool,
 }
 
 pub struct ResearchEvent {
@@ -123,9 +125,12 @@ impl Skirmish {
         else {
             return false;
         };
+        let disabled = self.object_disabled_mask(producer);
         actor.complete()
-            && !actor.hacked()
-            && !actor.subdued()
+            && upgrade.sciences.iter().all(|science| self.players[actor.owner].has_science(science))
+            // ControlBar::getCommandAvailability allows the authored exception
+            // only when energy's UNDERPOWERED bit is the sole reason.
+            && (disabled == 0 || upgrade.ignores_underpowered && disabled == 1 << 6)
             && self.production_queue_available(producer)
             && self.attachment_research_available(producer, &upgrade.name)
             && self.drone_research_available(producer, &upgrade.name)

@@ -231,7 +231,12 @@ impl Skirmish {
         for bit in [1, 2, 4] {
             if (entity.firing.veterancy_flags ^ desired) & bit != 0 {
                 entity.firing.veterancy_flags ^= bit;
-                entity.weapon_bonus_changed(&self.catalog[entity.type_index], self.tick, extra);
+                entity.weapon_bonus_changed(
+                    &self.catalog[entity.type_index],
+                    self.tick,
+                    extra,
+                    &mut self.random,
+                );
             }
         }
         if feedback

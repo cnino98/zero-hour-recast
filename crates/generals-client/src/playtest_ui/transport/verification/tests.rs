@@ -45,6 +45,7 @@ fn paid_transport_inventory_keeps_boarding_order_and_reentry_appends_the_same_ac
     assert_inventory(&battle, &data, &boarded);
     let exit = selected_command(&battle, &data, 4).unwrap().action;
     dispatch_command(&mut battle, &mut mouse, exit);
+    input::commands::step(&mut battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         100,
@@ -60,6 +61,7 @@ fn paid_transport_inventory_keeps_boarding_order_and_reentry_appends_the_same_ac
         Some(PickTarget::Unit(carrier)),
         &mut mouse
     ));
+    input::commands::step(&mut battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         3000,

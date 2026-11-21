@@ -1,9 +1,11 @@
 //! SH 2bfaea60 `ObjectCreationUpgrade` and ordinary `GenericObjectCreationNugget`.
 use super::{
-    Skirmish,
+    DamageType, DeathType, Entity, Skirmish,
     physical_ocl::{self, transform},
     startup,
 };
+use crate::collision_geometry::{Body, Geometry, Shape};
+use crate::terrain::CellType;
 use num_traits::ToPrimitive;
 use std::f32::consts::TAU;
 
@@ -22,27 +24,62 @@ pub struct Object {
     pub disposition: u16,
     pub health: [f32; 2],
     pub lifetime: [u32; 2],
-    pub flags: u8,
+    pub flags: u16,
     pub container: String,
     pub invulnerable_time: u32,
     pub force_intensity: f32,
     pub force_magnitude: [f32; 2],
     pub force_pitch: [f32; 2],
     pub spin_rate: f32,
+    pub formation_distances: [f32; 3],
+    pub fade_frames: u32,
+    pub fade_sound: String,
 }
 
+pub(super) struct Fade {
+    start: u64,
+    duration: u32,
+    outward: bool,
+}
+
+#[derive(Clone, Copy)]
 struct Placement {
     point: [f32; 3],
-    matrix_position: [f32; 3],
-    basis: [[f32; 3]; 3],
+    transform: Option<([f32; 3], [[f32; 3]; 3])>,
     orientation: f32,
+    lifetime_override: u32,
 }
 
-pub const REQUIRES_LIVE_PLAYER: u8 = 1;
-pub const CONTAIN_INSIDE_SOURCE: u8 = 2;
-pub const PRESERVE_LAYER: u8 = 4;
-pub const IGNORE_PRIMARY_OBSTACLE: u8 = 8;
-pub const INHERITS_VETERANCY: u8 = 16;
+pub const REQUIRES_LIVE_PLAYER: u16 = 1;
+pub const CONTAIN_INSIDE_SOURCE: u16 = 2;
+pub const PRESERVE_LAYER: u16 = 4;
+pub const IGNORE_PRIMARY_OBSTACLE: u16 = 8;
+pub const INHERITS_VETERANCY: u16 = 16;
+pub const SPREAD_FORMATION: u16 = 32;
+pub const FADE_IN: u16 = 64;
+pub const FADE_OUT: u16 = 128;
+pub const DIES_ON_BAD_LAND: u16 = 256;
+
+impl Entity {
+    /// Drawable opacity from the OCL's independent, frame-based fade.
+    ///
+    /// # Panics
+    /// The interior elapsed time is bounded by the original 32-bit duration.
+    #[must_use]
+    pub fn ocl_fade_opacity(&self, frame: u64) -> f32 {
+        self.drawable.ocl_fade.as_ref().map_or(1.0, |fade| {
+            let elapsed = frame.saturating_sub(fade.start);
+            let amount = if elapsed >= u64::from(fade.duration) {
+                1.0
+            } else {
+                let elapsed = u32::try_from(elapsed).expect("bounded OCL fade elapsed time");
+                super::progression::integer_real(elapsed)
+                    / super::progression::integer_real(fade.duration)
+            };
+            if fade.outward { 1.0 - amount } else { amount }
+        })
+    }
+}
 
 impl Skirmish {
     pub(in crate::skirmish) fn apply_object_creation_upgrade(&mut self, id: usize, ordinal: usize) {
@@ -62,64 +99,163 @@ impl Skirmish {
         _secondary: Option<usize>,
         list: &List,
     ) {
+        let _ = self.create_generic_objects_from_source(source, list);
+    }
+
+    pub(super) fn create_generic_objects_from_source(
+        &mut self,
+        source: usize,
+        list: &List,
+    ) -> Option<usize> {
+        let placement = Placement {
+            point: self.object_position(source),
+            transform: Some(self.object_transform(source)),
+            orientation: self.entities[source].facing,
+            lifetime_override: 0,
+        };
+        self.create_generic_list(source, list, placement)
+    }
+
+    pub(in crate::skirmish) fn create_generic_objects_at(
+        &mut self,
+        source: usize,
+        list: &List,
+        primary: [f32; 3],
+        angle: Option<f32>,
+        lifetime_frames: u32,
+    ) -> Option<usize> {
+        self.create_generic_list(
+            source,
+            list,
+            Placement {
+                point: primary,
+                transform: None,
+                orientation: angle.unwrap_or(0.0),
+                lifetime_override: lifetime_frames,
+            },
+        )
+    }
+
+    fn create_generic_list(
+        &mut self,
+        source: usize,
+        list: &List,
+        placement: Placement,
+    ) -> Option<usize> {
+        let mut first = None;
         for nugget in &list.objects {
-            if nugget.names.is_empty()
-                || nugget.flags & REQUIRES_LIVE_PLAYER != 0
-                    && !self.player_active(self.entities[source].owner)
-            {
-                continue;
-            }
-            let (matrix_position, basis) = self.object_transform(source);
-            let placement = Placement {
+            let object = self.create_generic_nugget(source, nugget, placement, |_| {});
+            first = first.or(object);
+        }
+        first
+    }
+
+    pub(super) fn create_ordinary_death_nugget(
+        &mut self,
+        source: usize,
+        nugget: &Object,
+        point: [f32; 3],
+        source_transform: bool,
+        created: &mut Vec<usize>,
+    ) {
+        self.create_generic_nugget(
+            source,
+            nugget,
+            Placement {
+                point,
+                transform: source_transform.then(|| self.object_transform(source)),
+                orientation: if source_transform {
+                    self.entities[source].facing
+                } else {
+                    0.0
+                },
+                lifetime_override: 0,
+            },
+            |id| created.push(id),
+        );
+    }
+
+    fn create_generic_nugget(
+        &mut self,
+        source: usize,
+        nugget: &Object,
+        placement: Placement,
+        mut created: impl FnMut(usize),
+    ) -> Option<usize> {
+        if nugget.names.is_empty()
+            || nugget.flags & REQUIRES_LIVE_PLAYER != 0
+                && !self.player_active(self.entities[source].owner)
+        {
+            return None;
+        }
+        let placement = if placement.transform.is_some() {
+            Placement {
                 point: self.object_position(source),
-                matrix_position,
-                basis,
+                transform: Some(self.object_transform(source)),
                 orientation: self.entities[source].facing,
-            };
-            // Native creates the enclosing object before choosing any child.
-            let container = self
-                .catalog
-                .iter()
-                .position(|unit| unit.name == nugget.container)
-                .filter(|_| !nugget.container.is_empty())
-                .map(|kind| {
-                    let id = self.new_object(kind, self.entities[source].owner, true);
-                    self.entities[id].producer = Some(source);
-                    id
-                });
-            for _ in 0..nugget.count {
-                let limit = u32::try_from(nugget.names.len() - 1).expect("native OCL name count");
-                let choice =
-                    usize::try_from(self.random_between(limit)).expect("native OCL name index");
-                let Some(kind) = self
-                    .catalog
-                    .iter()
-                    .position(|unit| unit.name == nugget.names[choice])
-                else {
-                    continue;
-                };
+                ..placement
+            }
+        } else {
+            placement
+        };
+        // Native creates the enclosing object before choosing any child.
+        let container = self
+            .catalog
+            .iter()
+            .position(|unit| unit.name == nugget.container)
+            .filter(|_| !nugget.container.is_empty())
+            .map(|kind| {
                 let id = self.new_object(kind, self.entities[source].owner, true);
                 self.entities[id].producer = Some(source);
-                if nugget.flags & PRESERVE_LAYER != 0
-                    && container.is_none()
-                    && self.entities[source].layer != 1
-                {
-                    self.entities[id].layer = self.entities[source].layer;
-                }
-                if let Some(container) = container
-                    && self.catalog[self.entities[container].type_index]
-                        .contain_family()
-                        .is_some()
-                    && self.native_container_admits(id, container, true)
-                {
-                    self.add_to_contain(id, container);
-                }
-                self.configure_generic_object(id, source, nugget, &placement);
-            }
-            if let Some(container) = container {
-                self.configure_generic_object(container, source, nugget, &placement);
-            }
+                id
+            });
+        let mut first = container;
+        if let Some(id) = container {
+            created(id);
         }
+        for _ in 0..nugget.count {
+            let limit = u32::try_from(nugget.names.len() - 1).expect("native OCL name count");
+            let choice =
+                usize::try_from(self.random_between(limit)).expect("native OCL name index");
+            let Some(kind) = self
+                .catalog
+                .iter()
+                .position(|unit| unit.name == nugget.names[choice])
+            else {
+                continue;
+            };
+            let id = self.new_object(kind, self.entities[source].owner, true);
+            first = first.or(Some(id));
+            created(id);
+            self.entities[id].producer = Some(source);
+            if nugget.flags & PRESERVE_LAYER != 0
+                && container.is_none()
+                && self.entities[source].layer != 1
+            {
+                self.entities[id].layer = self.entities[source].layer;
+            }
+            if let Some(container) = container
+                && self.catalog[self.entities[container].type_index]
+                    .contain_family()
+                    .is_some()
+                && self.native_container_admits(id, container, true)
+            {
+                self.add_to_contain(id, container);
+            }
+            let mut child_placement = placement;
+            if nugget.flags & SPREAD_FORMATION != 0 {
+                let [inner_min, inner_max, outer] = nugget.formation_distances;
+                let inner = startup::random_real(&mut self.random, inner_min, inner_max);
+                child_placement.point =
+                    self.search_ocl_position(placement.point, inner, outer, true);
+            }
+            self.configure_generic_object(id, source, nugget, &child_placement);
+            self.fade_generic_object(id, source, nugget);
+        }
+        if let Some(container) = container {
+            self.configure_generic_object(container, source, nugget, &placement);
+        }
+        first
     }
 
     fn configure_generic_object(
@@ -130,10 +266,17 @@ impl Skirmish {
         placement: &Placement,
     ) {
         self.entities[id].producer = Some(source);
-        if nugget.lifetime[1] > 0 && !self.entities[id].behaviors.lifetime_die_frames.is_empty() {
-            self.set_lifetime_range(id, 0, nugget.lifetime);
+        let lifetime = if placement.lifetime_override > 0 {
+            [placement.lifetime_override; 2]
+        } else {
+            nugget.lifetime
+        };
+        if lifetime[1] > 0 && !self.entities[id].behaviors.lifetime_die_frames.is_empty() {
+            self.set_lifetime_range(id, 0, lifetime);
         }
-        let offset = transform::vector(placement.basis, nugget.offset);
+        let offset = placement.transform.map_or(nugget.offset, |(_, basis)| {
+            transform::vector(basis, nugget.offset)
+        });
         let point = std::array::from_fn(|axis| placement.point[axis] + offset[axis]);
         if nugget.flags & IGNORE_PRIMARY_OBSTACLE != 0 && self.object_physics_mass(id).is_some() {
             self.entities[id].set_physics_ignored_object(Some(source));
@@ -181,6 +324,9 @@ impl Skirmish {
                 self.destroy_maintenance_object(id);
             }
         }
+        if nugget.flags & DIES_ON_BAD_LAND != 0 {
+            self.check_ocl_landing(id);
+        }
     }
 
     fn place_generic_object(
@@ -198,7 +344,11 @@ impl Skirmish {
             self.physical_force(id, self.entities[source].physics_velocity());
         }
         if nugget.disposition & physical_ocl::LIKE_EXISTING != 0 {
-            self.set_object_transform(id, placement.matrix_position, placement.basis);
+            if let Some((position, basis)) = placement.transform {
+                self.set_object_transform(id, position, basis);
+            } else {
+                self.set_object_orientation(id, placement.orientation);
+            }
             self.set_object_position(id, point);
             if self.height_above_ground(source) > 0.0 && self.object_physics_mass(id).is_some() {
                 self.entities[id].set_physics_allow_fall(true);
@@ -252,7 +402,9 @@ impl Skirmish {
             & (physical_ocl::RANDOM_FORCE | physical_ocl::SEND_FLYING | physical_ocl::SEND_UP)
             != 0
         {
-            self.set_object_transform(id, placement.matrix_position, placement.basis);
+            if let Some((position, basis)) = placement.transform {
+                self.set_object_transform(id, position, basis);
+            }
             self.set_object_position(id, point);
             if self.object_physics_mass(id).is_some() {
                 self.entities[id].prepare_ocl_physics();
@@ -295,6 +447,161 @@ impl Skirmish {
         }
     }
 
+    fn fade_generic_object(&mut self, id: usize, source: usize, nugget: &Object) {
+        for flag in [FADE_IN, FADE_OUT] {
+            if nugget.flags & flag != 0 {
+                if !nugget.fade_sound.is_empty() {
+                    self.position_sound(
+                        source,
+                        nugget.fade_sound.clone(),
+                        self.object_position(source),
+                    );
+                }
+                self.entities[id].drawable.ocl_fade = Some(Fade {
+                    start: self.tick,
+                    duration: nugget.fade_frames,
+                    outward: flag == FADE_OUT,
+                });
+            }
+        }
+    }
+
+    fn check_ocl_landing(&mut self, id: usize) {
+        let [x, y, z] = self.object_position(id);
+        let layer = self.entities[id].layer;
+        let ground = self.ground_height([x, y]);
+        if layer == 1
+            && self
+                .movement_terrain
+                .parachute_water_height([x, y], ground)
+                .is_some_and(|water| z <= water + 10.0)
+        {
+            self.attempt_health_damage(id, None, 999_999.0, DamageType::Water, DeathType::Flooded);
+        }
+        if self.entities[id].is_off_map()
+            || self.ocl_cell_type([x, y], layer).is_none_or(|kind| {
+                matches!(
+                    kind,
+                    CellType::Cliff | CellType::Water | CellType::Impassable
+                )
+            })
+        {
+            self.kill_object(id, DeathType::Normal);
+        }
+    }
+
+    fn ocl_cell_type(&self, point: [f32; 2], layer: u8) -> Option<CellType> {
+        let cell = self.cell_at(point)?;
+        if layer == 1 {
+            return self.movement_terrain.cell(cell).map(|data| data.kind);
+        }
+        self.movement_terrain
+            .bridge_cell(layer, cell)
+            .map(|data| data.kind)
+    }
+
+    pub(in crate::skirmish) fn adjust_ocl_position_to_passable(
+        &mut self,
+        center: [f32; 3],
+        radius: f32,
+    ) -> [f32; 3] {
+        self.search_ocl_position(center, 0.0, radius, false)
+    }
+
+    // PartitionManager::findPositionAround starts with one sample on the first
+    // ring, then alternates positive and negative angles on wider rings.
+    fn search_ocl_position(
+        &mut self,
+        center: [f32; 3],
+        inner: f32,
+        outer: f32,
+        highest_layer: bool,
+    ) -> [f32; 3] {
+        if self.cell_at([center[0], center[1]]).is_none() {
+            return center;
+        }
+        let start = startup::random_angle(&mut self.random);
+        let mut distance = inner;
+        let mut spacing = TAU;
+        loop {
+            if distance > outer {
+                break;
+            }
+            let samples = ((TAU / spacing) / 2.0)
+                .ceil()
+                .to_u32()
+                .expect("native OCL scan samples");
+            for sample in 0..samples {
+                let offset = spacing * super::progression::integer_real(sample);
+                for angle in [start + offset, start - offset]
+                    .into_iter()
+                    .take(if sample == 0 { 1 } else { 2 })
+                {
+                    let x = distance * angle.cos();
+                    let y = distance * angle.sin();
+                    let point = [x + center[0], y + center[1]];
+                    if let Some(result) = self.try_ocl_position(point, angle, highest_layer) {
+                        return result;
+                    }
+                }
+            }
+            distance += 5.0;
+            spacing = (5.0 / (distance + 1.0)) * (TAU / 6.0);
+        }
+        center
+    }
+
+    fn try_ocl_position(
+        &self,
+        point: [f32; 2],
+        angle: f32,
+        highest_layer: bool,
+    ) -> Option<[f32; 3]> {
+        let ground = self.ground_height(point);
+        let mut height = ground;
+        let mut layer = 1;
+        if highest_layer {
+            layer = self.movement_terrain.get_highest_layer_for_destination(
+                [point[0], point[1], 99_999.0],
+                ground,
+                false,
+            );
+            if layer != 1 {
+                height = self
+                    .movement_terrain
+                    .destination_layer_height(layer, point, ground)
+                    + 1.0;
+            }
+        }
+        let kind = self.ocl_cell_type(point, layer)?;
+        if matches!(kind, CellType::Impassable)
+            || (!highest_layer && !matches!(kind, CellType::Clear))
+            || (layer == 1
+                && (matches!(kind, CellType::Cliff)
+                    || self
+                        .movement_terrain
+                        .parachute_water_height(point, ground)
+                        .is_some()))
+        {
+            return None;
+        }
+        let position = [point[0], point[1], height];
+        let probe = Body {
+            geometry: &Geometry {
+                shape: Shape::Sphere,
+                is_small: true,
+                major: 5.0,
+                minor: 5.0,
+                height: 5.0,
+            },
+            position,
+            angle,
+        };
+        self.native_potential_collisions(&probe, true)
+            .is_empty()
+            .then_some(position)
+    }
+
     fn set_ocl_initial_health(&mut self, id: usize, percent: f32) {
         if !self.catalog[self.entities[id].type_index]
             .body_kind
@@ -332,6 +639,9 @@ mod tests {
             force_magnitude: [0.0; 2],
             force_pitch: [0.0; 2],
             spin_rate: -1.0,
+            formation_distances: [0.0; 3],
+            fade_frames: 0,
+            fade_sound: String::new(),
         }
     }
 
@@ -357,6 +667,70 @@ mod tests {
         game.catalog.push(parent);
         let source = game.spawn(kind, 0, [350.0, 250.0], true);
         (game, source, child_type)
+    }
+
+    #[test]
+    fn location_creation_keeps_world_offset_instead_of_rotating_with_source() {
+        let (mut game, source, child_kind) = setup(Vec::new(), false);
+        game.set_object_orientation(source, 2.0);
+        let object = nugget();
+        let list = List {
+            name: "Located".into(),
+            objects: vec![object],
+        };
+        let child = game
+            .create_generic_objects_at(source, &list, [600.0, 400.0, 7.0], Some(1.0), 0)
+            .unwrap();
+        assert_eq!(game.entities[child].type_index, child_kind);
+        assert_eq!(game.entities[child].producer, Some(source));
+        assert_eq!(
+            game.object_position(child).map(f32::to_bits),
+            [607.0_f32, 403.0, 9.0].map(f32::to_bits)
+        );
+        assert_eq!(game.entities[child].facing.to_bits(), 1.0_f32.to_bits());
+    }
+
+    #[test]
+    fn ambush_spreads_outside_the_click_and_fades_for_ninety_frames() {
+        let (mut game, source, child_kind) = setup(Vec::new(), false);
+        let mut object = nugget();
+        object.count = 4;
+        object.offset = [0.0; 3];
+        object.disposition = physical_ocl::ON_GROUND;
+        object.flags = super::SPREAD_FORMATION | super::FADE_IN | super::DIES_ON_BAD_LAND;
+        object.formation_distances = [20.0, 30.0, 400.0];
+        object.fade_frames = 90;
+        let list = List {
+            name: "Ambush".into(),
+            objects: vec![object],
+        };
+        let center = [500.0, 400.0, 0.0];
+        let first = game
+            .create_generic_objects_at(source, &list, center, None, 0)
+            .unwrap();
+        let mut positions = Vec::new();
+        for id in first..first + 4 {
+            let actor = &game.entities[id];
+            assert_eq!(actor.type_index, child_kind);
+            assert!(actor.alive());
+            let position = game.object_position(id);
+            let distance = (position[0] - center[0]).hypot(position[1] - center[1]);
+            assert!((19.99..=400.01).contains(&distance));
+            assert!(!positions.contains(&position.map(f32::to_bits)));
+            positions.push(position.map(f32::to_bits));
+            assert_eq!(
+                actor.ocl_fade_opacity(game.tick).to_bits(),
+                0.0_f32.to_bits()
+            );
+            assert_eq!(
+                actor.ocl_fade_opacity(game.tick + 45).to_bits(),
+                0.5_f32.to_bits()
+            );
+            assert_eq!(
+                actor.ocl_fade_opacity(game.tick + 90).to_bits(),
+                1.0_f32.to_bits()
+            );
+        }
     }
 
     #[test]

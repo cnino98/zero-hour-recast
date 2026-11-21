@@ -1,4 +1,4 @@
-#import bevy_pbr::{mesh_functions, forward_io::{Vertex,VertexOutput},view_transformations::position_world_to_clip}
+#import bevy_pbr::{mesh_functions, forward_io::Vertex,view_transformations::position_world_to_clip}
 
 struct Parameters {
     ambient:vec4<f32>,
@@ -24,13 +24,21 @@ struct Parameters {
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var shroud_texture:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var shroud_sampler:sampler;
 
+struct SourceVertexOutput {
+    @builtin(position) position:vec4<f32>,
+    @location(0) world_position:vec4<f32>,
+    @location(1) uv:vec2<f32>,
+    @location(2) color:vec4<f32>,
+    @location(3) @interpolate(flat) clear_drawable:u32,
+}
+
 @vertex
-fn vertex(vertex:Vertex)->VertexOutput {
-    var out:VertexOutput;
+fn vertex(vertex:Vertex)->SourceVertexOutput {
+    var out:SourceVertexOutput;
     let world_from_local=mesh_functions::get_world_from_local(vertex.instance_index);
     out.world_position=mesh_functions::mesh_position_local_to_world(world_from_local,vec4<f32>(vertex.position,1.0));
     out.position=position_world_to_clip(out.world_position.xyz);
-    out.world_normal=mesh_functions::mesh_normal_local_to_world(vertex.normal,vertex.instance_index);
+    let world_normal=mesh_functions::mesh_normal_local_to_world(vertex.normal,vertex.instance_index);
     out.uv=vertex.uv*material.uv_transform.xy+material.uv_transform.zw;
     var diffuse=vec3<f32>(0.0);
     var point_ambient=vec3<f32>(0.0);
@@ -50,7 +58,7 @@ fn vertex(vertex:Vertex)->VertexOutput {
             }
             point_ambient+=material.point_ambient[index].xyz*attenuation;
         }
-        diffuse+=material.light_color[index].xyz*max(dot(normalize(out.world_normal),direction),0.0)*attenuation;
+        diffuse+=material.light_color[index].xyz*max(dot(normalize(world_normal),direction),0.0)*attenuation;
     }
     // W3DDisplay::setTimeOfDay installs zero specular for each directional light.
     // MeshMatDescClass::Configure_Material selects COLOR1 when the pass has DCG.
@@ -67,15 +75,13 @@ fn vertex(vertex:Vertex)->VertexOutput {
     // ShaderClass::Apply, GRADIENT_DISABLE with texturing: select texture RGBA.
     // Keep the drawable opacity override independent of material/vertex alpha.
     if(material.primary_gradient==0u){out.color=vec4<f32>(1.0);}
-#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
-    out.instance_index=vertex.instance_index;
-#endif
+    out.clear_drawable=mesh_functions::get_tag(vertex.instance_index);
     out.color.a*=material.opacity;
     return out;
 }
 
 @fragment
-fn fragment(input:VertexOutput)->@location(0) vec4<f32> {
+fn fragment(input:SourceVertexOutput)->@location(0) vec4<f32> {
     var shroud=vec3<f32>(1.0);
     if(material.shroud_mode!=1u && material.shroud_extent.x>0.0){
         let point=vec2<f32>(input.world_position.x,-input.world_position.z);
@@ -85,7 +91,8 @@ fn fragment(input:VertexOutput)->@location(0) vec4<f32> {
     if(material.shroud_mode==2u){return vec4<f32>(shroud,1.0);}
     var color=textureSample(color_texture,color_sampler,input.uv)*input.color;
     if(color.a<material.alpha_test){discard;}
-    if(material.shroud_mode==0u && material.vertex_diffuse!=3u){
+    // RTS3DScene only installs the projected shroud pass on non-clear drawables.
+    if(material.shroud_mode==0u && material.vertex_diffuse!=3u && input.clear_drawable==0u){
         color=vec4<f32>(color.rgb*shroud,color.a);
     }
     // World cameras retain D3D8 encoded RGB through modulation and blending.

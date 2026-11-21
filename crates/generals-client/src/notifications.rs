@@ -59,13 +59,6 @@ pub fn load(assets: &VirtualAssets) -> Result<Notifications, Box<dyn Error>> {
     if font.tokens.len() != 4 || font.tokens[1] != "Arial" {
         return Err("unrepresented original message font".into());
     }
-    if field(language, 0, "ResolutionFontSizeMethod").is_some_and(|line| {
-        line.tokens
-            .get(1)
-            .is_none_or(|value| value != "CLASSIC_NO_CEILING")
-    }) {
-        return Err("unrepresented localized message font scaling method".into());
-    }
     Ok(Notifications {
         position: Vec2::new(
             f32::from(number("MessagePosition", "X:")?),
@@ -73,7 +66,7 @@ pub fn load(assets: &VirtualAssets) -> Result<Notifications, Box<dyn Error>> {
         ),
         colors,
         point_size: f32::from(font.tokens[2].parse::<u16>()?),
-        font_scale: text(language, 0, "ResolutionFontAdjustment")?.parse()?,
+        font_scale: crate::fonts::resolution_adjustment(language)?,
         delay: (u64::from(delay) * 30).div_ceil(1000),
         font: Some(crate::fonts::load(
             "Arial",
@@ -87,12 +80,7 @@ pub fn load(assets: &VirtualAssets) -> Result<Notifications, Box<dyn Error>> {
 
 impl Notifications {
     fn font_pixels(&self, width: f32) -> f32 {
-        // GlobalLanguage::adjustFontSize, the pinned default CLASSIC_NO_CEILING;
-        // FontCharsClass::Create_GDI_Font then applies MulDiv(points, 96, 72).
-        let increase = (width / 800.0 - 1.0) * self.font_scale;
-        let adjustment = (1.0 + increase).max(1.0);
-        let points = (self.point_size * adjustment).floor().min(512.0);
-        (points * 96.0 / 72.0).round()
+        crate::fonts::display_pixels(self.point_size, width, self.font_scale)
     }
 
     pub fn add(&mut self, text: String, timestamp: u64) {
@@ -273,6 +261,7 @@ fn format_name(template: &str, name: &str) -> String {
 pub fn update(
     mut messages: ResMut<Notifications>,
     battle: Res<Match>,
+    placement: (Res<UiData>, ResMut<crate::input::Mouse>),
     screen: Res<ResultsScreen>,
     window: Single<&Window, With<bevy::window::PrimaryWindow>>,
     mut rows: Query<(
@@ -287,6 +276,21 @@ pub fn update(
     let battle = battle.into_inner();
     let screen = screen.into_inner();
     let window = window.into_inner();
+    let (data, mut mouse) = placement;
+    let data = data.into_inner();
+    for (frame, failure) in mouse.sneak_placement_rejections.drain(..) {
+        use generals_sim::skirmish::PlacementFailure;
+        let label = match failure {
+            PlacementFailure::Generic => "GUI:CantBuildThere",
+            PlacementFailure::RestrictedTerrain => "GUI:CantBuildRestrictedTerrain",
+            PlacementFailure::NotFlatEnough => "GUI:CantBuildNotFlatEnough",
+            PlacementFailure::ObjectsInTheWay => "GUI:CantBuildObjectsInTheWay",
+            PlacementFailure::TooCloseToSupplies => "GUI:CantBuildTooCloseToSupplies",
+            PlacementFailure::NoClearPath => "GUI:CantBuildNoClearPath",
+            PlacementFailure::Shroud => "GUI:CantBuildShroud",
+        };
+        messages.add(data.label(label).to_owned(), frame);
+    }
     if battle.started {
         messages.fade(battle.simulation.tick);
     }

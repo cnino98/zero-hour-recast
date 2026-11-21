@@ -43,13 +43,16 @@ pub(super) fn progress(
             check.stage = 2;
         }
         2 if check.audio.mode_finished => {
+            let point =
+                Vec2::from_array(control.battle.simulation.entities[check.setup.vehicle].position);
+            input::targeted_order(
+                &mut control.battle,
+                &mut control.mouse,
+                point,
+                Some(check.setup.vehicle),
+            );
             require(
-                input::pilot::issue(
-                    &mut control.battle,
-                    &mut control.mouse,
-                    check.setup.vehicle,
-                    1,
-                ),
+                matches!(control.mouse.pending_command, CommandMode::Normal),
                 "original targeted pilot shot was rejected",
             )?;
             control.clock.unpause();

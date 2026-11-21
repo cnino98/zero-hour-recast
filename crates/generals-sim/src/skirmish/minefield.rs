@@ -79,6 +79,16 @@ impl State {
 }
 
 impl Skirmish {
+    pub(in crate::skirmish) fn set_first_minefield_target(
+        &mut self,
+        id: usize,
+        position: [f32; 3],
+    ) {
+        if let Some(generator) = self.entities[id].mines.generators.first_mut() {
+            generator.target = Some(position);
+        }
+    }
+
     pub(in crate::skirmish) fn has_land_mine_interface(&self, id: usize) -> bool {
         !self.entities[id].mines.mines.is_empty()
     }

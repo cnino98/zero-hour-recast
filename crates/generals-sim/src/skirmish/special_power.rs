@@ -42,6 +42,11 @@ pub(in crate::skirmish) struct State {
 }
 
 /// `ScriptEngine` retains notification identity; it precedes sound, view and recharge.
+pub struct EvaEvent {
+    pub owner: usize,
+    pub power: String,
+}
+
 pub struct Trigger {
     pub owner: usize,
     pub power: String,
@@ -135,7 +140,9 @@ impl Skirmish {
             rules.startup.paused,
         );
         self.entities[id].behaviors.special_powers.push(State {
-            available: u32::MAX,
+            // Stock buildings without SpecialPowerCreate, including USA's
+            // Strategy Center, rely on the retail constructor's zero frame.
+            available: 0,
             paused_count: 0,
             paused_frame: 0,
             paused_percent: 0.0,
@@ -294,7 +301,7 @@ impl Skirmish {
     pub(in crate::skirmish) fn observe_special_power_disabled(&mut self, id: usize) {
         // HACKED owns its exact source setter/clear pauses; the remaining
         // translated producers are observed here. HELD never pauses.
-        let observed = !((1 << 1) | (1 << 3));
+        let observed = !((1 << 0) | (1 << 1) | (1 << 2) | (1 << 3));
         let mask = self.object_disabled_mask(id) & observed;
         let mut changed = self.entities[id]
             .behaviors
@@ -329,6 +336,19 @@ impl Skirmish {
     pub(in crate::skirmish) fn native_hacked_power_change(&mut self, id: usize, pause: bool) {
         for ordinal in 0..self.entities[id].behaviors.special_powers.len() {
             self.pause_special_power(id, ordinal, pause);
+        }
+    }
+
+    pub(in crate::skirmish) fn native_timed_power_change(
+        &mut self,
+        id: usize,
+        flag: u32,
+        pause: bool,
+    ) {
+        for ordinal in 0..self.entities[id].behaviors.special_powers.len() {
+            self.pause_special_power(id, ordinal, pause);
+            let flags = &mut self.entities[id].behaviors.special_powers[ordinal].disabled_mask;
+            *flags = (*flags & !flag) | if pause { flag } else { 0 };
         }
     }
 
@@ -397,6 +417,61 @@ impl Skirmish {
         {
             return false;
         }
+        let kind = self.entities[id].type_index;
+        if let Some(ocl) = self.catalog[kind]
+            .behavior
+            .ocl_powers
+            .iter()
+            .position(|rules| rules.power == name)
+        {
+            if let Some(position) = target
+                .map(|target| self.object_position(target))
+                .or(position)
+            {
+                self.execute_power_ocl(id, ocl, position, None);
+            } else {
+                self.execute_power_ocl_without_target(id, ocl);
+            }
+            return true;
+        }
+        let tag = &self.catalog[kind].special_powers[ordinal].tag;
+        if let Some(cash) = self.catalog[kind]
+            .behavior_modules
+            .iter()
+            .filter(|module| module.family == "CashHackSpecialPower")
+            .position(|module| &module.tag == tag)
+        {
+            let Some(target) = target else {
+                return false;
+            };
+            self.record_special_power_used(id, ordinal);
+            self.mark_special_power_triggered(id, name, Some(self.object_position(target)));
+            self.execute_cash_hack(id, target, cash);
+            return true;
+        }
+        if let Some(spy) = self.catalog[kind]
+            .behavior_modules
+            .iter()
+            .filter(|module| module.family == "SpyVisionSpecialPower")
+            .position(|module| &module.tag == tag)
+        {
+            self.record_special_power_used(id, ordinal);
+            self.mark_special_power_triggered(id, name, None);
+            self.use_spy_vision_power(id, spy);
+            return true;
+        }
+        self.initiate_special_power_update(id, ordinal, name, target, position, script)
+    }
+
+    fn initiate_special_power_update(
+        &mut self,
+        id: usize,
+        ordinal: usize,
+        name: &str,
+        target: Option<usize>,
+        position: Option<[f32; 3]>,
+        script: bool,
+    ) -> bool {
         let update_starts =
             self.catalog[self.entities[id].type_index].special_powers[ordinal].update_starts_attack;
         let modules: Vec<_> = self.catalog[self.entities[id].type_index]
@@ -408,12 +483,14 @@ impl Skirmish {
                     "SpecialAbilityUpdate"
                         | "SpectreGunshipUpdate"
                         | "SpectreGunshipDeploymentUpdate"
+                        | "ParticleUplinkCannonUpdate"
                 )
             })
             .map(|module| module.family.clone())
             .collect();
         let mut ability = 0;
         let mut deployment = 0;
+        let mut particle = 0;
         let mut handled = false;
         for family in modules {
             match family.as_str() {
@@ -432,6 +509,13 @@ impl Skirmish {
                         handled = self.deploy_spectre(id, deployment, name, position, script);
                     }
                     deployment += 1;
+                }
+                "ParticleUplinkCannonUpdate" => {
+                    if let Some(position) = position {
+                        handled =
+                            self.initiate_particle_uplink(id, particle, name, position, script);
+                    }
+                    particle += 1;
                 }
                 "SpectreGunshipUpdate" => {
                     if let Some(position) = position {
@@ -470,6 +554,15 @@ impl Skirmish {
             object: id,
         });
         let rules = &self.catalog[self.entities[id].type_index].special_powers[ordinal];
+        self.presentation.superweapon_eva.push(EvaEvent {
+            owner,
+            power: rules.power_type.clone(),
+        });
+        self.presentation
+            .weapon_fx
+            .push(super::WeaponFxEvent::SuperweaponEva(
+                self.presentation.superweapon_eva.len() - 1,
+            ));
         let (sound, target_sound) = (rules.initiate_sound.clone(), rules.target_sound.clone());
         self.object_sound(id, sound, super::object_sounds::Action::Play);
         if let Some(target) = target {

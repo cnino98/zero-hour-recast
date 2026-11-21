@@ -59,7 +59,7 @@ pub fn issue_finite_context(
     target: usize,
     ability: usize,
 ) -> bool {
-    let first_has_command = battle.selected.first().is_some_and(|&id| {
+    let first_has_command = battle.command_drawables().first().is_some_and(|&id| {
         let actor = &battle.simulation.entities[id];
         actor.owner == 0
             && battle.simulation.catalog[actor.type_index]
@@ -74,7 +74,7 @@ pub fn issue_finite_context(
 pub fn issue(battle: &mut Match, mouse: &mut Mouse, target: usize, context: bool) -> bool {
     // handleHackCommand chooses the actual button from the first selected
     // drawable. DO_HINT deliberately bypasses that first-button lookup.
-    let first_has_command = battle.selected.first().is_some_and(|&id| {
+    let first_has_command = battle.command_drawables().first().is_some_and(|&id| {
         battle.simulation.entities.get(id).is_some_and(|actor| {
             actor.owner == 0
                 && battle.simulation.catalog[actor.type_index]
@@ -101,7 +101,7 @@ pub fn issue(battle: &mut Match, mouse: &mut Mouse, target: usize, context: bool
     if issued {
         mouse.voices.extend(super::VoiceRequest::special_power(
             &battle.simulation,
-            &battle.selected,
+            battle.command_drawables(),
             &["SPECIAL_HACKER_DISABLE_BUILDING"],
         ));
         mouse.pending_command = CommandMode::Normal;
@@ -127,7 +127,7 @@ pub fn issue_finite(battle: &mut Match, mouse: &mut Mouse, target: usize, abilit
         };
         mouse.voices.extend(super::VoiceRequest::special_power(
             &battle.simulation,
-            &battle.selected,
+            battle.command_drawables(),
             &[power],
         ));
         mouse.pending_command = CommandMode::Normal;

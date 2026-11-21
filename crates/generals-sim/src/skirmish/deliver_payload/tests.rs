@@ -79,6 +79,8 @@ fn transport_type() -> crate::skirmish::UnitType {
         door_delay: 15,
         exit_bone: "WeaponA01".into(),
         exit_pitch_rate: std::f32::consts::PI / 180.0,
+        dive_sound: String::new(),
+        strafe_effects: Vec::new(),
     });
     plane.pristine_draws = vec![model_bones::Draw {
         ignored: BTreeSet::new(),
@@ -137,14 +139,31 @@ fn fixture() -> (Skirmish, usize, usize) {
             count: 1,
         }],
         container: "DeliveryChute".into(),
-        preferred_height: true,
-        max_speed: true,
+        transport_start: super::TransportStart {
+            preferred_height: true,
+            max_speed: true,
+            delay_delivery_max: 0,
+        },
+        release: super::Release {
+            drop_offset: [0.0, 0.0, -5.0],
+            drop_delay: 12,
+            parachute_directly: true,
+            drop_variance: [0.0; 3],
+            inherit_velocity: false,
+            exit_pitch_rate: 0.0,
+            fire_weapon: false,
+        },
         attempts: 4,
-        drop_offset: [0.0, 0.0, -5.0],
-        drop_delay: 12,
         delivery_distance: 250.0,
         pre_open_distance: 0.0,
-        parachute_directly: true,
+        formation_size: 1,
+        formation_spacing: 25.0,
+        convergence: 0.0,
+        error_radius: 0.0,
+        self_destruct: false,
+        visible: None,
+        dive: None,
+        decal: None,
     }])
     .unwrap();
     (game, pad_kind, plane_kind)
@@ -159,6 +178,67 @@ fn create() -> (Skirmish, usize, usize, usize, usize) {
         game.delivery_closest_edge(game.object_position(pad)),
     );
     (game, pad, plane, plane + 1, plane + 2)
+}
+
+#[test]
+fn formation_members_keep_aim_convergence_and_spawn_at_distinct_positions() {
+    let (mut game, pad_kind, plane_kind) = fixture();
+    game.delivery_lists[0].formation_size = 3;
+    game.delivery_lists[0].formation_spacing = 35.0;
+    game.delivery_lists[0].convergence = 0.5;
+    game.delivery_lists[0].payload.clear();
+    let pad = game.spawn(pad_kind, 0, [300.0, 200.0], true);
+    let start = [100.0, 200.0, 0.0];
+    let target = [500.0, 200.0, 0.0];
+    let first = game.create_delivery_at(pad, 0, start, target, true);
+    assert_eq!(game.entities[first].type_index, plane_kind);
+    assert_eq!(
+        game.delivery_mission(first).target.map(f32::to_bits),
+        target.map(f32::to_bits)
+    );
+    let left = game.delivery_mission(first + 1);
+    let right = game.delivery_mission(first + 2);
+    assert!((left.move_to[1] - 165.0).abs() < 0.001);
+    assert!((right.move_to[1] - 235.0).abs() < 0.001);
+    assert!((left.target[1] - 182.5).abs() < 0.001);
+    assert!((right.target[1] - 217.5).abs() < 0.001);
+    assert_eq!(game.entities[first + 2].producer, Some(pad));
+}
+
+#[test]
+fn shot_down_delivery_keeps_updating_the_owner_decal_until_deletion() {
+    let (mut game, pad_kind, _) = fixture();
+    game.delivery_lists[0].decal = Some((
+        50.0,
+        crate::skirmish::radius_decal::Template {
+            texture: "SCCA10Strike_USA".into(),
+            opacity: [0.25, 0.5],
+            throb_frames: 15,
+            color: [255, 156, 0, 255],
+            only_owner: true,
+            additive: false,
+        },
+    ));
+    let pad = game.spawn(pad_kind, 0, [350.0, 250.0], true);
+    let aim = game.object_position(pad);
+    let start = game.delivery_closest_edge(aim);
+    let plane = game.create_delivery(pad, 0, start);
+    assert_eq!(game.entities[plane].radius_decal().unwrap().frame, Some(0));
+    game.mark_ai_dead(plane);
+    game.tick = 18;
+    game.update_delivery_module(plane);
+    let decal = game.entities[plane].radius_decal().unwrap();
+    assert_eq!(decal.frame, Some(18));
+    assert_eq!(decal.position.map(f32::to_bits), aim.map(f32::to_bits));
+    assert!(matches!(
+        game.delivery_mission(plane).phase,
+        Phase::Approach
+    ));
+    game.destroy_maintenance_object(plane);
+    assert!(game.entities[plane].radius_decal().is_some());
+    game.process_update_destruction();
+    assert!(!game.entities[plane].exists());
+    assert!(game.entities[plane].radius_decal().is_none());
 }
 
 #[test]

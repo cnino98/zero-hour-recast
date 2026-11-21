@@ -62,7 +62,7 @@ fn audio(check: Res<Check>, mut progress: ResMut<Progress>, audio: FiringAudioIn
     if !matches!(check.stage, Stage::RocketPods) {
         return;
     }
-    if progress.phase < 7 {
+    if progress.phase < 6 {
         if progress.phase == 0 {
             // A previous ordinary attack voice is not proof of the new ground order.
             progress.sounds[0] = audio.finished(check.setup.comanche, "ComancheVoiceAttack");
@@ -82,7 +82,7 @@ fn audio(check: Res<Check>, mut progress: ResMut<Progress>, audio: FiringAudioIn
 fn record(check: Res<Check>, mut progress: ResMut<Progress>, battle: Res<Match>) {
     let check = check.into_inner();
     let battle = battle.into_inner();
-    if matches!(check.stage, Stage::RocketPods) && progress.phase == 7 {
+    if matches!(check.stage, Stage::RocketPods) && progress.phase >= 6 {
         progress.shots += battle
             .simulation
             .presentation
@@ -143,7 +143,11 @@ fn input(
     {
         return;
     }
-    clock.pause();
+    if progress.phase == 6 {
+        clock.unpause();
+    } else {
+        clock.pause();
+    }
     match input.step(&check, &mut progress, &mut capture) {
         Ok(true) => {
             progress.phase += 1;
@@ -183,14 +187,22 @@ impl Input<'_, '_> {
                     self.button(ButtonState::Pressed);
                 }
             }
-            2 | 5 => self.button(ButtonState::Released),
+            2 | 5 => {
+                self.button(ButtonState::Released);
+                if progress.phase == 5 {
+                    progress.sounds = [false; 2];
+                }
+            }
             3 => {
                 require(
                     matches!(self.mouse.pending_command, CommandMode::FireWeapon(2)),
                     "original Rocket Pods button did not enter TERTIARY target mode",
                 )?;
-                let point =
-                    Vec2::from_array(self.battle.simulation.entities[check.setup.target].position);
+                let game = &self.battle.simulation;
+                let target = Vec2::from_array(game.entities[check.setup.target].position);
+                let home = Vec2::from_array(game.entities[check.setup.airfield].position);
+                // Keep the original terrain ring clear of the Command Center's roof.
+                let point = target + (home - target).normalize_or_zero() * 160.0;
                 let rendered = point * 0.1;
                 let screen = self.camera.0.world_to_viewport(
                     self.camera.1,
@@ -220,12 +232,14 @@ impl Input<'_, '_> {
                 let actor = &self.battle.simulation.entities[check.setup.comanche];
                 let expected_weapon = actor.weapon_index(2);
                 require(
-                    matches!(self.mouse.pending_command, CommandMode::Normal)
-                        && matches!(self.battle.simulation.entities[check.setup.comanche].ai.order,
-                            Order::FireAt { position, weapon } if weapon == expected_weapon && Vec2::from_array(position).distance(expected) < 0.001),
-                    "ground click did not issue the original TERTIARY location order",
+                    matches!(self.mouse.pending_command, CommandMode::Normal),
+                    "ground click did not leave TERTIARY target mode",
                 )?;
-                progress.sounds = [false; 2];
+                if !matches!(actor.ai.order,
+                    Order::FireAt { position, weapon } if weapon == expected_weapon && Vec2::from_array(position).distance(expected) < 0.001)
+                {
+                    return Ok(false);
+                }
             }
             _ => unreachable!("bounded rocket-pod input phases"),
         }
@@ -279,14 +293,25 @@ impl Input<'_, '_> {
     }
 
     fn radius_visible(&mut self, check: &Check, center: Vec2) -> Result<(), Box<dyn Error>> {
-        let actor = &self.battle.simulation.entities[check.setup.comanche];
-        let weapon = self.battle.simulation.catalog[actor.type_index]
+        let game = &self.battle.simulation;
+        let actor = &game.entities[check.setup.comanche];
+        let weapon = game.catalog[actor.type_index]
             .weapon_template(actor.weapon_index(2))
             .ok_or("Rocket Pods weapon missing")?;
         let radius = weapon.scatter + weapon.scatter_target_scalar;
         require(
             radius.to_bits() == 50.0_f32.to_bits(),
             "original Rocket Pods radius changed",
+        )?;
+        require(
+            game.entities.iter().all(|actor| {
+                let unit = &game.catalog[actor.type_index];
+                !actor.alive()
+                    || !unit.kind.is_building()
+                    || Vec2::from_array(actor.position).distance(center)
+                        > radius + unit.geometry.major.hypot(unit.geometry.minor)
+            }),
+            "Rocket Pods terrain radius overlaps a live building",
         )?;
         let mesh = self
             .meshes

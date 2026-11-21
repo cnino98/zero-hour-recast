@@ -39,6 +39,7 @@ enum Phase {
     Drag,
     Preview,
     Release,
+    Committed,
     Done,
 }
 
@@ -201,7 +202,11 @@ fn drive(
     if matches!(scenario.phase, Phase::Done) {
         return;
     }
-    clock.pause();
+    if matches!(scenario.phase, Phase::Committed) {
+        clock.unpause();
+    } else {
+        clock.pause();
+    }
     let (mut buttons, mut keys) = input;
     let point = match scenario.phase {
         Phase::Threshold | Phase::ThresholdCheck => {
@@ -238,7 +243,12 @@ fn drive(
             scenario.cash = battle.simulation.players[0].cash;
             buttons.release(MouseButton::Left);
         }
-        Phase::Threshold | Phase::ThresholdCheck | Phase::Drag | Phase::Preview | Phase::Done => {}
+        Phase::Threshold
+        | Phase::ThresholdCheck
+        | Phase::Drag
+        | Phase::Preview
+        | Phase::Committed
+        | Phase::Done => {}
     }
 }
 
@@ -327,6 +337,17 @@ impl PlacementCapture {
                 self.phase = Phase::Release;
             }
             Phase::Release => {
+                self.phase = Phase::Committed;
+            }
+            Phase::Committed => {
+                if !battle
+                    .simulation
+                    .entities
+                    .iter()
+                    .any(|unit| unit.owner == 0 && unit.type_index == self.factory)
+                {
+                    return Ok(false);
+                }
                 self.check_building(battle)?;
                 self.phase = Phase::Done;
                 return Ok(true);

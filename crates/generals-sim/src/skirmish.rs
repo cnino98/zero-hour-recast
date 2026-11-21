@@ -44,35 +44,51 @@ pub mod neutron_blast;
 mod terrain_flatten;
 pub mod terrain_movement;
 pub use defenses::AssistedTargeting;
+pub mod cash_bounty;
+pub mod cash_hack;
 pub mod command_button_hunt;
 pub mod demo_trap;
 pub mod deployment;
 pub mod diagnostics;
 pub mod drones;
+pub mod dynamic_shroud;
+pub mod emp;
+pub mod gps_scrambler;
 pub mod helicopter_death;
 pub mod helix;
 pub mod hijacker;
 pub mod hive_body;
 pub mod instant_death;
+pub mod leaflet_drop;
 pub mod map_crates;
 pub mod microwave;
+pub mod neutron_missile;
+pub mod nuclear_launcher;
 pub mod object_creation;
 pub mod object_fx;
 pub mod object_sounds;
 pub mod parachute;
 pub mod parking;
+pub mod particle_uplink;
 pub mod physical_ocl;
 pub mod pilot_find_vehicle;
+pub mod power_ocl;
 mod prone;
+pub mod radius_decal;
 mod relationship;
 mod retaliation;
 pub mod sabotage;
 pub mod salvage;
 mod scatter;
+pub mod smart_bomb;
+mod sneak_attack;
+pub use sneak_attack::PlacementFailure;
 pub mod special_ability;
 pub mod special_power;
+pub mod special_power_completion;
 pub mod spectre;
 pub mod spy_vision;
+pub mod spy_vision_power;
 pub mod stealth;
 pub mod sticky_bomb;
 pub mod structure_death;
@@ -82,6 +98,7 @@ pub mod toppling;
 pub mod turret;
 mod variations;
 pub mod veterancy_crate;
+pub mod weapon_bonus_update;
 pub use combat::damage_fx;
 pub use damage::AreaDamage;
 pub mod crew;
@@ -362,6 +379,20 @@ impl BodyKind {
 
 /// Typed authored `Behavior` module data; order remains in `behavior_modules`.
 pub struct BehaviorData {
+    pub particle_uplinks: Vec<particle_uplink::Rules>,
+    pub ocl_powers: Vec<power_ocl::Rules>,
+    pub power_weapons: Vec<WeaponRules>,
+    pub cash_hack_powers: Vec<cash_hack::Rules>,
+    pub spy_vision_powers: Vec<spy_vision_power::Rules>,
+    pub nuclear_launcher: Option<nuclear_launcher::Rules>,
+    pub special_power_completions: Vec<special_power_completion::Rules>,
+    pub weapon_bonuses: Vec<weapon_bonus_update::Rules>,
+    pub leaflet_drops: Vec<leaflet_drop::Rules>,
+    pub smart_bombs: Vec<smart_bomb::Rules>,
+    pub emp: Option<emp::Rules>,
+    pub neutron_missile: Option<neutron_missile::Rules>,
+    pub gps_scramblers: Vec<gps_scrambler::Rules>,
+    pub dynamic_shroud: Vec<dynamic_shroud::Rules>,
     pub create_object_die: Vec<create_object_die::Rules>,
     pub eject_pilots: Vec<eject_pilot::Rules>,
     pub bridges: Vec<bridge_behavior::Rules>,
@@ -805,6 +836,13 @@ pub struct Entity {
     death_lifecycle: Option<Box<death_lifecycle::State>>,
     structure_death: Option<Box<structure_death::State>>,
     spectre: Option<spectre::State>,
+    nuclear_launcher: nuclear_launcher::State,
+    special_power_completions: Vec<special_power_completion::State>,
+    emp: emp::State,
+    emp_until: u32,
+    default_disabled_until: u32,
+    neutron_missile: neutron_missile::State,
+    radius_decal: Option<radius_decal::State>,
     deployment: Option<deployment::State>,
     physical: Option<Box<physical_ocl::State>>,
     helix: helix::State,
@@ -924,6 +962,7 @@ struct DrawableState {
     status: u32,
     tint_status: u32,
     decal_fade_request: Option<[f32; 2]>,
+    ocl_fade: Option<object_creation::Fade>,
     terrain_decal: TerrainDecal,
     animation_completion: Option<(u64, u32, bool)>,
     animation_frame: Option<(u64, i32)>,
@@ -949,6 +988,7 @@ impl DrawableState {
             tint_status: 0,
             status: 2, // DRAWABLE_STATUS_DEFAULT = DRAWABLE_STATUS_SHADOWS.
             decal_fade_request: None,
+            ocl_fade: None,
             terrain_decal: TerrainDecal::None,
             animation_completion: None,
             animation_frame: None,
@@ -1261,7 +1301,7 @@ pub struct Projectile {
 
 pub enum ProjectileFxStage {
     Created,
-    Ignition,
+    Ignition { projectile_type: usize },
     Detonation,
     GarrisonKill,
     Lasered,
@@ -1300,6 +1340,10 @@ pub enum WeaponFxEvent {
     ObjectFx(usize),
     SpectreStrafe(usize),
     Firestorm(usize),
+    ParticleUplinkScorch(usize),
+    EmpSparks(usize),
+    SuperweaponEva(usize),
+    NeutronScorch(usize),
     SlaveWeld(usize),
     DestroyAttachedParticles(usize),
     Structure(usize),
@@ -1354,6 +1398,11 @@ pub struct PresentationEvents {
     pub ability_feedback: Vec<special_ability::FeedbackEvent>,
     pub attached_particles: Vec<helicopter_death::ParticleAttachment>,
     pub spectre_strafes: Vec<spectre::Strafe>,
+    pub particle_uplink_scorches: Vec<particle_uplink::Scorch>,
+    pub emp_sparks: Vec<emp::Sparks>,
+    pub neutron_scorches: Vec<neutron_missile::Scorch>,
+    pub cash_bounties: Vec<cash_bounty::Event>,
+    pub superweapon_eva: Vec<special_power::EvaEvent>,
     pub pilot_events: Vec<crew::PilotEvent>,
     pub object_fx_events: Vec<object_fx::Event>,
     pub structure_events: Vec<structure_death::Event>,
@@ -1398,6 +1447,11 @@ impl PresentationEvents {
             ability_feedback: Vec::new(),
             attached_particles: Vec::new(),
             spectre_strafes: Vec::new(),
+            particle_uplink_scorches: Vec::new(),
+            emp_sparks: Vec::new(),
+            neutron_scorches: Vec::new(),
+            cash_bounties: Vec::new(),
+            superweapon_eva: Vec::new(),
             pilot_events: Vec::new(),
             object_fx_events: Vec::new(),
             structure_events: Vec::new(),
@@ -1423,6 +1477,7 @@ pub struct Skirmish {
     pub deselected_objects: Vec<usize>,
     pub slow_death_scale: f32,
     pub special_power_triggers: Vec<special_power::Trigger>,
+    pub completed_special_powers: Vec<special_power::Trigger>,
     pub draw_icon_ui: bool,
     update_scheduler: module_updates::Scheduler,
     update_objects: Vec<module_updates::Object>,
@@ -1551,6 +1606,7 @@ impl Skirmish {
             deselected_objects: Vec::new(),
             slow_death_scale: 1.0,
             special_power_triggers: Vec::new(),
+            completed_special_powers: Vec::new(),
             draw_icon_ui: true,
             update_scheduler: module_updates::Scheduler::new(),
             update_objects: Vec::new(),
@@ -1677,6 +1733,7 @@ impl Skirmish {
     fn clear_match_state(&mut self) {
         self.draw_icon_ui = true;
         self.special_power_triggers.clear();
+        self.completed_special_powers.clear();
         self.fire_history.clear();
         self.presentation.deposit_events.clear();
         self.presentation.overcharge_events.clear();
@@ -1753,10 +1810,12 @@ impl Skirmish {
         self.presentation.propaganda_events.clear();
         self.presentation.assistance_events.clear();
         self.presentation.weapon_fx.clear();
-        self.presentation
-            .slave_welds
-            .retain(|event| event.weld.frame + 1 >= self.tick);
         self.presentation.spectre_strafes.clear();
+        self.presentation.particle_uplink_scorches.clear();
+        self.presentation.emp_sparks.clear();
+        self.presentation.neutron_scorches.clear();
+        self.presentation.cash_bounties.clear();
+        self.presentation.superweapon_eva.clear();
         self.presentation.attached_particles.clear();
         self.presentation.laser_initializations.clear();
         self.presentation.ability_feedback.clear();
@@ -2365,11 +2424,24 @@ impl Skirmish {
         Ok(())
     }
 
+    /// Shared target admission for client location-command translation.
+    #[must_use]
+    pub fn command_point_on_map(&self, point: [f32; 2]) -> bool {
+        self.cell_at(point).is_some()
+    }
+
     /// Advances one 30 Hz logic frame, independent of rendering speed.
     pub fn step(&mut self) {
+        if self.begin_step() {
+            self.finish_step();
+        }
+    }
+
+    /// Opens the source logic frame through its script phase, before client commands.
+    pub fn begin_step(&mut self) -> bool {
         self.clear_frame_events();
         if self.end_game_at.is_some_and(|frame| self.tick >= frame) {
-            return;
+            return false;
         }
         self.logic_update = true;
         self.tick = self.tick.saturating_add(1);
@@ -2390,6 +2462,11 @@ impl Skirmish {
         self.update_bridge_states();
         self.update_map_scripts();
         self.update_opponent_scripts();
+        true
+    }
+
+    /// Completes the opened logic frame after its ordered client commands.
+    pub fn finish_step(&mut self) {
         self.update_repair_markers();
         self.update_sales();
         self.update_power();
@@ -2419,6 +2496,8 @@ impl Skirmish {
         self.update_direct_weapon_damage();
         self.update_victory();
         self.expire_hacked();
+        self.expire_default_disabled();
+        self.expire_emp();
         self.expire_paralysis();
         self.logic_update = false;
     }
@@ -2525,6 +2604,11 @@ impl Skirmish {
             .slave_welds
             .retain(|event| event.weld.frame + 1 >= self.tick);
         self.presentation.spectre_strafes.clear();
+        self.presentation.particle_uplink_scorches.clear();
+        self.presentation.emp_sparks.clear();
+        self.presentation.neutron_scorches.clear();
+        self.presentation.cash_bounties.clear();
+        self.presentation.superweapon_eva.clear();
         self.presentation.attached_particles.clear();
         self.presentation.laser_initializations.clear();
         self.presentation.ability_feedback.clear();
@@ -2994,6 +3078,16 @@ impl Skirmish {
             death_lifecycle: None,
             structure_death: None,
             spectre: None,
+            nuclear_launcher: nuclear_launcher::State::default(),
+            special_power_completions: vec![
+                special_power_completion::State::default();
+                unit.behavior.special_power_completions.len()
+            ],
+            emp: emp::State::default(),
+            emp_until: 0,
+            default_disabled_until: 0,
+            neutron_missile: neutron_missile::State::default(),
+            radius_decal: None,
             deployment: None,
             physical: None,
             helix: helix::State::new(),

@@ -273,6 +273,40 @@ impl Skirmish {
         self.wake_helper(id, Helper::StatusDamage, delay);
     }
 
+    pub(in crate::skirmish) fn do_temp_weapon_bonus(
+        &mut self,
+        id: usize,
+        bonus: u8,
+        duration: u32,
+    ) {
+        if !self.has_builtin_helper(id, Helper::TemporaryWeaponBonus) {
+            return;
+        }
+        if self.entities[id].helpers.temporary.bonus != Some(bonus) {
+            self.clear_temporary_weapon_bonus(id);
+        }
+        let flag = 1_u32 << bonus;
+        if self.entities[id].helpers.temporary.flags & flag == 0 {
+            let extra = self.passenger_bonus_flags(id);
+            let actor = &mut self.entities[id];
+            actor.helpers.temporary.flags |= flag;
+            actor.weapon_bonus_changed(
+                &self.catalog[actor.type_index],
+                self.tick,
+                extra,
+                &mut self.random,
+            );
+        }
+        let deadline = self.update_frame().wrapping_add(duration);
+        let actor = &mut self.entities[id];
+        actor.helpers.temporary.bonus = Some(bonus);
+        actor.helpers.temporary.until = deadline;
+        if actor.drawable.present {
+            actor.helpers.temporary.frenzy_tint = true;
+        }
+        self.wake_helper(id, Helper::TemporaryWeaponBonus, duration);
+    }
+
     fn clear_temporary_weapon_bonus(&mut self, id: usize) {
         let Some(bonus) = self.entities[id].helpers.temporary.bonus else {
             return;
@@ -282,7 +316,12 @@ impl Skirmish {
         if old != self.entities[id].helpers.temporary.flags {
             let extra = self.passenger_bonus_flags(id);
             let actor = &mut self.entities[id];
-            actor.weapon_bonus_changed(&self.catalog[actor.type_index], self.tick, extra);
+            actor.weapon_bonus_changed(
+                &self.catalog[actor.type_index],
+                self.tick,
+                extra,
+                &mut self.random,
+            );
         }
         let actor = &mut self.entities[id];
         let state = &mut actor.helpers;

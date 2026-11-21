@@ -90,6 +90,8 @@ fn research(files: &[ContentFile], name: &str, unit: &mut UnitType) -> Result<()
             .parse()?,
         frames: frames.to_string().parse()?,
         player: false,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     Ok(())
 }

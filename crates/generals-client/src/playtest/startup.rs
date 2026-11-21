@@ -577,6 +577,7 @@ fn install_resources(world: &mut World, prepared: &mut World) {
     transfer::<crate::weapon_fx::WeaponFx>(world, prepared);
     transfer::<crate::horde_decal::HordeDecals>(world, prepared);
     transfer::<crate::spectre_decals::SpectreDecals>(world, prepared);
+    transfer::<crate::particle_uplink::Presentation>(world, prepared);
     transfer::<crate::lockon_cursor::LockonCursors>(world, prepared);
     transfer::<crate::attack_cursor::AttackCursor>(world, prepared);
     transfer::<crate::radius_cursor::RadiusCursor>(world, prepared);
@@ -589,6 +590,26 @@ fn install_resources(world: &mut World, prepared: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn native_gla_power_setup_earns_rank_five_on_the_production_map() -> Result<(), Box<dyn Error>>
+    {
+        use crate::p03_gla_capture::Kind;
+
+        let root = generals_assets::game_root()?;
+        let capture = ScreenCapture::GlaPower(Kind::Gps);
+        let mut app = App::new();
+        app.init_resource::<Time<Virtual>>();
+        load_map(app.world_mut(), &root, &capture, capture.map_name(), false)?;
+        let mut battle = app.world_mut().remove_resource::<Match>().unwrap();
+        crate::p03_gla_capture::prepare(&mut app, &mut battle, Kind::Gps)?;
+        let player = &battle.simulation.players[0];
+        assert_eq!(player.rank, 5);
+        assert!(player.has_science("SCIENCE_GPSScrambler"));
+        assert!(battle.started && !battle.paused);
+        Ok(())
+    }
 
     fn shell_world() -> World {
         let root = &generals_assets::game_root().unwrap();

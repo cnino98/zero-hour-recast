@@ -194,9 +194,8 @@ impl Skirmish {
         let target = self.missile_control_target(id, ordinal);
         let component = self.projectile_component(id);
         let now = self.update_frame();
-        let FlightRules::Missile(rules) =
-            &self.catalog[self.entities[id].type_index].projectile_rules[ordinal]
-        else {
+        let kind = self.entities[id].type_index;
+        let FlightRules::Missile(rules) = &self.catalog[kind].projectile_rules[ordinal] else {
             unreachable!();
         };
         let terrain = &self.projectile_terrain;
@@ -233,7 +232,9 @@ impl Skirmish {
                         position,
                         axes,
                         veterancy: projectile.veterancy,
-                        stage: crate::skirmish::ProjectileFxStage::Ignition,
+                        stage: crate::skirmish::ProjectileFxStage::Ignition {
+                            projectile_type: kind,
+                        },
                     },
                 ));
         }

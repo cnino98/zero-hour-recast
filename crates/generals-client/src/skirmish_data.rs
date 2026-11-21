@@ -2,6 +2,7 @@
 mod admission_tests;
 mod aircraft;
 mod aircraft_death;
+mod airdrop_payloads;
 mod assisted_targeting;
 mod auto_find_healing;
 mod battle_bus;
@@ -10,10 +11,14 @@ mod behavior_data;
 mod body_admission_tests;
 mod bone_fx;
 mod bridge_behavior;
+mod cash_hack;
 mod combat_bike;
 mod create_object_die;
 mod creation;
+mod dynamic_shroud;
 mod eject_pilot;
+mod emp;
+mod gps_scrambler;
 mod helicopter_death;
 mod helix;
 mod hijacker;
@@ -21,26 +26,33 @@ mod map_crates;
 mod minefield;
 pub mod module_metadata;
 mod neutron_blast;
+mod neutron_missile;
+mod nuclear_launcher;
 mod object_creation;
 pub mod parachute;
 mod parking;
+mod particle_uplink;
 pub mod physical_ocl;
 mod pilot_find_vehicle;
+mod power_ocl;
 pub mod source_files;
 pub mod source_numbers;
 mod special_ability;
+mod special_power_completion;
+mod spy_vision_power;
 mod stealth_fighter;
 mod sticky_bomb;
 mod supply_crippling;
 mod toppling;
 mod veterancy_crate;
+mod weapon_bonus_update;
 use generals_assets::{
     content::{self, ContentFile, ContentLine, Declaration},
     virtual_assets::VirtualAssets,
     w3d::Model,
 };
 use generals_sim::skirmish::{
-    AiRules, DAMAGE_TYPE_COUNT, DamageType, EconomyRules, Faction, GroupKind, Kind,
+    AiRules, DAMAGE_TYPE_COUNT, DamageType, EconomyRules, Faction, GroupKind, Kind, Locomotor,
     MovementSurface, ProductionExit, UnitAi, UnitType,
 };
 use std::error::Error;
@@ -223,31 +235,49 @@ pub fn load(
         );
     }
     let (files, metadata) = source_files::with_runtime_dependencies(assets, &mut roster)?;
+    let selected: Vec<_> = roster.iter().map(|(name, _, _)| name.as_str()).collect();
+    let mut deliveries = reinforcement::lists(&files, &selected)?;
+    deliveries.extend(power_ocl::deliveries(&files, &selected)?);
     let repulsors_enabled = module_repulsors_enabled(assets)?;
     income::validate_command(&files)?;
+    let mut failures = Vec::new();
     for (name, faction, kind) in roster {
-        let object = definition(&files, "Object", &name)?;
-        let mut stats = unit_type(&files, object, faction, kind)
-            .and_then(|unit| finish_type(&files, object, unit))
-            .map_err(|error| format!("{name}: {error}"))?;
-        veterancy::load(&files, object, &mut stats)
-            .map_err(|error| format!("{name} veterancy: {error}"))?;
-        fake_buildings::load(&files, object, &mut stats)
-            .map_err(|error| format!("{name} fake-building rules: {error}"))?;
-        let model =
-            normal_model(assets, object).map_err(|error| format!("{name} model: {error}"))?;
-        bind_authored_model(object, &model, &mut stats, &name)?;
-        stats.update_modules = metadata
-            .get(&name)
-            .ok_or_else(|| format!("{name}: missing ordered module metadata"))?
-            .runtime_registrations(repulsors_enabled);
-        stats.behavior_modules = metadata
-            .get(&name)
-            .ok_or_else(|| format!("{name}: missing ordered behavior metadata"))?
-            .runtime_behaviors(&files)?;
-        generals_sim::skirmish::module_updates::validate_registrations(&stats)?;
-        types.push(stats);
-        models.push(model);
+        let loaded = (|| -> Result<_, Box<dyn Error>> {
+            let object = definition(&files, "Object", &name)?;
+            let mut stats = unit_type(&files, object, faction, kind)
+                .and_then(|mut unit| {
+                    power_ocl::append_delivery_weapons(&files, &deliveries, &mut unit)?;
+                    finish_type(&files, object, unit)
+                })
+                .map_err(|error| format!("{name}: {error}"))?;
+            veterancy::load(&files, object, &mut stats)
+                .map_err(|error| format!("{name} veterancy: {error}"))?;
+            fake_buildings::load(&files, object, &mut stats)
+                .map_err(|error| format!("{name} fake-building rules: {error}"))?;
+            let model =
+                normal_model(assets, object).map_err(|error| format!("{name} model: {error}"))?;
+            bind_authored_model(object, &model, &mut stats, &name)?;
+            stats.update_modules = metadata
+                .get(&name)
+                .ok_or_else(|| format!("{name}: missing ordered module metadata"))?
+                .runtime_registrations(repulsors_enabled);
+            stats.behavior_modules = metadata
+                .get(&name)
+                .ok_or_else(|| format!("{name}: missing ordered behavior metadata"))?
+                .runtime_behaviors(&files)?;
+            generals_sim::skirmish::module_updates::validate_registrations(&stats)?;
+            Ok((stats, model))
+        })();
+        match loaded {
+            Ok((stats, model)) => {
+                types.push(stats);
+                models.push(model);
+            }
+            Err(error) => failures.push(format!("{name}: {error}")),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(failures.join("\n").into());
     }
     aircraft_death::validate_targets(&types)?;
     helicopter_death::validate(&types)?;
@@ -262,8 +292,7 @@ pub fn load(
         min_low_energy_production_speed: number(global, 0, "MinLowEnergyProductionSpeed")?,
         max_low_energy_production_speed: number(global, 0, "MaxLowEnergyProductionSpeed")?,
     };
-    let selected: Vec<_> = types.iter().map(|unit| unit.name.as_str()).collect();
-    let deliveries = reinforcement::lists(&files, &selected)?;
+    maintenance::validate_hole_references(&types)?;
     let progression = crate::progression_data::load(assets, &files, &mut types)?;
     let disabled_sounds = disabled_sounds(&files)?;
     Ok(SkirmishData {
@@ -309,6 +338,11 @@ const ROSTER: &[(&str, Faction, Kind)] = &[
     ("AmericaVehicleComanche", Faction::Usa, Kind::Vehicle),
     ("AmericaPowerPlant", Faction::Usa, Kind::PowerPlant),
     ("AmericaStrategyCenter", Faction::Usa, Kind::TechBuilding),
+    (
+        "AmericaParticleCannonUplink",
+        Faction::Usa,
+        Kind::TechBuilding,
+    ),
     ("AmericaSupplyDropZone", Faction::Usa, Kind::TechBuilding),
     ("AmericaInfantryRanger", Faction::Usa, Kind::Infantry),
     ("AmericaInfantryPathfinder", Faction::Usa, Kind::Infantry),
@@ -354,6 +388,12 @@ const ROSTER: &[(&str, Faction, Kind)] = &[
     ("ChinaTankBattleMaster", Faction::China, Kind::Tank),
     ("ChinaTankDragon", Faction::China, Kind::Tank),
     ("ChinaVehicleInfernoCannon", Faction::China, Kind::Vehicle),
+    ("ChinaVehicleNukeLauncher", Faction::China, Kind::Vehicle),
+    (
+        "ChinaNuclearMissileLauncher",
+        Faction::China,
+        Kind::TechBuilding,
+    ),
     ("FireWallSegment", Faction::China, Kind::Effect),
     ("FireWallSegmentUpgraded", Faction::China, Kind::Effect),
     ("FireFieldSmall", Faction::China, Kind::Effect),
@@ -411,6 +451,8 @@ const ROSTER: &[(&str, Faction, Kind)] = &[
     ("GLATankMarauder", Faction::Gla, Kind::Tank),
     ("GLAVehicleRadarVan", Faction::Gla, Kind::Vehicle),
     ("GLAPalace", Faction::Gla, Kind::TechBuilding),
+    ("GLAScudStorm", Faction::Gla, Kind::TechBuilding),
+    ("GLAHoleScudStorm", Faction::Gla, Kind::TechBuilding),
     ("GLABlackMarket", Faction::Gla, Kind::TechBuilding),
     ("FakeGLACommandCenter", Faction::Gla, Kind::TechBuilding),
     ("FakeGLABarracks", Faction::Gla, Kind::TechBuilding),
@@ -884,14 +926,29 @@ fn load_locomotor(
     stats.preferred_height = locomotor::signed_real(lines, 0, "PreferredHeight", 0.0)?;
     stats.chinook = chinook::load(files, object, lines)?;
     stats.aircraft = aircraft::load(files, object)?;
-    stats.movement_surface = locomotor_surface(lines)?;
+    stats.movement_surface = locomotor_surface(lines, stats.speed, &stats.locomotor)?;
     Ok(())
 }
 
-fn locomotor_surface(lines: &[ContentLine]) -> Result<MovementSurface, Box<dyn Error>> {
+fn locomotor_surface(
+    lines: &[ContentLine],
+    speed: f32,
+    locomotor: &Locomotor,
+) -> Result<MovementSurface, Box<dyn Error>> {
+    use generals_sim::skirmish::flight::{Appearance, Height};
+
     match locomotor_surface_mask(lines)? {
         1 | 17 => Ok(MovementSurface::Ground),
         8 => Ok(MovementSurface::Air),
+        3 if speed == 0.0
+            && locomotor.speed_damaged == 0.0
+            && locomotor.flight.as_ref().is_some_and(|flight| {
+                matches!(flight.appearance, Appearance::Hover)
+                    && matches!(flight.height, Height::Surface)
+            }) =>
+        {
+            Ok(MovementSurface::Ground)
+        }
         _ => Err("Selected locomotor uses unported movement surfaces".into()),
     }
 }
@@ -1572,10 +1629,11 @@ fn normal_state(draw: &[ContentLine]) -> Result<&[ContentLine], Box<dyn Error>> 
     blocks(draw, 1, "ConditionState")?
         .into_iter()
         .find(|state| {
-            state[0]
-                .tokens
-                .get(1)
-                .is_some_and(|value| value.eq_ignore_ascii_case("NONE"))
+            // W3DModelDraw's PARSE_NORMAL sees a bare header as an empty
+            // ModelConditionFlags mask, the same normal state as NONE.
+            let conditions = &state[0].tokens[1..];
+            conditions.is_empty()
+                || matches!(conditions, [value] if value.eq_ignore_ascii_case("NONE"))
         })
         .ok_or_else(|| "primary Draw has no normal condition state".into())
 }
@@ -1952,7 +2010,11 @@ mod tests {
                 bytes: format!("Locomotor Test\n{fields}\nEnd\n").into_bytes(),
             })
             .unwrap();
-            super::locomotor_surface(&file.declarations[0].lines)
+            super::locomotor_surface(
+                &file.declarations[0].lines,
+                0.0,
+                &super::locomotor::stationary(),
+            )
         };
         for source in [
             "Surfaces = GROUND",
@@ -1980,6 +2042,18 @@ mod tests {
         ] {
             assert!(parse(source).is_err(), "unexpectedly accepted {source}");
         }
+    }
+
+    #[test]
+    fn bare_condition_state_supplies_the_authored_sneak_attack_day_model() {
+        let file = content::scan(Asset {
+            path: "object/factionbuilding.ini".into(),
+            origin: "Sneak Attack source normal-state shape".into(),
+            bytes: b"Object GLASneakAttackTunnelNetwork\nDraw=W3DModelDraw Tag\nConditionState\nModel=UBSNATK_1\nEnd\nConditionState=DAMAGED\nModel=UBSNATK_E\nEnd\nEnd\nEnd\n".to_vec(),
+        }).unwrap();
+        let draw = super::blocks(&file.declarations[0].lines, 0, "Draw").unwrap()[0];
+        let state = super::normal_state(draw).unwrap();
+        assert_eq!(super::text(state, 2, "Model").unwrap(), "UBSNATK_1");
     }
 
     #[test]

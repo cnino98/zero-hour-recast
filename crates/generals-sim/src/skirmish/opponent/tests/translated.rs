@@ -1012,12 +1012,16 @@ fn script_research_uses_paid_queue_once_and_rejects_object_scope() {
             cost: 500,
             frames: 60,
             player: true,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         },
         Research {
             name: "ObjectUpgrade".into(),
             cost: 300,
             frames: 60,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         },
     ];
     let rules = rules(Vec::new());

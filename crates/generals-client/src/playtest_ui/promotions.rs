@@ -57,9 +57,12 @@ pub(super) fn activate(
                 && battle.promotions_open
                 && faction == faction_index(battle.simulation.players[0].faction)
                 && battle.simulation.can_purchase_science(0, science)
-                && let Err(error) = battle.simulation.purchase_science(0, science)
             {
-                eprintln!("Science purchase rejected: {error}");
+                crate::input::commands::enqueue(
+                    battle,
+                    None,
+                    crate::input::commands::Kind::Science(science.clone()),
+                );
             }
         }
         _ => return false,

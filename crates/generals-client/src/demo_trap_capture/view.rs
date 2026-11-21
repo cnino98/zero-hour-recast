@@ -47,10 +47,20 @@ impl View<'_, '_> {
                     &mut control.mouse,
                     CommandAction::SwitchWeapon(2),
                 );
+                check.submitted_frame = Some(control.battle.simulation.tick);
+                check.stage = 5;
+                control.clock.unpause();
+            }
+            5 if control.clock.is_paused()
+                && check
+                    .submitted_frame
+                    .is_some_and(|frame| control.battle.simulation.tick > frame) =>
+            {
                 require(
                     control.battle.simulation.entities[check.setup.trap].weapon_slot() == 2,
                     "original manual button did not select the tertiary slot",
                 )?;
+                check.submitted_frame = None;
                 control.capture.intermediate(if check.proximity {
                     "demo-trap-proximity-controls.png"
                 } else {

@@ -29,12 +29,10 @@ fn paid_native_jarmen_preparation_preserves_original_targeting_and_both_live_vic
     mouse.hovered = Some(setup.vehicle);
     assert_eq!(crate::attack_cursor::context(&mut battle, &mouse), Some(11));
     let health = battle.simulation.entities[setup.vehicle].health.to_bits();
-    assert!(input::pilot::issue(
-        &mut battle,
-        &mut mouse,
-        setup.vehicle,
-        1
-    ));
+    let target = Vec2::from_array(battle.simulation.entities[setup.vehicle].position);
+    input::targeted_order(&mut battle, &mut mouse, target, Some(setup.vehicle));
+    assert!(matches!(mouse.pending_command, CommandMode::Normal));
+    input::commands::step(&mut battle, &mut mouse);
     assert!(matches!(
         mouse.voices.last().unwrap().voice(),
         Voice::SnipePilot
@@ -62,6 +60,7 @@ fn paid_native_jarmen_preparation_preserves_original_targeting_and_both_live_vic
         Some(PickTarget::Unit(setup.vehicle)),
         &mut mouse
     ));
+    input::commands::step(&mut battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         9000,
@@ -79,6 +78,7 @@ fn paid_native_jarmen_preparation_preserves_original_targeting_and_both_live_vic
         Some(PickTarget::Unit(setup.infantry)),
         &mut mouse
     ));
+    input::commands::step(&mut battle, &mut mouse);
     assert!(matches!(
         mouse.voices.last().unwrap().voice(),
         Voice::Attack
@@ -98,7 +98,7 @@ fn paid_capture_preparation_runs_native_cloak_updates_before_freezing_the_image(
         battle.into_inner().simulation.step();
     }
 
-    let (_, mut battle, animations) =
+    let (assets, mut battle, animations) =
         crate::cleanup_verification::tests::installed_with_animations();
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
@@ -108,6 +108,7 @@ fn paid_capture_preparation_runs_native_cloak_updates_before_freezing_the_image(
         )))
         .insert_resource(animations)
         .insert_resource(Cloaks::new())
+        .insert_resource(crate::selection_feedback::load(&assets).unwrap())
         .add_systems(FixedUpdate, (step, stealth_view::record).chain());
     app.world_mut().resource_mut::<Time<Virtual>>().pause();
     prepare(&mut app, &mut battle).unwrap();
@@ -207,11 +208,11 @@ fn shared_primary_reload_rejects_pilot_input_until_the_native_clock_is_ready() {
         battle.simulation.entities[setup.sniper].ai.order,
         Order::Idle
     ));
-    assert!(!input::pilot::issue(
-        &mut battle,
-        &mut mouse,
-        setup.vehicle,
-        1
+    let target = Vec2::from_array(battle.simulation.entities[setup.vehicle].position);
+    input::targeted_order(&mut battle, &mut mouse, target, Some(setup.vehicle));
+    assert!(matches!(
+        mouse.pending_command,
+        CommandMode::SnipeVehicle(1)
     ));
     assert_eq!(mouse.voices.len(), voices);
     assert!(matches!(
@@ -223,12 +224,10 @@ fn shared_primary_reload_rejects_pilot_input_until_the_native_clock_is_ready() {
     }
     assert!(input::pilot::can_target(&mut battle, setup.vehicle, 1));
     assert_eq!(crate::attack_cursor::context(&mut battle, &mouse), Some(11));
-    assert!(input::pilot::issue(
-        &mut battle,
-        &mut mouse,
-        setup.vehicle,
-        1
-    ));
+    let target = Vec2::from_array(battle.simulation.entities[setup.vehicle].position);
+    input::targeted_order(&mut battle, &mut mouse, target, Some(setup.vehicle));
+    assert!(matches!(mouse.pending_command, CommandMode::Normal));
+    input::commands::step(&mut battle, &mut mouse);
     assert!(matches!(battle.simulation.entities[setup.sniper].ai.order,
         Order::Attack(target) if target == setup.vehicle));
 }

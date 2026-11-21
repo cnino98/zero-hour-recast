@@ -12,15 +12,19 @@ Zero Hour Recast aims to reproduce local skirmish with the original rules, contr
 | November 5, 2026 | Prepared the source checkout with game-independent tests and a six-target native CI matrix. Verified a second sortie after rearming in the four-MiG installed check. |
 | November 13, 2026 — v0.2.0 | Verified base special-unit behavior, fake-building conversion, stock airfield lifecycles, countermeasures, repair and deliveries. Restored original wheel effects, tracks, borrowed vehicle tread animation, C4 feedback and disguise hover names. Verified aircraft crash bodies, hulks and pilot release. Fixed faded-track mesh retirement and opaque disguise materials. |
 | November 14, 2026 — v0.2.1 | Fixed the main-menu startup failure introduced in v0.2.0. Gameplay controls load when a match starts, including C4 icons, hover labels and terrain tracks. Added a normal-startup regression that also checks missing match data is still rejected. |
+| 2026-11-21 — local v0.3.0 | Added the base factions’ upgrades and general powers, plus the Particle Cannon, Nuclear Missile and SCUD Storm. Added mine and supply behavior and Saboteur use against superweapons, with original controls and effects. |
 
 ## Known issues
 
-- The scoped ground, aircraft and delivery checks pass; broader animation, rendering and audio coverage remains planned. The final full installed suite has not yet run against the integrated build.
+- A reported runway zigzag has not yet been reproduced.
+- Broader animation, rendering and audio work remains. The full installed-game test suite has not yet run against the integrated build.
 - Large battles can fall below the 60 FPS target. A November 4 build measured a 22.2 ms median frame time (about 45 FPS) in the 50-units-per-side battle at 3024 × 1890 and a 12.0 ms median in the separate garrisoned-defense test.
 
 ## Planned work
 
-- Complete the base rosters and special abilities, including remaining units, upgrades, general powers and superweapons. Verify their interactions with aircraft, supply, containment and repair as the remaining consumers are translated.
+Next work covers original and custom maps, base skirmish AI, and fog of war and visibility.
+
+- Finish remaining unit behavior and interactions with aircraft, supply collection, transports and repair.
 - Implement USA Air Force, Laser and Superweapon, China Tank, Infantry and Nuke, and GLA Toxin, Demolition and Stealth, including their distinct units, powers and AI.
 - Verify all original skirmish maps and expand custom-map compatibility. Finish map scripts, visibility, starting slots, AI teams and difficulty through the end of a match.
 - Complete original unit animations, effects, terrain, shadows, UI feedback, music, speech and sound. Finish menus, settings, statistics, local saves and replay playback.

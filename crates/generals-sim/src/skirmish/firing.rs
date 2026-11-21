@@ -52,23 +52,30 @@ impl WeaponState {
 }
 
 impl super::Entity {
-    pub(super) fn weapon_bonus_changed(&mut self, unit: &super::UnitType, frame: u64, extra: u32) {
+    pub(super) fn weapon_bonus_changed(
+        &mut self,
+        unit: &super::UnitType,
+        frame: u64,
+        extra: u32,
+        random: &mut [u32; 6],
+    ) {
         // Object's actual condition-bit edges call every allocated weapon in
         // slot order. Weapon::onWeaponBonusChange restarts the full active delay.
         for slot in 0..self.weapon_set.weapons.len() {
             let Some(weapon) = unit.weapon_template(self.weapon_index(slot)) else {
                 continue;
             };
-            let seconds = match self.weapon_status(slot, unit, native_frame(frame)) {
-                Some(WeaponStatus::Reloading) => weapon.reload_seconds,
-                Some(WeaponStatus::BetweenShots) => weapon.delay,
+            let rate = self.weapon_rate_for(weapon, extra);
+            let frames = match self.weapon_status(slot, unit, native_frame(frame)) {
+                Some(WeaponStatus::Reloading) => super::progression::real_unsigned(
+                    ((weapon.reload_seconds * 30.0).ceil() / rate).floor(),
+                ),
+                Some(WeaponStatus::BetweenShots) => weapon.sample_shot_delay(random, rate),
                 _ => continue,
             };
-            let delay = ((seconds * 30.0).ceil() / self.weapon_rate_for(weapon, extra)).floor();
+            let delay = super::progression::integer_real(frames);
+            let deadline = u64::from(native_frame(frame).wrapping_add(frames));
             self.weapon_set.weapons[slot].cooldown = delay;
-            let deadline = u64::from(
-                native_frame(frame).wrapping_add(super::progression::real_unsigned(delay)),
-            );
             self.weapon_set.weapons[slot].possible_next_shot = deadline;
             self.weapon_set.weapons[slot].last_reload_started = frame;
             if unit.weapon_set_rules.share_reload {
@@ -206,7 +213,7 @@ mod bonus_tests {
         let id = game.spawn(index, 0, [300.0, 300.0], true);
         game.entities[id].spend_weapon_round(&game.catalog[index], game.tick, 0);
         let actor = &mut game.entities[id];
-        actor.weapon_bonus_changed(&game.catalog[index], game.tick, 0);
+        actor.weapon_bonus_changed(&game.catalog[index], game.tick, 0, &mut game.random);
         // PRIMARY's shot delay marks both as reloading; the subsequent SECONDARY
         // callback then sets both to its full clip reload duration.
         for slot in [0, 1] {

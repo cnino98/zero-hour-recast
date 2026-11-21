@@ -9,6 +9,8 @@ pub struct TransportRules {
     pub door_delay: u32,
     pub exit_bone: String,
     pub exit_pitch_rate: f32,
+    pub dive_sound: String,
+    pub strafe_effects: Vec<String>,
 }
 
 // The real OCL creation callback owns its copy while newObject runs constructors.
@@ -24,14 +26,55 @@ pub struct Rules {
     pub transport: String,
     pub payload: Vec<Payload>,
     pub container: String,
-    pub preferred_height: bool,
-    pub max_speed: bool,
+    pub transport_start: TransportStart,
+    pub release: Release,
     pub attempts: i32,
-    pub drop_offset: [f32; 3],
-    pub drop_delay: u32,
     pub delivery_distance: f32,
     pub pre_open_distance: f32,
+    pub formation_size: u32,
+    pub formation_spacing: f32,
+    pub convergence: f32,
+    pub error_radius: f32,
+    pub self_destruct: bool,
+    pub visible: Option<VisiblePayload>,
+    pub dive: Option<Dive>,
+    pub decal: Option<(f32, super::radius_decal::Template)>,
+}
+
+#[derive(Clone)]
+pub struct TransportStart {
+    pub preferred_height: bool,
+    pub max_speed: bool,
+    pub delay_delivery_max: u32,
+}
+
+#[derive(Clone)]
+pub struct Release {
+    pub drop_offset: [f32; 3],
+    pub drop_delay: u32,
     pub parachute_directly: bool,
+    pub drop_variance: [f32; 3],
+    pub inherit_velocity: bool,
+    pub exit_pitch_rate: f32,
+    pub fire_weapon: bool,
+}
+
+#[derive(Clone)]
+pub struct VisiblePayload {
+    pub per_interval: u32,
+    pub count: u32,
+    pub bone: String,
+    pub sub_object: String,
+    pub object: String,
+    pub weapon: String,
+}
+
+#[derive(Clone)]
+pub struct Dive {
+    pub start: f32,
+    pub end: f32,
+    pub weapon_slot: Option<usize>,
+    pub effect: String,
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +96,15 @@ struct Mission {
     drop_delay: u32,
     reentry_frame: u32,
     exit_direction: [f32; 3],
+    visible_delivered: u32,
+    dive: DiveState,
+}
+
+#[derive(PartialEq, Eq)]
+enum DiveState {
+    Before,
+    Diving,
+    After,
 }
 
 pub(super) struct State {
@@ -93,12 +145,21 @@ impl Skirmish {
     }
 
     pub(in crate::skirmish) fn update_delivery_module(&mut self, id: usize) -> i32 {
+        self.update_radius_decal(id);
         if !self.entities[id].is_ai_dead() {
             self.update_delivery_state(id);
         }
+        self.update_delivery_dive(id);
         // Native subclass ignores the base sleep result and remains awake every frame.
         self.update_ai_module(id);
         1
+    }
+
+    pub(in crate::skirmish) fn destroy_delivery_module(&mut self, id: usize) {
+        // DeliverPayloadAIUpdate's destructor clears the owned decal before
+        // AIUpdateInterface releases the nested dock state.
+        self.entities[id].radius_decal = None;
+        self.cancel_docking(id);
     }
 
     fn delivery_state(&self, id: usize) -> &State {

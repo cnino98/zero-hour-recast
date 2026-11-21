@@ -62,6 +62,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         ),
         "remote tunnel rally rejected",
     )?;
+    input::commands::step(battle, &mut mouse);
     require(
         battle
             .simulation
@@ -70,6 +71,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         "selected tunnel lacks original center/natural/user rally feedback",
     )?;
     dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(slot));
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         30,
@@ -86,6 +88,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         input::context_order(battle, None, Some(PickTarget::Unit(remote)), &mut mouse),
         "original tunnel context re-entry failed",
     )?;
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         3000,

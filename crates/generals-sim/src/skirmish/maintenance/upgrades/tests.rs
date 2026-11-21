@@ -8,6 +8,8 @@ fn research(name: &str, player: bool) -> Research {
         cost: 100,
         frames: 2,
         player,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     }
 }
 

@@ -10,11 +10,15 @@ pub(super) fn load(
 ) -> Result<Vec<Rules>, Box<dyn Error>> {
     let mut result = Vec::new();
     for module in blocks(&object.lines, 0, "Behavior")? {
-        if module[0]
-            .tokens
-            .get(1)
-            .is_none_or(|family| family != "SpecialAbility")
-        {
+        if module[0].tokens.get(1).is_none_or(|family| {
+            !matches!(
+                family.as_str(),
+                "SpecialAbility"
+                    | "OCLSpecialPower"
+                    | "SpyVisionSpecialPower"
+                    | "CashHackSpecialPower"
+            )
+        }) {
             continue;
         }
         let name = string(module, 1, "SpecialPowerTemplate")?;
@@ -22,9 +26,6 @@ pub(super) fn load(
         let lines = &template.lines;
         let power_type = string(lines, 0, "Enum")?;
         let public_timer = boolean(lines, 0, "PublicTimer")?;
-        if public_timer {
-            return Err("SpecialAbility public superweapon timer UI is not implemented".into());
-        }
         let global = definition(files, "GameData", "")?;
         let view_name = string(&global.lines, 0, "SpecialPowerViewObjectName")?;
         let view_template = super::instant_death::nullable(files, "Object", &view_name)?

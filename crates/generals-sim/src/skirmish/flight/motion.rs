@@ -61,14 +61,7 @@ pub(super) fn update(
             let origin = [actor.position[0], actor.position[1], state.height];
             let maintain = *state.maintain.get_or_insert(origin);
             state.set(BRAKING, false);
-            height(
-                state,
-                &drive,
-                maintain[2],
-                ground,
-                damaged,
-                actor.chinook.is_some(),
-            );
+            height(state, &drive, maintain[2], actor, damaged);
         }
         return;
     }
@@ -76,14 +69,7 @@ pub(super) fn update(
     if let Some(goal) = state.goal.take() {
         state.maintain = None;
         move_towards(actor, unit, state, &goal, ground, &drive);
-        height(
-            state,
-            &drive,
-            goal.position[2],
-            ground,
-            damaged,
-            actor.chinook.is_some(),
-        );
+        height(state, &drive, goal.position[2], actor, damaged);
     } else {
         let origin = [actor.position[0], actor.position[1], state.height];
         let maintain = *state.maintain.get_or_insert(origin);
@@ -111,14 +97,7 @@ pub(super) fn update(
                 Appearance::Wings => {}
             }
         }
-        height(
-            state,
-            &drive,
-            maintain[2],
-            ground,
-            damaged,
-            actor.chinook.is_some(),
-        );
+        height(state, &drive, maintain[2], actor, damaged);
     }
 }
 
@@ -151,15 +130,7 @@ fn move_to_angle(
         };
         let ground = drive.terrain.ground_height(actor.position);
         move_towards(actor, unit, state, &goal, ground, drive);
-        let ground = drive.terrain.ground_height(actor.position);
-        height(
-            state,
-            drive,
-            goal.position[2],
-            ground,
-            damaged,
-            actor.chinook.is_some(),
-        );
+        height(state, drive, goal.position[2], actor, damaged);
     } else {
         let offset = [angle.cos(), angle.sin()].map(|direction| direction * 1000.0);
         let target = [actor.position[0] + offset[0], actor.position[1] + offset[1]];
@@ -176,15 +147,7 @@ fn move_to_angle(
             drive.terrain,
         );
         let current_height = state.height;
-        let ground = drive.terrain.ground_height(actor.position);
-        height(
-            state,
-            drive,
-            current_height,
-            ground,
-            damaged,
-            actor.chinook.is_some(),
-        );
+        height(state, drive, current_height, actor, damaged);
     }
 }
 
@@ -369,21 +332,22 @@ pub(super) fn forward_speed(state: &Motion, facing: f32) -> f32 {
     }
 }
 
-fn height(
-    state: &mut Motion,
-    drive: &Drive<'_>,
-    goal: f32,
-    ground: f32,
-    damaged: bool,
-    chinook: bool,
-) {
+fn height(state: &mut Motion, drive: &Drive<'_>, goal: f32, actor: &Entity, damaged: bool) {
     let rules = drive.rules;
-    if chinook {
+    if actor.chinook.is_some() {
         return;
     }
     let preferred_height = state.preferred_height.unwrap_or(rules.preferred_height);
     let surface = match rules.height {
-        Height::Surface | Height::FixedSurface => ground,
+        Height::Surface | Height::FixedSurface => {
+            let ground = drive.terrain.ground_height(actor.position);
+            drive.terrain.water_surface(actor.position, ground)
+        }
+        Height::HighestLayer => {
+            drive
+                .terrain
+                .flight_layer_surface(actor.position, state.height, actor.layer)
+        }
         _ => 0.0,
     };
     if matches!(rules.height, Height::FixedSurface | Height::FixedAbsolute) {

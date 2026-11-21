@@ -40,6 +40,7 @@ fn click(
     assert_eq!(crate::attack_cursor::context(battle, mouse), Some(5));
     input::targeted_order(battle, mouse, point.into(), None);
     assert!(matches!(mouse.pending_command, input::CommandMode::Normal));
+    input::commands::step(battle, mouse);
     assert!(matches!(
         mouse.voices.last().unwrap().voice(),
         Voice::Disarm
@@ -58,23 +59,22 @@ fn original_slot14_adjacent_empty_ground_digs_and_reloads_without_firefx_or_miss
     let (data, mut mouse) = controls(&assets, &battle);
     battle.select_objects(&[builder], true);
     let point = battle.simulation.entities[builder].position;
-    click(&mut battle, &data, &mut mouse, [point[0] + 2.0, point[1]]);
     let order_frame = battle.simulation.tick;
+    click(&mut battle, &data, &mut mouse, [point[0] + 2.0, point[1]]);
     let mut start = None;
     let mut spent = None;
     for _ in 0..240 {
-        battle.simulation.step();
         let game = &mut battle.simulation;
         let actor = &game.entities[builder];
         if let Some((frame, duration, _)) = actor.animation_duration() {
-            // The FINAL-phase animation helper first sees the command a frame later.
-            assert_eq!((frame, duration), (order_frame + 1, 35));
+            // Command admission and the FINAL helper share this logic frame.
+            assert_eq!((frame, duration), (order_frame + 1, 36));
             start.get_or_insert(frame);
         }
         if spent.is_none() && actor.weapon_rounds_remaining(0) == 0 {
             spent = Some(game.tick);
-            assert_eq!(game.tick, start.unwrap() + 35);
-            assert_eq!(game.tick, order_frame + 36);
+            assert_eq!(game.tick, start.unwrap() + 36);
+            assert_eq!(game.tick, order_frame + 37);
             assert_eq!(actor.weapon_condition(), Some("RELOADING_A"));
         }
         if let Some(frame) = spent {
@@ -105,6 +105,7 @@ fn original_slot14_adjacent_empty_ground_digs_and_reloads_without_firefx_or_miss
                 .all(|projectile| projectile.source != builder)
         );
         assert!(game.hazards.is_empty());
+        battle.simulation.step();
     }
     assert!(spent.is_some());
     assert!(matches!(
@@ -143,7 +144,6 @@ fn paid_hidden_demo_trap_is_found_by_original_area_click_without_global_revelati
     assert!(!battle.simulation.entities[trap].detected());
     let mut shot = None;
     for _ in 0..1800 {
-        battle.simulation.step();
         let game = &battle.simulation;
         if let Some(event) = game
             .presentation
@@ -172,6 +172,7 @@ fn paid_hidden_demo_trap_is_found_by_original_area_click_without_global_revelati
                 break;
             }
         }
+        battle.simulation.step();
     }
     let game = &mut battle.simulation;
     assert!(shot.is_some() && game.entities[trap].masked());

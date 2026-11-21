@@ -182,8 +182,15 @@ pub fn movement_details(game: &Skirmish, id: usize) -> String {
         .as_ref()
         .map_or_else(Vec::new, |path| path.positions().collect());
     let goal = actor.ai.path_goal.map(|cell| [cell.x, cell.y]);
+    let foundations: Vec<_> = game
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| target.under_construction() && target.maintenance.builder == Some(id))
+        .map(|(index, target)| (index, target.owner, target.position, target.build_progress))
+        .collect();
     format!(
-        "order={} position={:?} health={} velocity={:?} ignored={:?} following_rally={:?} endpoint={:?} goal={goal:?} pending={} failed={} path_frame={} has_motion_goal={} raw_route={raw_route:?} route={route:?} ground_path={path:?} extra_distance={} blocked_frames={} stuck={} retry={:?} temporary={:?}; {}",
+        "order={} assigned_foundations={foundations:?} position={:?} health={} velocity={:?} ignored={:?} following_rally={:?} endpoint={:?} goal={goal:?} pending={} failed={} path_frame={} has_motion_goal={} raw_route={raw_route:?} route={route:?} ground_path={path:?} extra_distance={} blocked_frames={} stuck={} retry={:?} temporary={:?}; {}",
         order_details(actor.ai.order),
         actor.position,
         actor.health,

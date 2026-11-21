@@ -40,6 +40,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
     )?;
     let rider = passenger(battle, 0).ok_or("missing first Ambulance passenger")?;
     dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(0));
+    input::commands::step(battle, &mut mouse);
     advance_until(&mut battle.simulation, 100, "UI individual exit", |game| {
         game.entities[rider].contained_by().is_none()
     })?;
@@ -54,11 +55,13 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         ),
         "original context command failed to board transport",
     )?;
+    input::commands::step(battle, &mut mouse);
     advance_until(&mut battle.simulation, 3000, "UI reboarding", |game| {
         game.entities[rider].contained_by() == Some(setup.medic)
     })?;
     battle.select_objects(&[setup.medic], true);
     dispatch_command(battle, &mut mouse, CommandAction::Evacuate);
+    input::commands::step(battle, &mut mouse);
     advance_until(&mut battle.simulation, 1000, "UI evacuation", |game| {
         game.passengers(setup.medic).is_empty()
     })?;
@@ -74,6 +77,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         )?;
         dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(index));
     }
+    input::commands::step(battle, &mut mouse);
     require(
         battle.simulation.passengers(setup.medic).is_empty(),
         "empty inventory action produced a passenger",
@@ -251,6 +255,7 @@ pub fn structure_inventory(
         "structure Stop/Evacuate source slots changed",
     )?;
     dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(0));
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         120,
@@ -270,6 +275,7 @@ pub fn structure_inventory(
         )?;
     }
     dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(9));
+    input::commands::step(battle, &mut mouse);
     require(
         battle.simulation.entities[rider].contained_by().is_none(),
         "empty civilian inventory click changed rider",
@@ -279,6 +285,7 @@ pub fn structure_inventory(
         input::context_order(battle, None, Some(PickTarget::Unit(host)), &mut mouse),
         "normal context order did not enter civilian building",
     )?;
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         3000,

@@ -317,7 +317,7 @@ pub(super) const fn default_event() -> Event {
     }
 }
 
-pub(super) const VOICE_KEYS: [&str; 38] = [
+pub(super) const VOICE_KEYS: [&str; 40] = [
     "VoiceSelect",
     "VoiceMove",
     "VoiceAttack",
@@ -356,6 +356,8 @@ pub(super) const VOICE_KEYS: [&str; 38] = [
     "VoiceModeBombTruckDisguise",
     "VoiceModeBombTruckBioBomb",
     "VoiceModeBombTruckHighExplosive",
+    "VoiceModeBoobyTrap",
+    "VoiceNoBuild",
 ];
 
 pub fn units(
@@ -499,6 +501,7 @@ fn voice_bindings(
                 | "VoiceModeBombTruckDisguise"
                 | "VoiceModeBombTruckBioBomb"
                 | "VoiceModeBombTruckHighExplosive"
+                | "VoiceModeBoobyTrap"
         ) {
             let button = mode_button(unit, key);
             if let Some(button) = button {
@@ -525,6 +528,7 @@ fn voice_bindings(
             key,
             "VoiceSupply"
                 | "VoiceBuildResponse"
+                | "VoiceNoBuild"
                 | "VoiceRepair"
                 | "VoiceHackInternet"
                 | "VoiceEnter"
@@ -588,6 +592,9 @@ fn mode_button(unit: &UnitType, key: &str) -> Option<&'static str> {
         };
     }
     match key {
+        "VoiceModeBoobyTrap" if unit.name == "GLAInfantryRebel" => {
+            Some("Command_GLAInfantryRebelBoobyTrapAttack")
+        }
         "VoiceModeSnipe" if unit.name == "GLAInfantryJarmenKell" => {
             Some("Command_GLAInfantryJarmenKellSnipeVehicleAttack")
         }
@@ -823,6 +830,28 @@ pub(super) fn signed_number(value: &str) -> Result<f32, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn installed_rebel_mode_voice_is_loaded_from_the_original_command_button() {
+        let root = generals_assets::game_root().unwrap();
+        let assets = super::VirtualAssets::for_zero_hour(
+            root.join("GameData/Command and Conquer Generals"),
+            root.join("GameData/Command and Conquer Generals Zero Hour"),
+        )
+        .unwrap();
+        let data = crate::skirmish_data::load(&assets, &[]).unwrap();
+        let rebel = data
+            .types
+            .iter()
+            .find(|unit| unit.name == "GLAInfantryRebel")
+            .unwrap();
+        let audio = super::units(&assets, std::slice::from_ref(rebel)).unwrap();
+        assert_eq!(
+            audio[0].voices[super::super::Voice::BoobyTrapMode.index()].name,
+            "RebelVoiceModeBoobyTrap"
+        );
+    }
+
     #[ignore = "requires original game installation"]
     #[test]
     fn installed_zero_primary_sprayers_keep_original_fire_loop_and_both_command_voices() {

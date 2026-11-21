@@ -342,13 +342,17 @@ pub fn construct_type_at(
         "construction completion",
         |game| game.entities[building].complete(),
     ).map_err(|error| {
-        let actor = &game.entities[builder];
-        let order = match actor.ai.order {
-            Order::Idle => "Idle",
-            Order::Build(_) => "Build",
-            _ => "other",
-        };
-        format!("{error}; builder {} at {:?}, health {}, order {order}, moving {}, constructing {}; {} foundation at {:?}, health {}, progress {}, radius {}", game.catalog[actor.type_index].name, actor.position, actor.health, actor.moving(), actor.actively_constructing(), game.catalog[type_index].name, position, game.entities[building].health, game.entities[building].build_progress, game.catalog[type_index].geometry.major)
+        let foundation = &game.entities[building];
+        let order = generals_sim::skirmish::diagnostics::movement_details(game, builder);
+        format!(
+            "{error}; {} foundation {building} owner {} at {position:?}, health {}, progress {}, radius {}; builder {builder} owner {} {order}",
+            game.catalog[type_index].name,
+            foundation.owner,
+            foundation.health,
+            foundation.build_progress,
+            game.catalog[type_index].geometry.major,
+            game.entities[builder].owner,
+        )
     })?;
     println!(
         "  {} complete; cash {}",

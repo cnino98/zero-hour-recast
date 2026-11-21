@@ -7,6 +7,7 @@ mod name_entry;
 pub mod observer;
 pub mod ocl_timer;
 pub mod options;
+pub mod power_shortcuts;
 mod promotions;
 pub mod results;
 use bevy::prelude::*;
@@ -15,7 +16,7 @@ use generals_assets::{
     virtual_assets::VirtualAssets,
 };
 use generals_sim::skirmish::UnitType;
-pub use promotions::Promotions;
+pub use promotions::{Promotions, ScienceButton};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -43,6 +44,7 @@ pub struct UiData {
     pub units: Vec<UnitUi>,
     pub cancel_construction: Command,
     pub ocl_timer: Option<ocl_timer::Data>,
+    pub power_shortcuts: Option<power_shortcuts::Data>,
     pub windows: BTreeMap<String, Rect>,
     pub labels: BTreeMap<String, String>,
     pub factions: [String; 3],
@@ -132,6 +134,7 @@ pub enum CommandAction {
     EmergencyRepair,
     SpectreGunship,
     AirForceSpectreGunship,
+    NativePower(PowerCommand),
     CancelConstruction,
     Sell,
     DetonateFake,
@@ -145,6 +148,59 @@ pub enum CommandAction {
     BattlePlan(generals_sim::skirmish::battle_plan::Plan),
 }
 
+#[derive(Clone, Copy)]
+pub struct PowerCommand {
+    pub name: &'static str,
+    pub aim: PowerAim,
+}
+
+#[derive(Clone, Copy)]
+pub enum PowerAim {
+    Immediate,
+    Location,
+    Object,
+    Construct(usize),
+}
+
+fn supported_power(name: &str) -> Option<&'static str> {
+    [
+        "SpecialPowerSpySatellite",
+        "SpecialPowerSpyDrone",
+        "SuperweaponCIAIntelligence",
+        "SuperweaponParadropAmerica",
+        "SuperweaponA10ThunderboltMissileStrike",
+        "SuperweaponDaisyCutter",
+        "SuperweaponLeafletDrop",
+        "SuperweaponParticleUplinkCannon",
+        "SuperweaponArtilleryBarrage",
+        "SuperweaponClusterMines",
+        "SuperweaponChinaCarpetBomb",
+        "Early_SuperweaponChinaCarpetBomb",
+        "SuperweaponEMPPulse",
+        "SuperweaponFrenzy",
+        "SuperweaponNeutronMissile",
+        "SuperweaponScudStorm",
+        "SuperweaponRebelAmbush",
+        "SuperweaponAnthraxBomb",
+        "SuperweaponGPSScrambler",
+        "SuperweaponSneakAttack",
+        "SpecialPowerRadarVanScan",
+        "SpecialAbilityBoobyTrap",
+    ]
+    .into_iter()
+    .find(|power| *power == name)
+}
+
+pub fn supports_radius_power(name: &str) -> bool {
+    supported_power(name).is_some()
+        || matches!(
+            name,
+            "SuperweaponEmergencyRepair"
+                | "SuperweaponSpectreGunship"
+                | "AirF_SuperweaponSpectreGunship"
+        )
+}
+
 impl CommandAction {
     pub const fn power(self) -> Option<&'static str> {
         match self {
@@ -152,6 +208,7 @@ impl CommandAction {
             Self::EmergencyRepair => Some("SuperweaponEmergencyRepair"),
             Self::SpectreGunship => Some("SuperweaponSpectreGunship"),
             Self::AirForceSpectreGunship => Some("AirF_SuperweaponSpectreGunship"),
+            Self::NativePower(power) => Some(power.name),
             _ => None,
         }
     }
@@ -162,6 +219,21 @@ impl CommandAction {
         } else {
             None
         }
+    }
+
+    pub const fn power_command(self) -> Option<PowerCommand> {
+        if let Self::NativePower(power) = self {
+            return Some(power);
+        }
+        if let Some(name) = self.power() {
+            let aim = if matches!(self, Self::CashHack) {
+                PowerAim::Object
+            } else {
+                PowerAim::Location
+            };
+            return Some(PowerCommand { name, aim });
+        }
+        None
     }
 }
 
@@ -298,6 +370,9 @@ fn load_ui(
         (Vec::new(), None, None)
     };
     let cancel_construction = cancellation::load(assets, &labels)?;
+    let power_shortcuts = catalog
+        .map(|catalog| power_shortcuts::load(assets, catalog, &labels))
+        .transpose()?;
     let promotions = load_promotions(assets, &labels, options, &windows)?;
     let pictures = mapped_images(assets)?;
     let results = results::load(assets, &labels)?;
@@ -307,28 +382,24 @@ fn load_ui(
     let loading = loading::Data::load(assets, &labels)?;
     let veterancy = crate::veterancy_feedback::load(assets)?;
     let money_crates = crate::income::map_crates::load(assets)?;
+    let images = results
+        .images()
+        .chain(observer.images())
+        .chain(options_menu.images())
+        .chain(veterancy.images())
+        .chain(money_crates.images())
+        .chain(loading.images());
+    let match_images = match_ui_images(
+        power_shortcuts.as_ref(),
+        bomb_icons.as_ref(),
+        ocl_timer.as_ref(),
+    );
     let textures = textures(
         assets,
         &schemes,
         &units,
         &promotions,
-        results
-            .images()
-            .chain(observer.images())
-            .chain(options_menu.images())
-            .chain(veterancy.images())
-            .chain(money_crates.images())
-            .chain(
-                bomb_icons
-                    .iter()
-                    .flat_map(crate::sticky_bomb_icons::Art::images),
-            )
-            .chain(loading.images())
-            .chain(
-                ocl_timer
-                    .iter()
-                    .flat_map(|timer| [timer.sell.image.as_str(), timer.rally.image.as_str()]),
-            ),
+        images.chain(match_images),
         &pictures,
         &cancel_construction,
     )?;
@@ -362,6 +433,7 @@ fn load_ui(
         units,
         cancel_construction,
         ocl_timer,
+        power_shortcuts,
         windows,
         labels: labels
             .into_iter()
@@ -383,6 +455,25 @@ fn load_ui(
         handles: BTreeMap::new(),
         pictures,
     })
+}
+
+fn match_ui_images<'a>(
+    shortcuts: Option<&'a power_shortcuts::Data>,
+    bombs: Option<&'a crate::sticky_bomb_icons::Art>,
+    ocl: Option<&'a ocl_timer::Data>,
+) -> impl Iterator<Item = &'a str> {
+    shortcuts
+        .into_iter()
+        .flat_map(power_shortcuts::Data::images)
+        .chain(
+            bombs
+                .into_iter()
+                .flat_map(crate::sticky_bomb_icons::Art::images),
+        )
+        .chain(
+            ocl.into_iter()
+                .flat_map(|timer| [timer.sell.image.as_str(), timer.rally.image.as_str()]),
+        )
 }
 
 fn ui_labels(
@@ -560,7 +651,12 @@ fn command_action(
                 CommandAction::ExitContainer(0)
             }
             "SWITCH_WEAPON" => {
-                CommandAction::SwitchWeapon(match value(&button.lines, 0, "WeaponSlot")? {
+                // `INI::parseLookupList` reads the first authored token. The
+                // base Neutron Warhead record terminates with an unused TERTIARY.
+                let slot = field(&button.lines, 0, "WeaponSlot")?
+                    .first()
+                    .ok_or("missing source switch weapon slot")?;
+                CommandAction::SwitchWeapon(match slot.as_str() {
                     "PRIMARY" => 0,
                     "SECONDARY" => 1,
                     "TERTIARY" => 2,
@@ -597,7 +693,9 @@ fn command_action(
             {
                 CommandAction::Rally
             }
-            "SPECIAL_POWER" => return special_power_action(button, unit),
+            "SPECIAL_POWER" | "SPECIAL_POWER_CONSTRUCT" => {
+                return special_power_action(button, unit, catalog);
+            }
             _ => return Ok(None),
         }
     };
@@ -655,9 +753,19 @@ fn fire_weapon_action(
 fn special_power_action(
     button: &Declaration,
     unit: &UnitType,
+    catalog: &[UnitType],
 ) -> Result<Option<CommandAction>, Box<dyn Error>> {
     use generals_sim::skirmish::special_ability::BurtonCharge;
     let behavior = &unit.behavior;
+    if let Some(action) = native_power_action(button, catalog)?
+        && action.power().is_some_and(|name| {
+            unit.special_powers
+                .iter()
+                .any(|power| power.name == name && !power.script_only)
+        })
+    {
+        return Ok(Some(action));
+    }
     let action = match promotions::special_power(&button.lines)? {
         Some(
             "SpecialAbilityRangerCaptureBuilding"
@@ -726,6 +834,38 @@ fn special_power_action(
     Ok(Some(action))
 }
 
+fn native_power_action(
+    button: &Declaration,
+    catalog: &[UnitType],
+) -> Result<Option<CommandAction>, Box<dyn Error>> {
+    let Some(name) = optional_value(&button.lines, "SpecialPower")?.and_then(supported_power)
+    else {
+        return Ok(None);
+    };
+    let aim = match value(&button.lines, 0, "Command")? {
+        "SPECIAL_POWER_CONSTRUCT" | "SPECIAL_POWER_CONSTRUCT_FROM_SHORTCUT" => {
+            let reference = value(&button.lines, 0, "Object")?;
+            let Some(kind) = catalog.iter().position(|unit| unit.name == reference) else {
+                return Ok(None);
+            };
+            PowerAim::Construct(kind)
+        }
+        _ if command_option(button, "NEED_TARGET_POS") => PowerAim::Location,
+        _ if [
+            "NEED_TARGET_ENEMY_OBJECT",
+            "NEED_TARGET_ALLY_OBJECT",
+            "NEED_TARGET_NEUTRAL_OBJECT",
+        ]
+        .into_iter()
+        .any(|option| command_option(button, option)) =>
+        {
+            PowerAim::Object
+        }
+        _ => PowerAim::Immediate,
+    };
+    Ok(Some(CommandAction::NativePower(PowerCommand { name, aim })))
+}
+
 fn battle_plan_option(
     button: &Declaration,
 ) -> Result<generals_sim::skirmish::battle_plan::Plan, Box<dyn Error>> {
@@ -764,18 +904,7 @@ fn object_ui(
             .flat_map(|file| &file.declarations)
             .find(|object| object.kind == "Object" && object.name == unit.name)
             .ok_or_else(|| format!("missing UI object {}", unit.name))?;
-        let portrait = optional_value(&object.lines, "SelectPortrait")?
-            .unwrap_or("")
-            .to_owned();
-        let button_image = object
-            .lines
-            .iter()
-            .find(|line| {
-                line.depth == Some(0) && line.tokens.first().is_some_and(|key| key == "ButtonImage")
-            })
-            .and_then(|line| line.tokens.get(1))
-            .cloned()
-            .unwrap_or_default();
+        let [portrait, button_image] = object_art(&object.lines)?;
         // ThingTemplate's UnicodeString starts empty when DisplayName is absent.
         let name = optional_value(&object.lines, "DisplayName")?
             .map(|label| translate(labels, label))
@@ -896,11 +1025,21 @@ fn read_command(
     let Some(action) = command_action(command, button, unit, catalog)? else {
         return Ok(None);
     };
+    command_details(slot, button, action, labels, upgrades).map(Some)
+}
+
+fn command_details(
+    slot: usize,
+    button: &Declaration,
+    action: CommandAction,
+    labels: &BTreeMap<String, String>,
+    upgrades: &ContentFile,
+) -> Result<Command, Box<dyn Error>> {
     let label_key = value(&button.lines, 0, "TextLabel")?;
     let raw_label = labels
         .get(&label_key.to_ascii_lowercase())
         .ok_or_else(|| format!("missing command label {label_key}"))?;
-    Ok(Some(Command {
+    Ok(Command {
         required_upgrade: required_upgrade(button, upgrades)?,
         sciences: button
             .lines
@@ -919,7 +1058,7 @@ fn read_command(
         image: value(&button.lines, 0, "ButtonImage")?.to_owned(),
         label: translate(labels, label_key)?,
         description: translate(labels, value(&button.lines, 0, "DescriptLabel")?)?,
-    }))
+    })
 }
 
 fn object_files(assets: &VirtualAssets) -> Result<Vec<content::ContentFile>, Box<dyn Error>> {
@@ -937,6 +1076,7 @@ fn object_files(assets: &VirtualAssets) -> Result<Vec<content::ContentFile>, Box
         "glaair",
         "glamiscunit",
         "system",
+        "specialpowerobjects",
         "gc_chem_glasystem",
         "hulk",
         "weaponobjects",
@@ -1079,6 +1219,17 @@ fn power_rules(assets: &VirtualAssets) -> Result<(f32, f32, i16), Box<dyn Error>
         return Err("invalid source power display scale".into());
     }
     Ok((base, intervals, yellow))
+}
+
+fn object_art(lines: &[ContentLine]) -> Result<[String; 2], Box<dyn Error>> {
+    // ThingTemplate's INI::parseAsciiString assignments take the latest line.
+    let read = |key| {
+        crate::skirmish_data::field(lines, 0, key)
+            .map(crate::skirmish_data::scalar)
+            .transpose()
+            .map(|value| value.unwrap_or_default().to_owned())
+    };
+    Ok([read("SelectPortrait")?, read("ButtonImage")?])
 }
 
 fn optional_value<'a>(
@@ -1485,6 +1636,19 @@ fn color_labels(
 #[cfg(test)]
 mod tests {
     use super::{coord, strings};
+
+    #[test]
+    fn object_art_uses_the_last_authored_portrait_and_button_assignments() {
+        let file = super::content::scan(generals_assets::virtual_assets::Asset {
+            path: "FactionBuilding.ini".into(),
+            origin: "Repeated original ThingTemplate art fields".into(),
+            bytes: b"Object Launcher\nSelectPortrait=FirstPortrait\nButtonImage=FirstIcon\nSelectPortrait=FinalPortrait\nButtonImage=FinalIcon\nEnd\n".to_vec(),
+        }).unwrap();
+        assert_eq!(
+            super::object_art(&file.declarations[0].lines).unwrap(),
+            ["FinalPortrait", "FinalIcon"]
+        );
+    }
 
     #[test]
     fn starting_money_preserves_authored_order_and_default() {

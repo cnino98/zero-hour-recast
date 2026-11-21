@@ -64,6 +64,7 @@ fn fixture() -> (Skirmish, usize, usize) {
             throb_frames: 30,
             color: [0; 4],
             only_owner: true,
+            additive: false,
         }),
         afterburner_sound: String::new(),
         howitzer_sound: String::new(),

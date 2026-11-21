@@ -1,10 +1,6 @@
 use super::{Check, Control, Error, Stage, View, disarm_verification, require};
-use crate::{
-    input::{self, PickTarget},
-    source_audio::Voice,
-};
+use crate::input::{self, PickTarget};
 use bevy::prelude::Vec2;
-use generals_sim::skirmish::Order;
 
 pub(super) fn progress(
     check: &mut Check,
@@ -48,6 +44,7 @@ pub(super) fn progress(
         | Stage::AreaPress
         | Stage::AreaRelease
         | Stage::AreaOrder
+        | Stage::AreaPending
         | Stage::AreaRun => super::area::progress(check, view, control)?,
         _ => {}
     }
@@ -88,15 +85,14 @@ fn hover(check: &mut Check, view: &View, control: &mut Control) -> Result<(), Bo
         "original Dozer context disarm rejected",
     )?;
     require(
-        matches!(control.battle.simulation.entities[check.setup.builder].ai.order, Order::Attack(target) if target == check.setup.trap)
-            && control
-                .mouse
-                .voices
-                .last()
-                .is_some_and(|request| matches!(request.voice(), Voice::Disarm)),
-        "context attack omitted original disarm order/voice",
+        control
+            .mouse
+            .voices
+            .last()
+            .is_some_and(|request| matches!(request.voice(), crate::source_audio::Voice::Disarm)),
+        "accepted context attack omitted original disarm voice",
     )?;
-    check.stage = Stage::Approach;
+    check.stage = Stage::ContextPending;
     control.time.unpause();
     Ok(())
 }

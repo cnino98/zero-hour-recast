@@ -1,7 +1,35 @@
 use crate::skirmish::{Kind, tests::game};
 
 #[test]
-fn selection_transfers_membership_and_destroy_retains_the_dispatch_group() {
+fn dispatcher_cleanup_releases_only_its_group_and_preserves_callback_transfers() {
+    let mut game = game();
+    let tank = game.type_for(0, Kind::Tank).unwrap();
+    let a = game.spawn(tank, 0, [305.0, 405.0], true);
+    let b = game.spawn(tank, 0, [355.0, 405.0], true);
+    game.create_selection(0, &[], &[a, b], true);
+    let command = game.begin_command_group(0);
+    assert_eq!(command.members, [a, b]);
+    game.group_move_to_world(&command.members, [505.0, 405.0, 0.0], false)
+        .unwrap();
+    assert!(game.entities[a].ai.command.ai_group.is_some());
+    assert_eq!(
+        game.entities[a].ai.command.ai_group,
+        game.entities[b].ai.command.ai_group
+    );
+    game.finish_command_group(command);
+    assert!(game.entities[a].ai.command.ai_group.is_none());
+    assert!(game.entities[b].ai.command.ai_group.is_none());
+
+    let command = game.begin_command_group(0);
+    game.materialize_native_group(&[a]);
+    let transferred = game.entities[a].ai.command.ai_group;
+    game.finish_command_group(command);
+    assert_eq!(game.entities[a].ai.command.ai_group, transferred);
+    assert!(game.entities[b].ai.command.ai_group.is_none());
+}
+
+#[test]
+fn selection_messages_remove_the_dispatch_group_after_callbacks() {
     let mut game = game();
     let tank = game.type_for(0, Kind::Tank).unwrap();
     let a = game.spawn(tank, 0, [305.0, 405.0], true);
@@ -17,9 +45,9 @@ fn selection_transfers_membership_and_destroy_retains_the_dispatch_group() {
     assert_eq!(selection, vec![a]);
     assert!(game.entities[a].ai.command.ai_group.is_none());
     assert_ne!(game.entities[b].ai.command.ai_group, old);
-    assert!(game.single_ai_group(b));
+    assert!(game.entities[b].ai.command.ai_group.is_none());
     game.destroy_selection(0, &selection);
-    assert!(game.single_ai_group(a));
+    assert!(game.entities[a].ai.command.ai_group.is_none());
     let group = game.entities[a].ai.command.ai_group;
     game.materialize_selection_group(0, &[]);
     assert_eq!(game.entities[a].ai.command.ai_group, group);

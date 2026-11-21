@@ -1,7 +1,7 @@
 //! Original primary and represented secondary `WeaponSet` templates.
 use super::{
-    blocks, damage_type, definition, duration, duration_frames, field, normal_set, optional_number,
-    scalar, selected_pair, support, text, unsigned, weapon_aim_delta,
+    blocks, damage_type, definition, duration_frames, field, normal_set, optional_number, scalar,
+    selected_pair, support, text, unsigned, weapon_aim_delta,
 };
 use generals_assets::content::{ContentFile, ContentLine, Declaration};
 use generals_sim::skirmish::{ContinuousFire, UnitType, WeaponRules};
@@ -18,6 +18,7 @@ pub(super) fn load(
     };
     let auto_choose = sources(normal, "PRIMARY")?;
     if (auto_choose != 0
+        || unit.name == "GLAScudStorm"
         || unit.battle_plan.is_some()
         || !unit.behavior.cleanup.is_empty()
         || !unit.demo_trap.is_empty())
@@ -64,6 +65,7 @@ pub(super) fn load(
             | "AmericaTankAvenger"
             | "AmericaTankAvengerLaserTurret"
             | "AmericaPatriotBattery"
+            | "ChinaVehicleNukeLauncher"
             | "ChinaTankGattling"
             | "ChinaGattlingCannon"
             | "ChinaTankOverlord"
@@ -305,6 +307,31 @@ fn prefire(lines: &[ContentLine]) -> Result<generals_sim::skirmish::Prefire, Box
     }
 }
 
+fn shot_delay(line: &ContentLine) -> Result<[u32; 2], Box<dyn Error>> {
+    let words: Vec<_> = line.tokens[1..]
+        .iter()
+        .flat_map(|word| word.split(':').filter(|part| !part.is_empty()))
+        .collect();
+    let as_frames = |milliseconds| -> Result<u32, Box<dyn Error>> {
+        super::source_numbers::duration_frames(milliseconds)
+    };
+    let bounds = match words.as_slice() {
+        [minimum_tag, minimum, maximum_tag, maximum, ..]
+            if minimum_tag.eq_ignore_ascii_case("min")
+                && maximum_tag.eq_ignore_ascii_case("max") =>
+        {
+            [as_frames(minimum)?, as_frames(maximum)?]
+        }
+        [tag, value, ..] if tag.eq_ignore_ascii_case("min") => [as_frames(value)?; 2],
+        [value, ..] => [as_frames(value)?; 2],
+        [] => return Err(format!("missing DelayBetweenShots at line {}", line.line).into()),
+    };
+    if bounds[0] > bounds[1] {
+        return Err(format!("reversed DelayBetweenShots range at line {}", line.line).into());
+    }
+    Ok(bounds)
+}
+
 pub(super) fn parse(stats: &mut WeaponRules, lines: &[ContentLine]) -> Result<(), Box<dyn Error>> {
     super::death_weapons::weapon_fields(stats, lines)?;
     stats.shockwave = [
@@ -350,8 +377,12 @@ pub(super) fn parse(stats: &mut WeaponRules, lines: &[ContentLine]) -> Result<()
         target_pitch(lines, "MinTargetPitch", -std::f32::consts::PI)?,
         target_pitch(lines, "MaxTargetPitch", std::f32::consts::PI)?,
     ];
-    stats.delay = field(lines, 0, "DelayBetweenShots")
-        .map_or(Ok(0.0), |_| duration(lines, 0, "DelayBetweenShots"))?;
+    stats.delay_frames = field(lines, 0, "DelayBetweenShots")
+        .map(shot_delay)
+        .transpose()?;
+    stats.delay = stats.delay_frames.map_or(0.0, |[minimum, _]| {
+        num_traits::ToPrimitive::to_f32(&minimum).expect("native frame count") / 30.0
+    });
     stats.projectile.stream = field(lines, 0, "ProjectileStreamName")
         .map(scalar)
         .transpose()?
@@ -494,6 +525,32 @@ mod builder_tests;
 
 #[cfg(test)]
 mod tests {
+    use generals_assets::content::ContentLine;
+
+    #[test]
+    fn between_shot_delay_rounds_both_authored_bounds_before_sampling() {
+        let line = |words: &[&str]| ContentLine {
+            line: 1,
+            tokens: std::iter::once("DelayBetweenShots")
+                .chain(words.iter().copied())
+                .map(str::to_owned)
+                .collect(),
+            raw: String::new(),
+            assigned: true,
+            depth: Some(0),
+        };
+        assert_eq!(
+            super::shot_delay(&line(&["Min:100", "Max:1000"])).unwrap(),
+            [3, 30]
+        );
+        assert_eq!(
+            super::shot_delay(&line(&["min:", "101", "MAX:", "124"])).unwrap(),
+            [4, 4]
+        );
+        assert_eq!(super::shot_delay(&line(&["250"])).unwrap(), [8, 8]);
+        assert!(super::shot_delay(&line(&["Min:1000", "Max:100"])).is_err());
+    }
+
     #[test]
     fn missile_death_flag_uses_authored_boolean_and_constructor_default() {
         let file = generals_assets::content::scan(generals_assets::virtual_assets::Asset {

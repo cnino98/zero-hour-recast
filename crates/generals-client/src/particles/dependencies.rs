@@ -95,6 +95,9 @@ fn source_effects(
     let mut effects = Vec::new();
     attached_particles(types, &mut names);
     for unit in types {
+        if let Some(ignition) = super::effects::ignition_fx(&files, unit)? {
+            append(&mut effects, ignition);
+        }
         for ability in &unit.behavior.special_abilities {
             if let Some(name) = &ability.feedback.disable_particle {
                 append(&mut names, name);
@@ -132,10 +135,8 @@ fn source_effects(
                 if !name.eq_ignore_ascii_case("NONE") {
                     for module in blocks(&definition(&files, "Object", name)?.lines, 0, "Behavior")?
                     {
-                        for key in ["IgnitionFX", "GarrisonHitKillFX"] {
-                            if let Some(line) = field(module, 1, key) {
-                                append(&mut effects, scalar(line)?);
-                            }
+                        if let Some(line) = field(module, 1, "GarrisonHitKillFX") {
+                            append(&mut effects, scalar(line)?);
                         }
                     }
                 }

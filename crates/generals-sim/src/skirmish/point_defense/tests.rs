@@ -478,7 +478,13 @@ fn paint_is_timed_status_and_rate_condition_changes_only_after_an_actual_shot() 
     assert_eq!(game.entities[target].health.to_bits(), 100.0_f32.to_bits());
     assert!(!game.entities[source].firing.painted_target);
     game.entities[source].spend_weapon_round(&game.catalog[6], game.tick, 0);
-    game.entities[source].update_painted_target(&game.catalog[6], true, game.tick, 0);
+    game.entities[source].update_painted_target(
+        &game.catalog[6],
+        true,
+        game.tick,
+        0,
+        &mut game.random,
+    );
     assert_eq!(
         game.entities[source].weapon_set.weapons[0]
             .cooldown
@@ -486,7 +492,13 @@ fn paint_is_timed_status_and_rate_condition_changes_only_after_an_actual_shot() 
         40.0_f32.to_bits()
     );
     game.entities[source].weapon_set.weapons[0].cooldown = 7.0;
-    game.entities[source].update_painted_target(&game.catalog[6], true, game.tick, 0);
+    game.entities[source].update_painted_target(
+        &game.catalog[6],
+        true,
+        game.tick,
+        0,
+        &mut game.random,
+    );
     assert_eq!(
         game.entities[source].weapon_set.weapons[0]
             .cooldown
@@ -514,7 +526,13 @@ fn paint_is_timed_status_and_rate_condition_changes_only_after_an_actual_shot() 
     game.run_object_updates();
     assert!(!game.entities[target].painted());
     assert!(game.entities[source].firing.painted_target);
-    game.entities[source].update_painted_target(&game.catalog[6], false, game.tick, 0);
+    game.entities[source].update_painted_target(
+        &game.catalog[6],
+        false,
+        game.tick,
+        0,
+        &mut game.random,
+    );
     assert_eq!(
         game.entities[source].weapon_set.weapons[0]
             .cooldown

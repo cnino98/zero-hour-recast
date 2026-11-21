@@ -172,7 +172,12 @@ impl Skirmish {
         for bit in [1, 2, 4] {
             if actor.horde.bonuses & bit != bonuses & bit {
                 actor.horde.bonuses = (actor.horde.bonuses & !bit) | (bonuses & bit);
-                actor.weapon_bonus_changed(&self.catalog[actor.type_index], self.tick, extra);
+                actor.weapon_bonus_changed(
+                    &self.catalog[actor.type_index],
+                    self.tick,
+                    extra,
+                    &mut self.random,
+                );
             }
         }
     }

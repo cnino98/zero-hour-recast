@@ -10,6 +10,43 @@ use crate::{
 };
 use generals_sim::skirmish::{ProjectileFxEvent, ProjectileFxStage, Skirmish, WeaponFxEvent};
 
+pub fn detached_ignition_sound(
+    game: &Skirmish,
+    particles: &mut Particles,
+    animations: &mut Animations,
+    missile: usize,
+) -> bool {
+    for fx in &game.presentation.weapon_fx {
+        let WeaponFxEvent::Projectile(event) = fx else {
+            continue;
+        };
+        if !matches!(event.stage, ProjectileFxStage::Ignition { projectile_type } if projectile_type == missile)
+        {
+            continue;
+        }
+        let weapon = game.catalog[event.weapon_type]
+            .weapon_template(event.weapon_index)
+            .unwrap();
+        assert!(
+            weapon
+                .motion
+                .as_ref()
+                .is_none_or(|motion| motion.projectile_type.is_none())
+        );
+        particles.projectile_event(game, 1, event, None, animations);
+        if std::mem::take(&mut particles.sounds)
+            .into_iter()
+            .any(|(sound, position)| {
+                sound == "A10ThunderboltMissileWeaponSound"
+                    && position.map(f32::to_bits) == event.position.map(f32::to_bits)
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
 #[ignore = "requires original game installation"]
 #[test]
 fn installed_exhaust_bindings_preserve_normal_and_heroic_aircraft_and_launchers() {
@@ -101,7 +138,9 @@ fn missile_exhaust_waits_for_ignition_and_follows_ignition_fx_at_the_event_pose(
             particles.logic(frame, &mut |_, high| high, &|_| 0.0);
             assert!(particles.emitters.is_empty());
         }
-        event.stage = ProjectileFxStage::Ignition;
+        event.stage = ProjectileFxStage::Ignition {
+            projectile_type: fixture_missile_type(game, source),
+        };
         event.position[2] += 17.0;
         event.axes = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
         particles.projectile_event(game, 1, &event, None, &mut animations);
@@ -135,10 +174,11 @@ fn callback_fixture(game: &Skirmish, source: usize) -> Particles {
     exhaust.slave = Some(2);
     let mut particles = system(vec![template("ignition"), exhaust, template("flare")]);
     particles.bindings = game.catalog.iter().map(|_| vec![None]).collect();
+    particles.missile_ignition = vec![None; game.catalog.len()];
+    particles.missile_ignition[fixture_missile_type(game, source)] = Some(0);
     particles.bindings[game.entities[source].type_index][0] = Some(WeaponEffects {
         fire: [None; 2],
         exhaust: [Some(1); 2],
-        ignition: Some(0),
         detonation: None,
         garrison_kill: None,
     });
@@ -156,6 +196,16 @@ fn callback_fixture(game: &Skirmish, source: usize) -> Particles {
         delay: None,
     }]);
     particles
+}
+
+fn fixture_missile_type(game: &Skirmish, source: usize) -> usize {
+    game.catalog[game.entities[source].type_index]
+        .weapon
+        .motion
+        .as_ref()
+        .unwrap()
+        .projectile_type
+        .unwrap()
 }
 
 fn callback_source(game: &mut Skirmish) -> usize {
@@ -199,7 +249,9 @@ fn shrouded_ignition_still_creates_exhaust_but_not_visible_ignition_fx() {
         position,
         axes: Pose::at(position).axes,
         veterancy: 0,
-        stage: ProjectileFxStage::Ignition,
+        stage: ProjectileFxStage::Ignition {
+            projectile_type: fixture_missile_type(game, source),
+        },
     };
     particles.projectile_event(game, 1, &event, None, &mut Animations::effect_fixture(0));
     assert_eq!(
@@ -261,7 +313,9 @@ fn partial_projectile_footprint_runs_ignition_fx_before_exhaust_even_with_hidden
         position,
         axes: Pose::at(position).axes,
         veterancy: 0,
-        stage: ProjectileFxStage::Ignition,
+        stage: ProjectileFxStage::Ignition {
+            projectile_type: fixture_missile_type(game, source),
+        },
     };
     let mut particles = callback_fixture(game, source);
     particles.projectile_event(game, 1, &event, None, &mut Animations::effect_fixture(0));
@@ -326,7 +380,7 @@ fn check_paid_exhaust(
                         .iter()
                         .any(|emitter| emitter.attachment == Some(event.projectile))
                 );
-            } else if matches!(event.stage, ProjectileFxStage::Ignition) {
+            } else if matches!(event.stage, ProjectileFxStage::Ignition { .. }) {
                 assert!(
                     created.contains(&event.projectile),
                     "ignition must follow the missile birth callback"

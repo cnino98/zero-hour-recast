@@ -10,6 +10,7 @@ use crate::{
 };
 use bevy::{ecs::system::SystemParam, prelude::*, window::PrimaryWindow};
 use generals_assets::{content, virtual_assets::VirtualAssets};
+use num_traits::ToPrimitive;
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -29,6 +30,8 @@ pub struct Feedback {
     frenzy: BTreeSet<usize>,
     gaining_subdual: BTreeSet<usize>,
     status_tints: BTreeMap<usize, Flash>,
+    emp_frames: BTreeMap<usize, u32>,
+    ocl_opacities: BTreeMap<usize, f32>,
     generation: u32,
 }
 
@@ -65,7 +68,7 @@ impl Flash {
 
     fn play_timed(&mut self, peak: Vec3, attack: f32, decay: f32, sustain: f64) {
         self.peak = peak;
-        self.attack = (peak - self.current) / attack.max(1.0);
+        self.attack = (peak - self.current) * (1.0 / attack.max(1.0));
         self.decay = peak * (-1.0 / decay.max(1.0));
         self.sustain = sustain;
         self.phase = if (self.current - peak).length() <= 0.001 {
@@ -169,6 +172,8 @@ pub fn load(assets: &VirtualAssets) -> Result<Feedback, Box<dyn Error>> {
         frenzy: BTreeSet::new(),
         gaining_subdual: BTreeSet::new(),
         status_tints: BTreeMap::new(),
+        emp_frames: BTreeMap::new(),
+        ocl_opacities: BTreeMap::new(),
         generation: u32::MAX,
     })
 }
@@ -182,6 +187,8 @@ impl Feedback {
             self.frenzy.clear();
             self.gaining_subdual.clear();
             self.status_tints.clear();
+            self.emp_frames.clear();
+            self.ocl_opacities.clear();
             self.seen.clear();
             self.generation = generation;
         }
@@ -218,9 +225,15 @@ impl Feedback {
     }
 }
 
-pub fn update_flashes(mut feedback: ResMut<Feedback>, battle: Res<Match>, time: Res<Time>) {
+pub fn update_flashes(
+    mut feedback: ResMut<Feedback>,
+    battle: Res<Match>,
+    time: Res<Time<Virtual>>,
+    fixed: Res<Time<Fixed>>,
+) {
     let battle = battle.into_inner();
     let time = time.into_inner();
+    let fixed = fixed.into_inner();
     feedback.reset_generation(battle.generation);
     for &index in &battle.selected {
         if !feedback.previous.contains(&index)
@@ -278,20 +291,32 @@ pub fn update_flashes(mut feedback: ResMut<Feedback>, battle: Res<Match>, time: 
             .or_insert_with(|| Flash::new(color));
     }
     update_disabled(&mut feedback, &battle.simulation);
-    if !battle.paused {
-        feedback
-            .status_tints
-            .retain(|_, tint| tint.advance(time.delta_secs() * 30.0));
-        feedback
-            .flashes
-            .retain(|_, flash| flash.advance(time.delta_secs() * 30.0));
+    if !battle.paused && !time.is_paused() {
+        // FramePacer clamps the actual logic FPS / render FPS ratio to one.
+        let ratio = (time.delta_secs() / fixed.timestep().as_secs_f32()).min(1.0);
+        feedback.status_tints.retain(|_, tint| tint.advance(ratio));
+        feedback.flashes.retain(|_, flash| flash.advance(ratio));
     }
 }
 
 // Object::setDisabledUntil/clearDisabled feed Drawable's edge-triggered tint.
 // Held/script/unmanned do not tint; the represented remaining reasons are below.
 fn update_disabled(feedback: &mut Feedback, game: &generals_sim::skirmish::Skirmish) {
+    feedback.ocl_opacities.clear();
     for (index, actor) in game.entities.iter().enumerate() {
+        if !actor.exists() {
+            if feedback.emp_frames.remove(&index).is_some() {
+                feedback.status_tints.remove(&index);
+            }
+            continue;
+        }
+        let opacity = actor.ocl_fade_opacity(game.tick);
+        if opacity.to_bits() != 1.0_f32.to_bits() {
+            feedback.ocl_opacities.insert(index, opacity);
+        }
+        if let Some(tint) = actor.emp_tint() {
+            feedback.apply_emp_tint(index, tint);
+        }
         let disabled = actor.drawable_disabled_tint();
         let frenzy = actor.frenzy_tint();
         let frenzy_changed = if frenzy {
@@ -342,6 +367,28 @@ fn update_disabled(feedback: &mut Feedback, game: &generals_sim::skirmish::Skirm
 }
 
 impl Feedback {
+    pub(crate) fn status_released(&self, target: usize, generation: u32) -> bool {
+        self.generation == generation
+            && !self.disabled.contains(&target)
+            && !self.status_tints.contains_key(&target)
+    }
+
+    fn apply_emp_tint(&mut self, id: usize, tint: &generals_sim::skirmish::emp::Tint) {
+        if self.emp_frames.insert(id, tint.frame) != Some(tint.frame) {
+            self.status_tints
+                .entry(id)
+                .or_insert_with(|| Flash::new(Vec3::ZERO))
+                .play_timed(
+                    Vec3::from_array(tint.peak),
+                    tint.attack_frames
+                        .to_f32()
+                        .expect("native EMP tint duration"),
+                    0.0,
+                    f64::from(u32::MAX),
+                );
+        }
+    }
+
     fn set_disabled(&mut self, index: usize, disabled: bool) {
         if disabled {
             if self.disabled.insert(index) {
@@ -420,14 +467,16 @@ pub fn tint_models(mut commands: Commands, view: TintView) {
         let Ok((unit, pose, players)) = parents.get(parent.parent()) else {
             continue;
         };
-        let flash = feedback
-            .tint(unit.index)
-            .filter(|_| unit.generation == feedback.generation);
+        let current = (unit.generation == feedback.generation).then_some(feedback);
+        let flash = current.and_then(|feedback| feedback.tint(unit.index));
         // DX8MeshRenderer restores the authored shader and material when the
         // drawable alpha override reaches one (dx8renderer.cpp:1906).
-        let opacity = cloaks
-            .base_opacity(unit.index)
-            .filter(|alpha| alpha.to_bits() != 1.0_f32.to_bits());
+        let alpha = cloaks.base_opacity(unit.index).unwrap_or(1.0)
+            * current
+                .and_then(|feedback| feedback.ocl_opacities.get(&unit.index))
+                .copied()
+                .unwrap_or(1.0);
+        let opacity = (alpha.to_bits() != 1.0_f32.to_bits()).then_some(alpha);
         if let (Some(order), Some(mut layers)) = (order, layers) {
             *layers =
                 bevy::camera::visibility::RenderLayers::layer(order.layer(opacity.unwrap_or(1.0)));
@@ -788,6 +837,8 @@ mod capture_tests {
             frenzy: BTreeSet::new(),
             gaining_subdual: BTreeSet::new(),
             status_tints: BTreeMap::new(),
+            emp_frames: BTreeMap::new(),
+            ocl_opacities: BTreeMap::new(),
             generation: 0,
         }
     }
@@ -862,6 +913,36 @@ mod capture_tests {
         tint.advance(0.0);
         tint.advance(1.0);
         assert_eq!(tint.sustain.to_bits(), 4_294_967_293.0_f64.to_bits());
+    }
+
+    #[test]
+    fn emp_fade_replays_once_and_uses_fractional_drawable_updates() {
+        use generals_sim::skirmish::emp::Tint;
+        let mut feedback = feedback();
+        let begin = Tint {
+            frame: 8,
+            peak: [-0.5, -0.25, 1.0],
+            attack_frames: 0,
+        };
+        feedback.apply_emp_tint(3, &begin);
+        feedback.status_tints.get_mut(&3).unwrap().advance(0.5);
+        let partial_start = Vec3::new(-0.25, -0.125, 0.5);
+        assert_eq!(feedback.tint(3), Some(partial_start));
+
+        let fade = Tint {
+            frame: 9,
+            peak: [0.25, 0.375, -0.5],
+            attack_frames: 2,
+        };
+        feedback.apply_emp_tint(3, &fade);
+        feedback.status_tints.get_mut(&3).unwrap().advance(0.5);
+        feedback.apply_emp_tint(3, &fade);
+        feedback.status_tints.get_mut(&3).unwrap().advance(0.5);
+        assert_eq!(feedback.tint(3), Some(Vec3::new(0.0, 0.125, 0.0)));
+        let mut selection = Flash::new(Vec3::splat(0.25));
+        selection.advance(1.0);
+        feedback.flashes.insert(3, selection);
+        assert_eq!(feedback.tint(3), Some(Vec3::new(0.25, 0.375, 0.25)));
     }
 
     fn tread_fixture() -> (
@@ -1089,6 +1170,89 @@ mod capture_tests {
     }
 
     #[test]
+    fn disabled_recovery_waits_for_native_envelope_and_restores_authored_material() {
+        use super::{SelectionTint, tint_models};
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        let mut feedback = feedback();
+        feedback.set_disabled(0, true);
+        for _ in 0..31 {
+            feedback.status_tints.retain(|_, tint| tint.advance(1.0));
+        }
+        app.init_resource::<Assets<SourceMaterial>>()
+            .insert_resource(feedback)
+            .insert_resource(crate::stealth_view::Cloaks::new())
+            .add_systems(Update, tint_models);
+        let mut source =
+            SourceMaterial::new([1.0; 3], [1.0; 3], [0.0; 3], 1.0, AlphaMode::Opaque, false);
+        source.parameters.scene_ambient = Vec4::splat(0.6);
+        let original = app
+            .world_mut()
+            .resource_mut::<Assets<SourceMaterial>>()
+            .add(source);
+        let target = visual(app.world_mut(), 0, original.clone());
+        app.update();
+        app.world_mut()
+            .resource_mut::<Feedback>()
+            .set_disabled(0, false);
+        app.update();
+        let released = app
+            .world_mut()
+            .run_system_once(|feedback: Res<Feedback>| feedback.into_inner().status_released(0, 0))
+            .unwrap();
+        assert!(!released, "clearing DISABLED must retain its native decay");
+        let tinted = app
+            .world()
+            .get::<MeshMaterial3d<SourceMaterial>>(target)
+            .unwrap()
+            .0
+            .clone();
+        assert_ne!(tinted, original);
+        for _ in 0..29 {
+            app.world_mut()
+                .resource_mut::<Feedback>()
+                .status_tints
+                .retain(|_, tint| tint.advance(1.0));
+        }
+        app.update();
+        let released = app
+            .world_mut()
+            .run_system_once(|feedback: Res<Feedback>| feedback.into_inner().status_released(0, 0))
+            .unwrap();
+        assert!(
+            !released,
+            "the authored thirty-step release is still active"
+        );
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<SourceMaterial>>(target)
+                .unwrap()
+                .0,
+            tinted
+        );
+        for _ in 0..2 {
+            app.world_mut()
+                .resource_mut::<Feedback>()
+                .status_tints
+                .retain(|_, tint| tint.advance(1.0));
+        }
+        app.update();
+        let released = app
+            .world_mut()
+            .run_system_once(|feedback: Res<Feedback>| feedback.into_inner().status_released(0, 0))
+            .unwrap();
+        assert!(released);
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<SourceMaterial>>(target)
+                .unwrap()
+                .0,
+            original
+        );
+        assert!(app.world().get::<SelectionTint>(target).is_none());
+    }
+
+    #[test]
     fn target_flash_is_isolated_and_restores_the_new_owners_material() {
         use super::{SelectionTint, tint_models};
         let mut app = App::new();
@@ -1276,7 +1440,8 @@ mod sabotage_tests {
         let mut world = World::new();
         world.insert_resource(feedback);
         world.insert_resource(battle);
-        world.insert_resource(Time::<()>::default());
+        world.insert_resource(Time::<Virtual>::default());
+        world.insert_resource(Time::<Fixed>::from_hz(30.0));
         world.run_system_once(update_flashes).unwrap();
         assert!(world.resource::<Feedback>().flashes.contains_key(&target));
     }

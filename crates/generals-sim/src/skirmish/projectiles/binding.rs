@@ -1,8 +1,14 @@
 //! Object-owned projectile controls; module construction precedes weapon launch.
-use super::{Control, Flight, FlightRules, Shell};
-use crate::skirmish::{Skirmish, module_updates::ModuleRegistration};
+use super::{Control, Flight, FlightRules, LaunchTransform, Shell};
+use crate::skirmish::{Skirmish, WeaponBinding, module_updates::ModuleRegistration};
 
 impl Skirmish {
+    pub(in crate::skirmish) fn hide_bound_projectile(&mut self, id: usize) {
+        if let Some(flight) = &mut self.entities[id].projectile_flight {
+            flight.hidden = true;
+        }
+    }
+
     pub(in crate::skirmish) fn ensure_projectile_motion(&mut self, id: usize) {
         if self.entities[id].projectile_flight.is_none() {
             self.entities[id].projectile_flight = Some(Flight::new([0.0; 3], self.update_frame()));
@@ -114,6 +120,14 @@ impl Skirmish {
         destination: [f32; 3],
         target: Option<usize>,
     ) {
+        if self.catalog[self.entities[id].type_index]
+            .behavior
+            .neutron_missile
+            .is_some()
+        {
+            self.prepare_neutron_missile(id, launcher, binding, barrel, destination, target);
+            return;
+        }
         // WeaponTemplate uses only the first ProjectileUpdateInterface.
         if self.catalog[self.entities[id].type_index]
             .projectile_rules
@@ -128,6 +142,72 @@ impl Skirmish {
                 || self.entities[launcher].live_physics_active()
                 || self.registered_physics(launcher));
         let velocity = self.entities[launcher].physics_velocity();
+        if transfer_physics {
+            let flight = self.entities[id]
+                .projectile_flight
+                .as_mut()
+                .expect("native projectile control");
+            flight.motion.inherit_velocity(velocity);
+            flight.ignore_collisions_with = Some(launcher);
+        }
+        self.fire_projectile_from_pose(id, binding, &launch, destination, target);
+    }
+
+    pub(in crate::skirmish) fn launch_delivered_projectile(
+        &mut self,
+        carrier: usize,
+        payload: usize,
+        weapon: &str,
+        position: [f32; 3],
+        destination: [f32; 3],
+    ) -> bool {
+        if self.catalog[self.entities[payload].type_index]
+            .projectile_rules
+            .is_empty()
+        {
+            return false;
+        }
+        let type_index = self.entities[carrier].type_index;
+        let unit = &self.catalog[type_index];
+        let weapon_index = (0..unit.weapon_template_count())
+            .find(|&index| {
+                unit.weapon_template(index)
+                    .is_some_and(|rules| rules.name == weapon)
+            })
+            .expect("validated visible payload weapon");
+        let binding = WeaponBinding {
+            type_index,
+            weapon_index,
+            weapon_slot: 0,
+        };
+        self.register_delivered_projectile(carrier, payload, binding, destination);
+        let (_, basis) = self.object_transform(payload);
+        let launch = LaunchTransform {
+            position,
+            axes: std::array::from_fn(|column| basis.map(|row| row[column])),
+        };
+        // DeliverPayloadAIUpdate invokes projectileFireAtObjectOrPosition on the
+        // live payload. Its earlier motive force and pose survive this callback.
+        self.fire_projectile_from_pose(payload, binding, &launch, destination, None);
+        if let Some(index) = self.projectile_component(payload) {
+            let snapshot = self.projectiles[index].callback_snapshot(&self.entities);
+            self.record_projectile_event(
+                &snapshot,
+                self.object_position(payload),
+                super::super::ProjectileFxStage::Created,
+            );
+        }
+        true
+    }
+
+    fn fire_projectile_from_pose(
+        &mut self,
+        id: usize,
+        binding: WeaponBinding,
+        launch: &LaunchTransform,
+        destination: [f32; 3],
+        target: Option<usize>,
+    ) {
         let victim = target.map(|target| self.missile_target(target));
         // DumbProjectileBehavior::projectileFireAtObjectOrPosition selects the
         // victim center here; MissileAIUpdate uses the passed victimPos instead.
@@ -145,10 +225,6 @@ impl Skirmish {
         flight.hidden = false;
         flight.motion.position = launch.position;
         flight.motion.axes = launch.axes;
-        if transfer_physics {
-            flight.motion.inherit_velocity(velocity);
-            flight.ignore_collisions_with = Some(launcher);
-        }
         match (
             &mut flight.controls[0],
             &self.catalog[kind].projectile_rules[0],
@@ -157,7 +233,7 @@ impl Skirmish {
                 missile.fire(
                     &mut flight.motion,
                     &crate::skirmish::projectiles::ProjectileLaunch {
-                        transform: &launch,
+                        transform: launch,
                         destination,
                         speed,
                         frame: now,
@@ -175,7 +251,7 @@ impl Skirmish {
                     .fire(
                         &mut flight.motion,
                         &crate::skirmish::projectiles::ProjectileLaunch {
-                            transform: &launch,
+                            transform: launch,
                             destination: shell_destination,
                             speed,
                             frame: now,

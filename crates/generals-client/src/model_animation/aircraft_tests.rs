@@ -230,7 +230,7 @@ fn door_sequence(
         }
         playback::update(
             &mut player,
-            state,
+            draw,
             &animations.clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(tick),
@@ -239,7 +239,7 @@ fn door_sequence(
         tick += 300;
         playback::update(
             &mut player,
-            state,
+            draw,
             &animations.clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(tick),

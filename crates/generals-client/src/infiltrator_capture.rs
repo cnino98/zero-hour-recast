@@ -349,14 +349,10 @@ fn begin_mode(check: &mut Check, view: &View, control: &mut Control) -> Result<(
 
 fn issue(check: &mut Check, control: &mut Control) -> Result<(), Box<dyn Error>> {
     let target = target(check);
-    let ability = ABILITIES[check.power];
-    let accepted = if ability == 0 {
-        input::capture::issue(&mut control.battle, &mut control.mouse, target)
-    } else {
-        input::hacker::issue_finite(&mut control.battle, &mut control.mouse, target, ability)
-    };
+    let point = Vec2::from_array(control.battle.simulation.entities[target].position);
+    input::targeted_order(&mut control.battle, &mut control.mouse, point, Some(target));
     require(
-        accepted && matches!(control.mouse.pending_command, CommandMode::Normal),
+        matches!(control.mouse.pending_command, CommandMode::Normal),
         "Lotus original targeted command was rejected",
     )?;
     let game = &control.battle.simulation;

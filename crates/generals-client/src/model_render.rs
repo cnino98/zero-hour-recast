@@ -496,6 +496,9 @@ fn alpha_mode(shader: [u8; 16], name: &str) -> Result<AlphaMode, Box<dyn Error>>
         }),
         (2, 5) => Ok(AlphaMode::Blend),
         (1, 1) => Ok(AlphaMode::Add),
+        // Use Bevy's transparent phase. SourceMaterial provides the native
+        // screen factors independently of Bevy's premultiplied-alpha factors.
+        (1, 3) => Ok(AlphaMode::Premultiplied),
         (0, 2) => Ok(AlphaMode::Multiply),
         pair => Err(format!("{name} uses unsupported source/destination blend {pair:?}").into()),
     }

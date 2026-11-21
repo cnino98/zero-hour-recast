@@ -21,10 +21,9 @@ impl Animations {
             let Some(model) = state.model.and_then(|index| self.models.get(index)) else {
                 continue;
             };
-            let clip = state
-                .motions
-                .get(player.choice)
-                .and_then(|motion| self.clips.get(&motion.name));
+            let clip = player
+                .animation(draw)
+                .and_then(|(_, motion)| self.clips.get(&motion.name));
             let mut controls = turret::controls(
                 &state.fields,
                 unit.ai.turret.angle,

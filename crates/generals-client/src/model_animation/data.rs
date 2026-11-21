@@ -281,42 +281,7 @@ fn preload_draw(
         changing_pairs += changing;
     }
     super::render_objects::bind(assets, draw, models)?;
-    validate_missing_clips(draw, clips)?;
     Ok((checked_pairs, changing_pairs))
-}
-
-// A null Get_HAnim does not clear animation on a retained render object.
-// Reject mixed handles until playback retains that independent animation identity.
-fn validate_missing_clips(
-    draw: &Draw,
-    clips: &BTreeMap<String, Clip>,
-) -> Result<(), Box<dyn Error>> {
-    for state in &draw.states {
-        let Some(model) = state.render_model else {
-            continue;
-        };
-        if !state
-            .motions
-            .iter()
-            .any(|motion| !clips.contains_key(&motion.name))
-        {
-            continue;
-        }
-        if draw
-            .states
-            .iter()
-            .filter(|other| other.render_model == Some(model))
-            .flat_map(|other| &other.motions)
-            .any(|motion| clips.contains_key(&motion.name))
-        {
-            return Err(format!(
-                "model {} mixes valid and unavailable animations on a retained render object",
-                state.name
-            )
-            .into());
-        }
-    }
-    Ok(())
 }
 
 impl Animations {
@@ -335,7 +300,9 @@ impl Animations {
                 (0..unit.weapon_template_count())
                     .map(|index| {
                         let (slot, flags) = unit.weapon_context(index);
-                        (slot, flags | if unit.battle_plan.is_some() { 8 } else { 0 })
+                        let uses_launch_door =
+                            unit.battle_plan.is_some() || unit.behavior.nuclear_launcher.is_some();
+                        (slot, flags | (u16::from(uses_launch_door) << 3))
                     })
                     .collect()
             })
@@ -391,7 +358,6 @@ impl Animations {
                 .into());
             }
             load_state(assets, &mut draw.states[0], models, &mut self.clips)?;
-            validate_missing_clips(&draw, &self.clips)?;
             self.world_draws.insert(object.model_index, draw);
         }
         Ok(())

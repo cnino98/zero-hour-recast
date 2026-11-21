@@ -3,6 +3,44 @@ use crate::skirmish::firing::WeaponBinding;
 use crate::skirmish::{Projectile, Skirmish, damage::WeaponTarget, projectiles::DirectHit};
 
 impl Skirmish {
+    pub(in crate::skirmish) fn register_delivered_projectile(
+        &mut self,
+        carrier: usize,
+        payload: usize,
+        binding: WeaponBinding,
+        destination: [f32; 3],
+    ) {
+        // The direct ProjectileUpdate fire path never sets its launcher bonus
+        // flags. The frame's actual payload flags are read at impact.
+        let actor = &self.entities[payload];
+        let weapon = self.catalog[binding.type_index]
+            .weapon_template(binding.weapon_index)
+            .expect("delivery weapon");
+        self.projectile_serial = self.projectile_serial.wrapping_add(1);
+        let serial = self.projectile_serial;
+        self.projectiles.push(Projectile {
+            object: Some(payload),
+            direct: None,
+            hazard_target: None,
+            weapon_type: binding.type_index,
+            weapon_index: binding.weapon_index,
+            weapon_slot: binding.weapon_slot,
+            id: serial,
+            position: actor.position,
+            destination: [destination[0], destination[1]],
+            owner: actor.owner,
+            target: None,
+            source: carrier,
+            veterancy: self.entities[carrier].veterancy,
+            damage_bonus: weapon
+                .bonuses
+                .compute(0, crate::skirmish::containment::bonuses::DAMAGE),
+            damage_state: crate::skirmish::battle_plan::Damage::unmodified(),
+        });
+        self.entities[payload].native_projectile = Some(serial);
+        self.rebuild_projectile_indices();
+    }
+
     pub(in crate::skirmish) fn create_weapon_projectile(
         &mut self,
         source: usize,
@@ -91,6 +129,7 @@ impl Skirmish {
             .expect("projectile birth retained across constructors");
         self.projectiles[index].object = Some(object);
         self.entities[object].producer = Some(source);
+        self.transfer_special_power_completion(source, object);
         let snapshot = self.projectiles[index].callback_snapshot(&self.entities);
         self.record_stream_projectile(&snapshot, end);
         self.launch_native_projectile(object, source, binding, barrel, end, tracked);

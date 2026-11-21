@@ -4,7 +4,7 @@ use bevy::{
     input::{ButtonState, mouse::MouseButtonInput},
     prelude::*,
 };
-use generals_sim::skirmish::{Order, Skirmish};
+use generals_sim::skirmish::Skirmish;
 
 pub(super) struct Progress {
     start: Option<u64>,
@@ -124,18 +124,12 @@ pub(super) fn progress(
         }
         Stage::AreaOrder => {
             require(
-                matches!(control.mouse.pending_command, CommandMode::Normal)
-                    && matches!(
-                        control.battle.simulation.entities[check.setup.builder]
-                            .ai
-                            .order,
-                        Order::FireAt { .. }
-                    ),
+                matches!(control.mouse.pending_command, CommandMode::Normal),
                 "real ground click did not commit the original area command",
             )?;
             // Voice requests are consumed by the normal audio system; the
             // queued request and native playback are checked in separate stages.
-            check.stage = Stage::AreaRun;
+            check.stage = Stage::AreaPending;
             control.time.unpause();
         }
         Stage::AreaRun if check.area.finished && check.audio[0] => {

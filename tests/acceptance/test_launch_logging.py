@@ -5,6 +5,7 @@ except ModuleNotFoundError:
     fcntl = None
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shlex
@@ -29,6 +30,36 @@ spec = importlib.util.spec_from_file_location("run_logged", sys.argv[1])
 logger = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(logger)
 sys.exit(logger.run_logged(Path(sys.argv[2]), Path(sys.executable), sys.argv[3:]))
+"""
+
+
+BATCH_HARNESS = r"""
+import argparse
+import importlib.util
+from pathlib import Path
+import subprocess
+import sys
+from unittest.mock import patch
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+spec = importlib.util.spec_from_file_location("run_acceptance", Path(sys.argv[1]).with_name("run.py"))
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+project, ready, advanced = map(Path, sys.argv[2:])
+candidate = project / "candidate"
+candidate.write_bytes(b"retained candidate identity")
+child = "import signal, sys, time; from pathlib import Path; signal.signal(signal.SIGINT, lambda *_: sys.exit(0)); Path(sys.argv[1]).write_text('ready'); print('interrupt handler ready', flush=True); time.sleep(30)"
+cases = [
+    {"id": "profiles-first", "group": "profiles", "runtime": False, "requires_image": False,
+     "arguments": [sys.executable, "-c", child, str(ready)]},
+    {"id": "profiles-second", "group": "profiles", "runtime": False, "requires_image": False,
+     "arguments": [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('advanced')", str(advanced)]},
+]
+arguments = argparse.Namespace(executable=str(candidate), runtime_root=str(project),
+                               group=["profiles"], case=[], list=False, output=None,
+                               stop_on_failure=False, content_overlay=None)
+with patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "fixture help", "")), \
+        patch.object(runner, "inventory", return_value=cases):
+    sys.exit(runner.run(arguments))
 """
 
 
@@ -139,6 +170,35 @@ raise RuntimeError('retained child stack evidence')
         process.send_signal(signal.SIGTERM)
         self.assertEqual(self.finish(process)[0], 143)
         self.assertIn("termination_signal: 15 (SIGTERM)", self.latest().read_text())
+
+    def test_external_interrupt_stops_batch_even_when_child_handles_it_and_exits_zero(self):
+        ready = self.project / "child-ready"
+        advanced = self.project / "second-case-ran"
+        environment = os.environ.copy()
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        process = subprocess.Popen(
+            [sys.executable, "-c", BATCH_HARNESS, str(SCRIPT), str(self.project),
+             str(ready), str(advanced)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
+        )
+        deadline = time.monotonic() + 10
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not ready.exists():
+            process.kill()
+            process.communicate()
+            self.fail("first acceptance child never installed its signal handler")
+        process.send_signal(signal.SIGINT)
+        self.assertEqual(self.finish(process)[0], 1)
+        data = self.latest().read_text()
+        self.assertIn("interruption_requested: 2 (SIGINT)", data)
+        self.assertIn("child_exit_status: 0", data)
+        self.assertIn("exit_status: 130", data)
+        manifest = json.loads(next((self.project / "output/acceptance").glob("*/manifest.json")).read_text())
+        self.assertEqual(len(manifest["results"]), 1)
+        self.assertEqual(manifest["results"][0]["exit_status"], 130)
+        self.assertEqual(manifest["not_run"], ["profiles-second"])
+        self.assertFalse(advanced.exists())
 
     def test_concurrent_launches_have_separate_complete_logs(self):
         source = "import sys, time; print(sys.argv[1], flush=True); time.sleep(0.1); print('finished')"

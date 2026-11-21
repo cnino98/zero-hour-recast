@@ -122,6 +122,8 @@ fn upgrade_removal_does_not_change_the_captured_key_mask_for_later_fx_modules() 
             cost: 0,
             frames: 1,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         });
     for name in ["First", "Second"] {
         let mut rules = death_fx(name);

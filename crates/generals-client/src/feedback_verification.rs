@@ -18,6 +18,7 @@ pub fn update(
     capture: Res<Capture>,
     mut battle: ResMut<Match>,
     mut mouse: ResMut<Mouse>,
+    mut pending: Local<Option<(usize, u64)>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let capture = capture.into_inner();
@@ -27,7 +28,31 @@ pub fn update(
     if scenario.issued || !capture.ready_for_feedback() {
         return;
     }
-    scenario.issued = true;
+    if let Some((id, submitted)) = *pending {
+        if battle.simulation.tick == submitted {
+            return;
+        }
+        scenario.issued = true;
+        if matches!(
+            battle.simulation.entities[id].ai.order,
+            Order::Move(_) | Order::FollowPath
+        ) {
+            eprintln!("Feedback capture: original movement command and move hint issued");
+        } else {
+            error!("Feedback capture could not execute a reachable movement order");
+            exit.write(AppExit::error());
+        }
+        return;
+    }
+    let builder = battle.simulation.entities.iter().position(|actor| {
+        actor.owner == 0
+            && actor.complete()
+            && battle.simulation.catalog[actor.type_index].kind
+                == generals_sim::skirmish::Kind::Builder
+    });
+    if let Some(builder) = builder {
+        battle.select_objects(&[builder], true);
+    }
     let Some(&id) = battle.selected.first() else {
         error!("Feedback capture has no selected source builder");
         exit.write(AppExit::error());
@@ -39,19 +64,8 @@ pub fn update(
         Vec2::new(140.0, 80.0),
         Vec2::new(0.0, 140.0),
     ] {
-        input::context_order(&mut battle, Some(origin + offset), None, &mut mouse);
-        if matches!(
-            battle.simulation.entities[id].ai.order,
-            Order::Move(_) | Order::FollowPath
-        ) {
-            eprintln!(
-                "Feedback capture: source {} command and move hint issued",
-                if scenario.waypoint {
-                    "waypoint"
-                } else {
-                    "move"
-                }
-            );
+        if input::context_order(&mut battle, Some(origin + offset), None, &mut mouse) {
+            *pending = Some((id, battle.simulation.tick));
             return;
         }
     }

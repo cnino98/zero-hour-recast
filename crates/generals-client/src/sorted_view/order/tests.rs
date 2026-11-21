@@ -87,6 +87,7 @@ fn phase_draws_match_per_material_bias_including_ties_and_unrelated_items() {
                 entity,
                 range: 0..3,
                 material: Handle::default(),
+                clear: false,
             })
             .collect(),
         mesh: None,

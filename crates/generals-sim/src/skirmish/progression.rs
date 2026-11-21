@@ -69,7 +69,10 @@ pub struct RepairBurst {
     pub delay_frames: u32,
 }
 
+#[derive(Clone)]
 pub enum PowerTarget {
+    None,
+    Construction { position: [f32; 3], angle: f32 },
     Object(usize),
     Position([f32; 2]),
     Position3D([f32; 3]),
@@ -207,6 +210,16 @@ impl Skirmish {
             unit.special_powers
                 .iter()
                 .any(|power| power.required_science == name)
+                || unit
+                    .behavior
+                    .cash_hack_powers
+                    .iter()
+                    .any(|power| power.upgrades.iter().any(|(science, _)| science == name))
+                || unit
+                    .behavior
+                    .ocl_powers
+                    .iter()
+                    .any(|power| power.upgrades.iter().any(|(science, _)| science == name))
                 || unit
                     .spectre_deployments
                     .iter()
@@ -363,6 +376,7 @@ impl Skirmish {
     }
 
     pub(super) fn score_player_kill(&mut self, owner: usize, victim: usize, sink: Option<usize>) {
+        let victim_id = victim;
         let victim = &self.entities[victim];
         let unit = &self.catalog[victim.type_index];
         if !self.enemies(victim.owner, owner)
@@ -373,16 +387,9 @@ impl Skirmish {
         }
         let level = usize::from(victim.veterancy);
         let experience = unit.veterancy.experience_value[level];
-        let cost = self.build_cost(victim.owner, victim.type_index);
         let skill_points = unit.progression.skill_point_value[level];
         self.add_capture_skill_points(owner, skill_points);
-        if self.progression.is_some() {
-            let player = &mut self.players[owner];
-            let fractional_bounty = integer_real(cost) * player.cash_bounty;
-            let bounty = (fractional_bounty - 0.0001).ceil().max(0.0);
-            player.cash = player.cash.saturating_add(real_unsigned(bounty));
-            player.statistics.money_earned += real_unsigned(bounty);
-        }
+        self.award_cash_bounty(owner, victim_id, sink);
         if let Some(sink) = sink {
             self.add_unit_experience(sink, experience);
         }
@@ -436,6 +443,9 @@ impl Skirmish {
 
     #[must_use]
     pub fn can_use_power(&mut self, caster: usize, name: &str) -> bool {
+        if self.entities.get(caster).is_none() || self.object_disabled(caster) {
+            return false;
+        }
         if self.native_power_available(caster, name) {
             return self.end_game_at.is_none() && self.special_power_percent(caster, name) >= 1.0;
         }
@@ -477,19 +487,128 @@ impl Skirmish {
             / integer_real(reload_frames)
     }
 
-    /// `ActionManager`'s native location gate for the installed Spectre powers.
+    /// `ActionManager::canDoSpecialPowerAtLocation`, including the pinned
+    /// Sneak Attack placement fix and the original reconnaissance exception.
     pub fn can_use_power_at_location(
         &mut self,
         caster: usize,
         name: &str,
         position: [f32; 3],
     ) -> bool {
-        self.native_power_available(caster, name)
-            && self.can_use_power(caster, name)
-            && !matches!(
-                self.visibility_cell(self.entities[caster].owner, [position[0], position[1]]),
+        if !position.into_iter().all(f32::is_finite)
+            || !self.native_power_available(caster, name)
+            || !self.can_use_power(caster, name)
+        {
+            return false;
+        }
+        let kind = self.entities[caster].type_index;
+        let Some(rules) = self.catalog[kind]
+            .special_powers
+            .iter()
+            .find(|power| power.name == name)
+        else {
+            return false;
+        };
+        let point = [position[0], position[1]];
+        match rules.power_type.as_str() {
+            "SPECIAL_SPY_SATELLITE"
+            | "SPECIAL_RADAR_VAN_SCAN"
+            | "SPECIAL_SPY_DRONE"
+            | "SPECIAL_HELIX_NAPALM_BOMB" => point.iter().enumerate().all(|(axis, value)| {
+                self.playable_extent[0][axis] < *value && *value < self.playable_extent[1][axis]
+            }),
+            "SPECIAL_SNEAK_ATTACK" => self.catalog[kind]
+                .behavior
+                .ocl_powers
+                .iter()
+                .find(|power| power.power == name)
+                .is_some_and(|power| {
+                    self.sneak_attack_location_valid(caster, &power.reference, position)
+                }),
+            "SPECIAL_PARADROP_AMERICA"
+            | "INFA_SPECIAL_PARADROP_AMERICA"
+            | "SPECIAL_CRATE_DROP"
+            | "SPECIAL_TANK_PARADROP" => {
+                let ground = self.ground_height(point);
+                !self
+                    .movement_terrain
+                    .parachute_water_height(point, ground)
+                    .is_some_and(|water| water > ground)
+                    && !matches!(
+                        self.visibility_cell(self.entities[caster].owner, point),
+                        super::visibility::Status::Shrouded
+                    )
+            }
+            "SPECIAL_DAISY_CUTTER"
+            | "AIRF_SPECIAL_DAISY_CUTTER"
+            | "SPECIAL_CARPET_BOMB"
+            | "SPECIAL_CHINA_CARPET_BOMB"
+            | "SPECIAL_LEAFLET_DROP"
+            | "EARLY_SPECIAL_LEAFLET_DROP"
+            | "EARLY_SPECIAL_CHINA_CARPET_BOMB"
+            | "AIRF_SPECIAL_CARPET_BOMB"
+            | "SUPR_SPECIAL_CRUISE_MISSILE"
+            | "SPECIAL_CLUSTER_MINES"
+            | "NUKE_SPECIAL_CLUSTER_MINES"
+            | "SPECIAL_EMP_PULSE"
+            | "SPECIAL_NAPALM_STRIKE"
+            | "SPECIAL_BLACK_MARKET_NUKE"
+            | "SPECIAL_ANTHRAX_BOMB"
+            | "SPECIAL_TERROR_CELL"
+            | "SPECIAL_AMBUSH"
+            | "SPECIAL_NEUTRON_MISSILE"
+            | "NUKE_SPECIAL_NEUTRON_MISSILE"
+            | "SUPW_SPECIAL_NEUTRON_MISSILE"
+            | "SPECIAL_SCUD_STORM"
+            | "SPECIAL_A10_THUNDERBOLT_STRIKE"
+            | "AIRF_SPECIAL_A10_THUNDERBOLT_STRIKE"
+            | "SPECIAL_SPECTRE_GUNSHIP"
+            | "AIRF_SPECIAL_SPECTRE_GUNSHIP"
+            | "SPECIAL_REPAIR_VEHICLES"
+            | "EARLY_SPECIAL_REPAIR_VEHICLES"
+            | "SPECIAL_GPS_SCRAMBLER"
+            | "SLTH_SPECIAL_GPS_SCRAMBLER"
+            | "SPECIAL_ARTILLERY_BARRAGE"
+            | "SPECIAL_FRENZY"
+            | "EARLY_SPECIAL_FRENZY"
+            | "SPECIAL_PARTICLE_UPLINK_CANNON"
+            | "SUPW_SPECIAL_PARTICLE_UPLINK_CANNON"
+            | "LAZR_SPECIAL_PARTICLE_UPLINK_CANNON"
+            | "SPECIAL_CLEANUP_AREA"
+            | "SPECIAL_BATTLESHIP_BOMBARDMENT" => !matches!(
+                self.visibility_cell(self.entities[caster].owner, point),
                 super::visibility::Status::Shrouded
-            )
+            ),
+            "SPECIAL_LAUNCH_BAIKONUR_ROCKET" => true,
+            _ => false,
+        }
+    }
+
+    pub fn can_use_power_at_object(&mut self, caster: usize, name: &str, target: usize) -> bool {
+        if !self.can_use_power(caster, name) || self.entities.get(target).is_none() {
+            return false;
+        }
+        let Some(ordinal) = self.special_power_ordinal(caster, name) else {
+            return self.power_index(caster, name).is_some()
+                && self.entities[target].complete()
+                && self.enemies(self.entities[target].owner, self.entities[caster].owner)
+                && self.catalog[self.entities[target].type_index]
+                    .progression
+                    .cash_hack_target;
+        };
+        let kind = self.entities[caster].type_index;
+        let Some(power_type) = super::special_ability::PowerType::parse(
+            &self.catalog[kind].special_powers[ordinal].power_type,
+        ) else {
+            return false;
+        };
+        self.can_special_power_at_object_from(
+            caster,
+            name,
+            power_type,
+            target,
+            super::ai_goals::COMMAND_FROM_PLAYER,
+        )
     }
 
     /// Executes the selected source power through a living completed owner module.
@@ -505,22 +624,8 @@ impl Skirmish {
         if !self.can_use_power(caster, name) {
             return Err("Power is unavailable or still recharging");
         }
-        if self.special_power_ordinal(caster, name).is_some() {
-            let position = match target {
-                PowerTarget::Position([x, y]) => [x, y, self.ground_height([x, y])],
-                PowerTarget::Position3D(position) => position,
-                PowerTarget::Object(_) => return Err("Spectre requires a location"),
-            };
-            if matches!(
-                self.visibility_cell(self.entities[caster].owner, [position[0], position[1]]),
-                super::visibility::Status::Shrouded
-            ) {
-                return Err("Spectre cannot target unexplored terrain");
-            }
-            return self
-                .special_power_at_location(caster, name, position, false)
-                .then_some(())
-                .ok_or("Special power module rejected the command");
+        if let Some(ordinal) = self.special_power_ordinal(caster, name) {
+            return self.cast_native_power(caster, name, ordinal, &target);
         }
         let target = match target {
             PowerTarget::Position3D([x, y, _]) => PowerTarget::Position([x, y]),
@@ -577,6 +682,95 @@ impl Skirmish {
         self.players[owner].power_ready_at[index] =
             Some(self.tick + u64::from(power.reload_frames));
         Ok(())
+    }
+
+    fn cast_native_power(
+        &mut self,
+        caster: usize,
+        name: &str,
+        ordinal: usize,
+        target: &PowerTarget,
+    ) -> Result<(), &'static str> {
+        let accepted = match *target {
+            PowerTarget::None => {
+                let kind = self.entities[caster].type_index;
+                let power_type = self.catalog[kind].special_powers[ordinal]
+                    .power_type
+                    .as_str();
+                if !matches!(
+                    power_type,
+                    "SPECIAL_CIA_INTELLIGENCE"
+                        | "SPECIAL_COMMUNICATIONS_DOWNLOAD"
+                        | "SPECIAL_REMOTE_CHARGES"
+                        | "SPECIAL_DETONATE_DIRTY_NUKE"
+                        | "SPECIAL_CHANGE_BATTLE_PLANS"
+                        | "SPECIAL_LAUNCH_BAIKONUR_ROCKET"
+                ) {
+                    return Err("Power requires a target");
+                }
+                self.native_special_power(caster, name, None, None, false)
+            }
+            PowerTarget::Construction { position, angle } => {
+                let kind = self.entities[caster].type_index;
+                if self.catalog[kind].special_powers[ordinal].power_type != "SPECIAL_SNEAK_ATTACK" {
+                    return Err("Power does not support construction targeting");
+                }
+                if !self.can_use_power_at_location(caster, name, position) || !angle.is_finite() {
+                    return Err("Invalid special power construction location");
+                }
+                let kind = self.entities[caster].type_index;
+                let Some(ocl) = self.catalog[kind]
+                    .behavior
+                    .ocl_powers
+                    .iter()
+                    .position(|power| power.power == name)
+                else {
+                    return Err("Power has no construction list");
+                };
+                if self.object_disabled(caster) {
+                    return Err("Power provider is disabled");
+                }
+                self.execute_power_ocl(caster, ocl, position, Some(angle));
+                true
+            }
+            PowerTarget::Object(target) => {
+                if self.entities.get(target).is_none() {
+                    return Err("Target does not exist");
+                }
+                let kind = self.entities[caster].type_index;
+                let power_type = &self.catalog[kind].special_powers[ordinal].power_type;
+                let Some(power_type) = super::special_ability::PowerType::parse(power_type) else {
+                    return Err("Power requires a location");
+                };
+                if !self.can_special_power_at_object_from(
+                    caster,
+                    name,
+                    power_type,
+                    target,
+                    super::ai_goals::COMMAND_FROM_PLAYER,
+                ) {
+                    return Err("Invalid special power target");
+                }
+                self.special_power_at_object(caster, name, target)
+            }
+            PowerTarget::Position(_) | PowerTarget::Position3D(_) => {
+                let position = match *target {
+                    PowerTarget::Position([x, y]) if x.is_finite() && y.is_finite() => {
+                        [x, y, self.ground_height([x, y])]
+                    }
+                    PowerTarget::Position(_) => return Err("Invalid special power location"),
+                    PowerTarget::Position3D(position) => position,
+                    _ => unreachable!("location target"),
+                };
+                if !self.can_use_power_at_location(caster, name, position) {
+                    return Err("Invalid special power location");
+                }
+                self.special_power_at_location(caster, name, position, false)
+            }
+        };
+        accepted
+            .then_some(())
+            .ok_or("Special power module rejected the command")
     }
 
     pub(super) fn update_repair_markers(&mut self) {

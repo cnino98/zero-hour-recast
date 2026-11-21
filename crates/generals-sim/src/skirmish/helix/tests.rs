@@ -13,34 +13,6 @@ pub(in crate::skirmish) fn setup() -> (Skirmish, usize) {
     contain.weapons.fire = false;
     contain.allowed.push("VEHICLE".into());
     add_native_napalm(unit);
-    unit.special_powers
-        .push(crate::skirmish::special_power::Rules {
-            tag: "NapalmAbility".into(),
-            name: "NapalmPower".into(),
-            power_type: "SPECIAL_HELIX_NAPALM_BOMB".into(),
-            required_science: String::new(),
-            timer: crate::skirmish::special_power::Timer {
-                reload_frames: 300,
-                shared: false,
-                public: false,
-            },
-            view_range: 0.0,
-            view_frames: 0,
-            view_template: None,
-            initiate_sound: String::new(),
-            target_sound: String::new(),
-            module_initiate_sound: String::new(),
-            academy_classification: "ACT_NONE".into(),
-            update_starts_attack: true,
-            startup: crate::skirmish::special_power::Startup {
-                paused: true,
-                ready: false,
-            },
-            script_only: false,
-        });
-    crate::skirmish::tests::register_behavior(unit, "SpecialAbility", 0x0100);
-    unit.behavior_modules.last_mut().unwrap().tag = "NapalmAbility".into();
-    unit.unpause_special_powers.push(Some("NapalmPower".into()));
     crate::skirmish::tests::register_behavior(unit, "PassengersFireUpgrade", 0x80);
     unit.behavior_modules.last_mut().unwrap().upgrade.triggers = vec!["Bunker".into()];
     unit.behavior
@@ -54,6 +26,9 @@ pub(in crate::skirmish) fn setup() -> (Skirmish, usize) {
                 force_magnitude: [0.0; 2],
                 force_pitch: [0.0; 2],
                 spin_rate: -1.0,
+                formation_distances: [0.0; 3],
+                fade_frames: 0,
+                fade_sound: String::new(),
                 names: vec!["HelixBunker".into()],
                 count: 1,
                 offset: [0.0; 3],
@@ -79,6 +54,8 @@ pub(in crate::skirmish) fn setup() -> (Skirmish, usize) {
         cost: 400,
         frames: 1,
         player: false,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     let mut child = fixture_type(Faction::Gla, Kind::Vehicle);
     child.name = "HelixBunker".into();
@@ -291,6 +268,34 @@ fn add_native_napalm(unit: &mut crate::skirmish::UnitType) {
         },
     });
     crate::skirmish::tests::register_update(unit, "SpecialAbilityUpdate");
+    unit.special_powers
+        .push(crate::skirmish::special_power::Rules {
+            tag: "NapalmAbility".into(),
+            name: "NapalmPower".into(),
+            power_type: "SPECIAL_HELIX_NAPALM_BOMB".into(),
+            required_science: String::new(),
+            timer: crate::skirmish::special_power::Timer {
+                reload_frames: 300,
+                shared: false,
+                public: false,
+            },
+            view_range: 0.0,
+            view_frames: 0,
+            view_template: None,
+            initiate_sound: String::new(),
+            target_sound: String::new(),
+            module_initiate_sound: String::new(),
+            academy_classification: "ACT_NONE".into(),
+            update_starts_attack: true,
+            startup: crate::skirmish::special_power::Startup {
+                paused: true,
+                ready: false,
+            },
+            script_only: false,
+        });
+    crate::skirmish::tests::register_behavior(unit, "SpecialAbility", 0x0100);
+    unit.behavior_modules.last_mut().unwrap().tag = "NapalmAbility".into();
+    unit.unpause_special_powers.push(Some("NapalmPower".into()));
 }
 
 #[test]

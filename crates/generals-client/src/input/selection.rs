@@ -92,10 +92,7 @@ impl View<'_, '_> {
         }
         if control && keys.just_pressed(KeyCode::KeyF) {
             // CommandXlat forwards CREATE_FORMATION for the current selection.
-            let selected = command_units(battle);
-            if let Err(error) = battle.simulation.group_create_formation(&selected) {
-                eprintln!("Formation command rejected: {error}");
-            }
+            super::commands::enqueue(battle, Some(mouse), super::commands::Kind::Formation);
         }
         if !control && !shift && !alt {
             for (key, mode) in mouse.selection.keys.into_iter().zip([
@@ -164,7 +161,14 @@ impl View<'_, '_> {
                     }
                     // MSG_SELECT_TEAM/MSG_ADD_TEAM has one dispatcher boundary;
                     // Player replaces/appends Squad objects without temporary AI groups.
-                    drop(battle.command_message_members());
+                    super::commands::enqueue(
+                        battle,
+                        Some(mouse),
+                        super::commands::Kind::Recall {
+                            members: mouse.groups[group].clone(),
+                            replace: !shift,
+                        },
+                    );
                     if !shift {
                         battle.logic_selection.clear();
                     }
@@ -395,19 +399,49 @@ impl Match {
     /// `MSG_CREATE_SELECTED_GROUP[_NO_SOUND]`. Preserve every ordered argument,
     /// including repeats, independently of the GUI's drawable list.
     pub(crate) fn selection_create(&mut self, added: &[usize], replace: bool) {
+        if !self.commands.executing {
+            super::commands::enqueue(
+                self,
+                None,
+                super::commands::Kind::Select {
+                    added: added.to_vec(),
+                    replace,
+                },
+            );
+            self.logic_selection =
+                self.simulation
+                    .preview_selection_create(&self.logic_selection, added, replace);
+            return;
+        }
         self.logic_selection =
             self.simulation
-                .create_selection(0, &self.logic_selection, added, replace);
+                .apply_selection_create(0, &self.logic_selection, added, replace);
     }
     /// `MSG_REMOVE_FROM_SELECTED_GROUP`, not a per-frame final-vector comparison.
     pub(crate) fn selection_remove(&mut self, removed: &[usize]) {
-        self.logic_selection = self
-            .simulation
-            .remove_selection(0, &self.logic_selection, removed);
+        if !self.commands.executing {
+            super::commands::enqueue(
+                self,
+                None,
+                super::commands::Kind::Deselect(removed.to_vec()),
+            );
+            self.logic_selection = self
+                .simulation
+                .preview_selection_remove(&self.logic_selection, removed);
+            return;
+        }
+        self.logic_selection =
+            self.simulation
+                .apply_selection_remove(0, &self.logic_selection, removed);
     }
     /// `MSG_DESTROY_SELECTED_GROUP`, including already queued client messages.
     pub(crate) fn selection_destroy(&mut self) {
-        self.simulation.destroy_selection(0, &self.logic_selection);
+        if !self.commands.executing {
+            super::commands::enqueue(self, None, super::commands::Kind::DestroySelection);
+            self.logic_selection.clear();
+            return;
+        }
+        self.simulation.apply_selection_destroy(0);
         self.logic_selection.clear();
     }
     /// `InGameUI::deselectAllDrawables` emits Destroy only if drawables were selected.
@@ -434,8 +468,13 @@ impl Match {
     /// The returned `AIGroup` order is the native last-occurrence order, including
     /// source live/add/foreign-owner filtering, rather than GUI order.
     pub(crate) fn command_message_members(&mut self) -> Vec<usize> {
-        self.simulation
-            .materialize_selection_group(0, &self.logic_selection)
+        if !self.commands.executing {
+            super::commands::enqueue(self, None, super::commands::Kind::SelectionBoundary);
+            return self
+                .simulation
+                .preview_selection_group(0, &self.logic_selection);
+        }
+        self.commands.members.clone()
     }
 }
 
@@ -446,15 +485,20 @@ mod tests {
     #[ignore = "requires original game installation"]
     #[test]
     fn mob_child_selection_emits_missing_slaves_then_nexus_before_group_move() {
-        let (_, mut battle) = crate::cleanup_verification::tests::installed();
+        let (assets, mut battle) = crate::cleanup_verification::tests::installed();
+        let mut mouse = crate::input::load(
+            &assets,
+            &generals_assets::game_root()
+                .unwrap()
+                .join("UserData/Options.ini"),
+            &battle.simulation.catalog,
+        )
+        .unwrap();
         let setup = crate::angry_mob_verification::prepare(&mut battle.simulation).unwrap();
         let children = battle.simulation.spawned_children(setup.nexus).to_vec();
         let picked = children[3];
         battle.select_objects(&[picked], true);
-        let selected = battle.selected.clone();
-        battle.simulation.sync_drawable_selection(&selected);
-        battle.simulation.step();
-        crate::input::apply_spectre_selections(&mut battle);
+        crate::input::commands::step(&mut battle, &mut mouse);
         let mut expected = vec![picked];
         expected.extend(children.iter().copied().filter(|&id| id != picked));
         expected.push(setup.nexus);
@@ -462,10 +506,7 @@ mod tests {
         assert_eq!(battle.selected.first(), Some(&setup.nexus));
         assert_eq!(super::command_units(&mut battle), expected);
         let unchanged = battle.logic_selection.clone();
-        let selected = battle.selected.clone();
-        battle.simulation.sync_drawable_selection(&selected);
-        battle.simulation.step();
-        crate::input::apply_spectre_selections(&mut battle);
+        crate::input::commands::step(&mut battle, &mut mouse);
         assert_eq!(
             battle.logic_selection, unchanged,
             "complete selection emits no repeat arguments"
@@ -474,6 +515,7 @@ mod tests {
             bevy::prelude::Vec3::from_array(battle.simulation.object_position(setup.nexus))
                 + bevy::prelude::Vec3::new(80.0, 0.0, 0.0);
         assert!(crate::input::move_group(&mut battle, destination, false));
+        crate::input::commands::step(&mut battle, &mut mouse);
         assert!(matches!(
             battle.simulation.entities[setup.nexus].ai.order,
             generals_sim::skirmish::Order::Move(_)
@@ -538,10 +580,13 @@ mod tests {
         )
         .unwrap();
         mouse.groups[3] = vec![old];
+        crate::input::commands::step(&mut battle, &mut mouse);
         let next = crate::fake_building_verification::convert(&mut battle.simulation, old).unwrap();
         assert!(battle.simulation.deselected_objects.contains(&old));
         mouse.apply_replacements(&mut battle);
         crate::input::apply_spectre_selections(&mut battle);
+        // ReplaceObjectUpgrade queues the replacement Squad for the next logic frame.
+        crate::input::commands::step(&mut battle, &mut mouse);
         assert_eq!(battle.selected, [next]);
         assert_eq!(battle.logic_selection, [next]);
         assert_eq!(mouse.groups[3], [next]);

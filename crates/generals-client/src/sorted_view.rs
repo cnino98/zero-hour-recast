@@ -9,7 +9,8 @@ pub mod submission;
 #[cfg(test)]
 mod tests;
 use crate::{
-    model_render::RenderOrder, playtest_view::WorldCamera, source_material::SourceMaterial,
+    model_animation::draw_visibility::DrawableRoots, model_render::RenderOrder, playtest::Match,
+    playtest_view::WorldCamera, source_material::SourceMaterial,
 };
 use bevy::{
     camera::{
@@ -17,6 +18,7 @@ use bevy::{
         visibility::{NoFrustumCulling, RenderLayers, SetViewVisibility, VisibilitySystems},
     },
     ecs::system::SystemParam,
+    mesh::MeshTag,
     prelude::*,
     transform::TransformSystems,
 };
@@ -113,6 +115,7 @@ fn register_source(
 struct Node {
     mesh: Handle<Mesh>,
     material: Handle<SourceMaterial>,
+    clear: bool,
     world: bevy::math::Affine3A,
     scale: f32,
     depth: f32,
@@ -131,6 +134,7 @@ struct Run {
     entity: Entity,
     range: Range<u32>,
     material: Handle<SourceMaterial>,
+    clear: bool,
 }
 impl Run {
     fn show(
@@ -138,6 +142,7 @@ impl Run {
         commands: &mut Commands,
         range: Range<u32>,
         material: Handle<SourceMaterial>,
+        clear: bool,
     ) {
         if self.range.is_empty() {
             commands.entity(self.entity).insert((
@@ -157,6 +162,12 @@ impl Run {
                 .entity(self.entity)
                 .insert(MeshMaterial3d(material.clone()));
             self.material = material;
+        }
+        if self.clear != clear {
+            commands
+                .entity(self.entity)
+                .insert(MeshTag(u32::from(clear)));
+            self.clear = clear;
         }
     }
 
@@ -199,6 +210,8 @@ type Source = (
 );
 #[derive(SystemParam)]
 struct Resources<'w, 's> {
+    battle: Option<Res<'w, Match>>,
+    roots: DrawableRoots<'w, 's>,
     meshes: ResMut<'w, Assets<Mesh>>,
     materials: ResMut<'w, Assets<SourceMaterial>>,
     batches: Query<'w, 's, Entity, With<SortedBatch>>,
@@ -333,9 +346,27 @@ fn collect_nodes(
                     },
                 )
             };
+            // Sorted sources contribute triangles before their ViewVisibility is
+            // published. Read their current native actor state, not last frame's tag.
+            let clear = submission.is_some()
+                && parent.is_some_and(|parent| {
+                    resources.battle.as_deref().is_some_and(|battle| {
+                        resources
+                            .roots
+                            .clear(battle, parent.parent(), |id| {
+                                battle
+                                    .simulation
+                                    .projectiles
+                                    .iter()
+                                    .find(|shot| shot.id == id)
+                            })
+                            .is_some()
+                    })
+                });
             nodes.push(Node {
                 mesh: mesh.0.clone(),
                 material: material.0.clone(),
+                clear,
                 world: world.affine(),
                 scale,
                 depth,
@@ -423,15 +454,16 @@ fn sorted_ranges(
         let mut end = first + 1;
         while end < triangles.len() {
             let next = triangles[end].node;
-            if nodes[node].material != nodes[next].material
-                && !interchangeable_materials(
-                    materials
-                        .get(&nodes[node].material)
-                        .expect("sorted source material exists"),
-                    materials
-                        .get(&nodes[next].material)
-                        .expect("sorted source material exists"),
-                )
+            if nodes[node].clear != nodes[next].clear
+                || nodes[node].material != nodes[next].material
+                    && !interchangeable_materials(
+                        materials
+                            .get(&nodes[node].material)
+                            .expect("sorted source material exists"),
+                        materials
+                            .get(&nodes[next].material)
+                            .expect("sorted source material exists"),
+                    )
             {
                 break;
             }
@@ -466,6 +498,7 @@ fn upload_runs(
     }
     for (run_index, range) in ranges.iter().enumerate() {
         let node = pool.triangles[range.start].node;
+        let clear = nodes[node].clear;
         let material = materials::bind(
             &mut pool.variants,
             &nodes[node].material,
@@ -481,6 +514,7 @@ fn upload_runs(
                     bevy::render::batching::NoAutomaticBatching,
                     Mesh3d(pool.mesh.as_ref().expect("nonempty sorted pool").clone()),
                     MeshMaterial3d(material.clone()),
+                    MeshTag(u32::from(clear)),
                     Transform::IDENTITY,
                     GlobalTransform::IDENTITY,
                     Visibility::Visible,
@@ -494,9 +528,10 @@ fn upload_runs(
                 entity,
                 material,
                 range: vertices,
+                clear,
             });
         } else {
-            pool.runs[run_index].show(commands, vertices, material);
+            pool.runs[run_index].show(commands, vertices, material, clear);
         }
     }
     // Live draws form a prefix. The first empty region begins the previously hidden tail.

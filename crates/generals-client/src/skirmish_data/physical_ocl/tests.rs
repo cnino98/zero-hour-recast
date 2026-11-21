@@ -1,5 +1,6 @@
 use super::*;
 use generals_assets::{content, virtual_assets::Asset};
+use generals_sim::skirmish::object_creation;
 
 pub fn installed_outpost(
     assets: &generals_assets::virtual_assets::VirtualAssets,
@@ -54,11 +55,36 @@ fn creation_nuggets_keep_cross_kind_order_native_rates_and_signed_offsets() {
 }
 
 #[test]
-fn unsupported_containment_is_not_silently_admitted_as_ordinary_debris() {
+fn ordinary_containment_retains_payload_and_uses_the_generic_callback() {
     let file = content::scan(Asset { path: "ocl.ini".into(), origin: "native container dependency rejection".into(), bytes: b"ObjectCreationList Pilot\nCreateObject\nObjectNames=AmericaInfantryPilot\nPutInContainer=AmericaParachute\nEnd\nEnd\n".to_vec() }).unwrap();
-    assert!(
-        load(&[file], "Pilot").is_err_and(|error| error.to_string().contains("PutInContainer"))
+    let list = load(&[file], "Pilot").unwrap();
+    assert!(list.nuggets.is_empty());
+    let (index, object) = &list.ordinary_nuggets[0];
+    assert_eq!(*index, 0);
+    assert_eq!(object.names, ["AmericaInfantryPilot"]);
+    assert_eq!(object.container, "AmericaParachute");
+}
+
+#[test]
+fn ordinary_death_object_retains_live_player_guard_before_debris() {
+    let file = content::scan(Asset {
+        path: "ocl.ini".into(),
+        origin: "mixed native OCL fixture".into(),
+        bytes: b"ObjectCreationList Death\nCreateObject\nObjectNames=AmericaInfantryRanger\nRequiresLivePlayer=Yes\nIgnorePrimaryObstacle=Yes\nDisposition=SEND_IT_OUT\nDispositionIntensity=4\nCount=6\nEnd\nCreateDebris\nModelNames=ABPwrPlant_d01\nMass=3\nCount=3\nEnd\nEnd\n".to_vec(),
+    }).unwrap();
+    let list = load(&[file], "Death").unwrap();
+    let (index, object) = &list.ordinary_nuggets[0];
+    assert_eq!(*index, 0);
+    assert_eq!(object.count, 6);
+    assert_eq!(object.disposition, physical_ocl::SEND_OUT);
+    assert_eq!(
+        object.flags,
+        object_creation::REQUIRES_LIVE_PLAYER
+            | object_creation::IGNORE_PRIMARY_OBSTACLE
+            | object_creation::PRESERVE_LAYER
     );
+    assert_eq!(list.nuggets[0].count, 3);
+    assert_eq!(list.nuggets[0].names, ["ABPwrPlant_d01"]);
 }
 
 #[ignore = "requires original game installation"]

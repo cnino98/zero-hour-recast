@@ -25,6 +25,9 @@ fn list(airborne: bool) -> List {
             force_magnitude: if airborne { [10.0, 12.0] } else { [2.0, 3.0] },
             force_pitch: [50.0_f32.to_radians(), 60.0_f32.to_radians()],
             spin_rate: 0.0,
+            formation_distances: [0.0; 3],
+            fade_frames: 0,
+            fade_sound: String::new(),
         }],
     }
 }

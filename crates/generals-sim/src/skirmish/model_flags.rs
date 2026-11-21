@@ -32,6 +32,7 @@ impl Skirmish {
             flags.insert("SPECIAL_CHEERING".into());
         }
         flags.extend(unit.aircraft_conditions().into_iter().map(str::to_owned));
+        flags.extend(unit.nuclear_launcher_model_condition().map(str::to_owned));
         if unit.spectre_afterburners() {
             flags.insert("JETAFTERBURNER".into());
         }

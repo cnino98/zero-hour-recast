@@ -1,5 +1,5 @@
 use crate::{
-    control_bar::{Command, CommandAction, UiData},
+    control_bar::{Command, CommandAction, PowerAim, PowerCommand, UiData},
     input::{CommandMode, Mouse},
     playtest::{CameraRig, Match},
 };
@@ -18,12 +18,14 @@ pub use ocl_timer::update as ocl_timer_update;
 #[cfg(test)]
 mod changes_tests;
 pub mod observer;
+mod power_shortcuts;
 mod promotion_icon;
 mod promotions;
 mod results;
 #[cfg(test)]
 mod selected_command_tests;
 mod shortcuts;
+mod superweapon_timers;
 mod transport;
 pub use menu::button as menu_button;
 use menu::{Confirmation, Page};
@@ -98,6 +100,10 @@ pub enum Action {
     CancelConfirmation,
     Modal,
     Slot(usize),
+    PowerShortcut {
+        faction: usize,
+        slot: usize,
+    },
     CancelConstruction,
     OclTimer,
     CancelProduction(Option<(usize, i32)>),
@@ -190,6 +196,7 @@ pub fn captures_pointer(
         .min
         .y;
     cursor.y >= window.height() * top / 600.0
+        || power_shortcuts::pointer_over(battle, data, cursor, window)
 }
 
 pub fn over_promotions(
@@ -265,6 +272,8 @@ pub fn setup(
         ZIndex(5),
     ));
     command_icons::setup(&mut commands, data, &mut icons);
+    power_shortcuts::setup(&mut commands, data, &mut icons);
+    superweapon_timers::setup(&mut commands, data);
     cancellation::setup(&mut commands, data, &mut icons);
     ocl_timer::setup(&mut commands, data, &mut icons);
     commands.spawn((
@@ -305,6 +314,14 @@ fn register_assets(
     }
     if let Some(font) = data.serif_font.take() {
         data.serif_handle = fonts.add(font);
+    }
+    if let Some(countdown) = data
+        .power_shortcuts
+        .as_mut()
+        .map(|shortcuts| &mut shortcuts.countdown)
+        && let Some(font) = countdown.ready_font.take()
+    {
+        countdown.ready_handle = fonts.add(font);
     }
 }
 
@@ -420,17 +437,12 @@ pub fn selected_command<'a>(battle: &Match, data: &'a UiData, slot: usize) -> Op
         {
             return None;
         }
-        let candidate =
-            data.commands(&battle.simulation, id)
-                .iter()
-                .find(|command| command.slot == slot)
-                .filter(|command| command_icons::visible(battle, command))
-                .filter(|command| {
-                    command.action.power().is_none()
-                        || command.sciences.first().is_some_and(|science| {
-                            battle.simulation.players[0].has_science(science)
-                        })
-                });
+        let candidate = data
+            .commands(&battle.simulation, id)
+            .iter()
+            .find(|command| command.slot == slot)
+            .filter(|command| command_icons::visible(battle, command))
+            .filter(|command| power_science_visible(battle, id, command));
         if first {
             common = candidate.filter(|command| battle.selected.len() == 1 || command.multi_select);
             first = false;
@@ -451,6 +463,25 @@ pub fn selected_command<'a>(battle: &Match, data: &'a UiData, slot: usize) -> Op
         }
     }
     common
+}
+
+fn power_science_visible(battle: &Match, caster: usize, command: &Command) -> bool {
+    let Some(power) = command.action.power() else {
+        return true;
+    };
+    let actor = &battle.simulation.entities[caster];
+    let unit = &battle.simulation.catalog[actor.type_index];
+    let science = unit
+        .special_powers
+        .iter()
+        .find(|rules| rules.name == power)
+        .map_or_else(
+            || command.sciences.first().map_or("", String::as_str),
+            |rules| &rules.required_science,
+        );
+    science.is_empty()
+        || science.eq_ignore_ascii_case("NONE")
+        || battle.simulation.players[actor.owner].has_science(science)
 }
 
 type ButtonState<'a> = (
@@ -518,9 +549,8 @@ pub fn buttons(
         if pressed
             && *interaction == Interaction::Pressed
             && button_enabled(action, &mut battle, &menu, data, &pointer)
-            && !matches!(action, Action::ToggleDropdown(_))
         {
-            audio.ui("GUIClick");
+            play_press_sound(action, &mut audio);
         }
         if let Some(mut image) = image {
             image.color = if *interaction == Interaction::Hovered
@@ -581,6 +611,14 @@ pub fn buttons(
     }
 }
 
+fn play_press_sound(action: &Action, audio: &mut crate::source_audio::SourceAudio) {
+    match action {
+        Action::ToggleDropdown(_) => {}
+        Action::PowerShortcut { .. } => audio.ui("GUIGenShortcutClick"),
+        _ => audio.ui("GUIClick"),
+    }
+}
+
 fn gameplay_button(
     action: &Action,
     battle: &mut Match,
@@ -606,6 +644,9 @@ fn gameplay_button(
             {
                 dispatch_command(battle, pointer, command.action);
             }
+        }
+        Action::PowerShortcut { faction, slot } => {
+            power_shortcuts::activate(battle, pointer, data, faction, slot);
         }
         Action::Worker => select_idle_worker(battle, rig, pointer, menu),
         _ => {}
@@ -644,6 +685,7 @@ fn button_enabled(
             .is_some_and(|command| command_icons::available(battle, command)),
         Action::OclTimer => ocl_timer::command(battle, data)
             .is_some_and(|command| command_icons::available(battle, command)),
+        Action::PowerShortcut { faction, slot } => power_shortcuts::available(battle, data, faction, slot),
         Action::Science { faction, index } => battle
             .simulation
             .can_purchase_science(0, &data.promotions.buttons[faction][index].science),
@@ -690,6 +732,13 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
     if lotus_targeting(battle, mouse, action) {
         return;
     }
+    if queue_command(battle, mouse, action) {
+        return;
+    }
+    execute_command(battle, mouse, action);
+}
+
+pub fn execute_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAction) {
     match action {
         CommandAction::Produce(product) => product_order(battle, product),
         CommandAction::DetonateFake => {
@@ -734,17 +783,24 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
         CommandAction::CashHack
         | CommandAction::EmergencyRepair
         | CommandAction::SpectreGunship
-        | CommandAction::AirForceSpectreGunship => {
-            if let Some(&caster) = battle.selected.first() {
-                mouse.pending_command = CommandMode::Power {
-                    caster,
-                    name: action
-                        .power()
-                        .expect("targeted special power action")
-                        .into(),
-                    target_object: matches!(action, CommandAction::CashHack),
-                };
-                battle.placing = None;
+        | CommandAction::AirForceSpectreGunship
+        | CommandAction::NativePower(_) => {
+            let power = action.power_command().expect("power action");
+            if let Some(caster) = battle
+                .selected
+                .iter()
+                .copied()
+                .find(|&caster| battle.simulation.can_use_power(caster, power.name))
+            {
+                if power.name == "SpecialAbilityBoobyTrap" {
+                    mouse.voices.push(crate::source_audio::VoiceRequest::new(
+                        &battle.simulation,
+                        &[caster],
+                        crate::source_audio::Voice::BoobyTrapMode,
+                        false,
+                    ));
+                }
+                dispatch_power(battle, mouse, caster, power, false);
             }
         }
         CommandAction::Stop => stop_selected(battle),
@@ -767,6 +823,163 @@ pub fn dispatch_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAc
         | CommandAction::BombTruckDetonate
         | CommandAction::SnipeVehicle(_)
         | CommandAction::Cleanup => dispatch_unit_command(battle, mouse, action),
+    }
+}
+
+fn queue_command(battle: &mut Match, mouse: &mut Mouse, action: CommandAction) -> bool {
+    if !battle.commands.executing
+        && let CommandAction::ExitContainer(slot) = action
+    {
+        battle.placing = None;
+        if let Some(passenger) = transport::passenger(battle, slot)
+            && crate::input::locally_controlled(battle, passenger)
+        {
+            crate::input::commands::enqueue(
+                battle,
+                Some(mouse),
+                crate::input::commands::Kind::ExitContainer(passenger),
+            );
+        }
+        return true;
+    }
+    if !battle.commands.executing
+        && let CommandAction::Research(index) = action
+    {
+        queue_research(battle, mouse, index);
+        return true;
+    }
+    if !battle.commands.executing && matches!(action, CommandAction::CancelConstruction) {
+        cancellation::activate(&Action::CancelConstruction, battle);
+        return true;
+    }
+    let world_action = !matches!(action, CommandAction::Produce(product) if battle.simulation.catalog[product].kind.is_building());
+    if !battle.commands.executing
+        && world_action
+        && matches!(
+            action,
+            CommandAction::Produce(_)
+                | CommandAction::DetonateFake
+                | CommandAction::BattlePlan(_)
+                | CommandAction::Evacuate
+                | CommandAction::ExitContainer(_)
+                | CommandAction::SwitchWeapon(_)
+                | CommandAction::HackInternet
+                | CommandAction::Stop
+                | CommandAction::Research(_)
+                | CommandAction::Sell
+                | CommandAction::CancelConstruction
+                | CommandAction::BurtonDetonate
+                | CommandAction::BombTruckDetonate
+        )
+    {
+        if matches!(
+            action,
+            CommandAction::BattlePlan(_)
+                | CommandAction::Evacuate
+                | CommandAction::ExitContainer(_)
+        ) {
+            battle.placing = None;
+        }
+        crate::input::commands::enqueue(
+            battle,
+            Some(mouse),
+            crate::input::commands::Kind::Action(action),
+        );
+        return true;
+    }
+    if !battle.commands.executing
+        && let CommandAction::ClearMines(slot) = action
+    {
+        let mut accepted = false;
+        for index in 0..battle.selected.len() {
+            let id = battle.selected[index];
+            accepted |= crate::input::locally_controlled(battle, id)
+                && battle.simulation.mine_clearing_ready(id, slot);
+        }
+        if accepted {
+            crate::input::commands::enqueue(
+                battle,
+                Some(mouse),
+                crate::input::commands::Kind::Action(action),
+            );
+            battle.placing = None;
+            mouse.pending_command = CommandMode::ClearMines(slot);
+        }
+        return true;
+    }
+    false
+}
+
+fn queue_research(battle: &mut Match, mouse: &mut Mouse, index: usize) {
+    if let Some(&producer) = battle.selected.first() {
+        let kind = battle.simulation.entities[producer].type_index;
+        if let Some(upgrade) = battle.simulation.catalog[kind]
+            .maintenance
+            .research
+            .get(index)
+        {
+            let name = upgrade.name.clone();
+            let voice = match name.as_str() {
+                "Upgrade_GLABombTruckBioBomb" => {
+                    Some(crate::source_audio::Voice::BombTruckBioBombMode)
+                }
+                "Upgrade_GLABombTruckHighExplosiveBomb" => {
+                    Some(crate::source_audio::Voice::BombTruckHighExplosiveMode)
+                }
+                _ => None,
+            };
+            if let Some(voice) = voice {
+                mouse.voices.push(crate::source_audio::VoiceRequest::new(
+                    &battle.simulation,
+                    battle.command_drawables(),
+                    voice,
+                    false,
+                ));
+            }
+            crate::input::commands::enqueue(
+                battle,
+                Some(mouse),
+                crate::input::commands::Kind::Research(name),
+            );
+        }
+    }
+}
+
+fn dispatch_power(
+    battle: &mut Match,
+    mouse: &mut Mouse,
+    caster: usize,
+    command: PowerCommand,
+    specific_source: bool,
+) {
+    battle.placing = None;
+    mouse.pending_command = CommandMode::Normal;
+    match command.aim {
+        PowerAim::Immediate => {
+            crate::input::cast_command_power(
+                battle,
+                caster,
+                command.name,
+                || generals_sim::skirmish::PowerTarget::None,
+                specific_source,
+            );
+        }
+        PowerAim::Construct(kind) => {
+            battle.placing = Some(crate::input::placement::Placement::special_power(
+                kind,
+                caster,
+                battle.simulation.catalog[kind].placement_angle,
+                command.name,
+            ));
+        }
+        PowerAim::Object | PowerAim::Location => {
+            mouse.pending_command = CommandMode::Power {
+                caster,
+                name: command.name,
+                target_object: matches!(command.aim, PowerAim::Object),
+                specific_source,
+            };
+        }
     }
 }
 
@@ -895,7 +1108,7 @@ fn targeting_voice(
     mouse.pending_command = mode;
     mouse.voices.push(crate::source_audio::VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         voice,
         false,
     ));
@@ -933,7 +1146,7 @@ fn hack_internet(battle: &mut Match, mouse: &mut Mouse) {
     }
     mouse.voices.push(crate::source_audio::VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         crate::source_audio::Voice::HackInternet,
         false,
     ));
@@ -942,7 +1155,7 @@ fn hack_internet(battle: &mut Match, mouse: &mut Mouse) {
 fn switch_weapon(battle: &mut Match, mouse: &mut Mouse, slot: usize) {
     let response = crate::source_audio::VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         if slot == 0 {
             crate::source_audio::Voice::PrimaryWeaponMode
         } else {
@@ -1164,6 +1377,11 @@ fn action_tooltip(action: &Action, battle: &Match, data: &UiData) -> Option<Stri
         Action::OclTimer => {
             let command = ocl_timer::command(battle, data)?;
             Some(format!("{}\n{}", command.label, command.description))
+        }
+        Action::PowerShortcut { faction, slot } => {
+            let command = power_shortcuts::command(battle, data, faction, slot)?;
+            let (label, description) = command_icons::power_text(battle, data, command);
+            Some(format!("{label}\n{description}"))
         }
         _ => None,
     }

@@ -8,8 +8,11 @@ mod dependencies;
 mod detectors;
 mod drones;
 mod effects;
+#[cfg(test)]
+pub use effects::exhaust_tests::detached_ignition_sound;
 mod emission;
 mod fire;
+mod gps_scrambler;
 mod height_die;
 mod inspection;
 mod laser;
@@ -259,9 +262,11 @@ pub struct Particles {
     phase: f32,
     scale: f32,
     bindings: Vec<Vec<Option<effects::WeaponEffects>>>,
+    missile_ignition: Vec<Option<usize>>,
     bone_systems: std::collections::BTreeMap<(usize, usize), Vec<u64>>,
     bodies: body_particles::Bodies,
     detectors: detectors::Bindings,
+    gps_scramblers: gps_scrambler::Emitters,
     model_states: model_states::States,
     fires: fire::Fires,
     lists: Vec<Vec<effects::Nugget>>,

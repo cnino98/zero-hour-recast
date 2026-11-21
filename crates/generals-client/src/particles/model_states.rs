@@ -104,6 +104,7 @@ impl Pending {
             "object/glainfantry",
             "object/civilianbuilding",
             "object/factionbuilding",
+            "object/weaponobjects",
         ]
         .into_iter()
         .map(|name| content::scan(assets.read(&format!("data/ini/{name}.ini"))?))
@@ -130,6 +131,12 @@ impl Pending {
                         | "ChinaInfantryBlackLotus"
                         | "GLAInfantryJarmenKell"
                         | "CountermeasureFlare"
+                        | "ChinaStandardMine"
+                        | "ChinaEMPMine"
+                        | "ChinaClusterMine"
+                        | "Frenzy_InvisibleMarker_Level1"
+                        | "Frenzy_InvisibleMarker_Level2"
+                        | "Frenzy_InvisibleMarker_Level3"
                 )
         }) {
             let object = definition(&files, "Object", &unit.name)?;

@@ -69,6 +69,7 @@ impl Skirmish {
                         | "BattleBusSlowDeathBehavior"
                         | "JetSlowDeathBehavior"
                         | "HelicopterSlowDeathBehavior"
+                        | "NeutronMissileSlowDeathBehavior"
                 )
             })
     }
@@ -119,7 +120,7 @@ impl Skirmish {
         let rule = self.native_slow_rule(id, index);
         assert!(rule.probability >= 1);
         let extension = match &rule.derived {
-            Derived::None => Extension::None,
+            Derived::None | Derived::Neutron(_) => Extension::None,
             Derived::BattleBus(_) => {
                 Extension::BattleBus(crate::skirmish::battle_bus::NativeState::new())
             }
@@ -220,7 +221,7 @@ impl Skirmish {
             let weight = probability(self.native_slow_rule(id, index), overkill, maximum);
             if roll <= weight {
                 match &self.native_slow_rule(id, index).derived {
-                    Derived::None => self.activate_slow_death(id, index),
+                    Derived::None | Derived::Neutron(_) => self.activate_slow_death(id, index),
                     Derived::BattleBus(_) => self.begin_native_battle_bus_death(id, index),
                     Derived::Jet(_) => self.begin_native_jet_death(id, index),
                     Derived::Helicopter(_) => self.begin_native_helicopter_death(id, index),
@@ -472,6 +473,7 @@ impl SlowDeath {
             Derived::BattleBus(_) => "BattleBusSlowDeathBehavior",
             Derived::Jet(_) => "JetSlowDeathBehavior",
             Derived::Helicopter(_) => "HelicopterSlowDeathBehavior",
+            Derived::Neutron(_) => "NeutronMissileSlowDeathBehavior",
         }
     }
 }

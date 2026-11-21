@@ -80,6 +80,7 @@ impl Particles {
             self.bodies.clear();
             self.smudges.clear();
             self.object_emitters.clear();
+            self.gps_scramblers.clear();
             self.model_states.reset();
             self.fires.reset();
             self.sounds.clear();

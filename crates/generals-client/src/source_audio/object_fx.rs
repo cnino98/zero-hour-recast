@@ -60,6 +60,17 @@ impl SourceAudio {
             WeaponFxEvent::ObjectSound(index) => {
                 self.object_sound(&game.presentation.object_sounds[*index], viewer);
             }
+            WeaponFxEvent::SuperweaponEva(index) => {
+                let event = &game.presentation.superweapon_eva[*index];
+                let relation = if viewer == event.owner {
+                    0
+                } else if game.enemies(viewer, event.owner) {
+                    2
+                } else {
+                    1
+                };
+                self.launch_superweapon(relation, &event.power);
+            }
             WeaponFxEvent::Pilot(index) => self.pilot(&game.presentation.pilot_events[*index]),
             WeaponFxEvent::Projectile(event) => self.projectile(game, event, viewer),
             WeaponFxEvent::ObjectFx(_)
@@ -73,6 +84,9 @@ impl SourceAudio {
             | WeaponFxEvent::DrawableDestroyed(_)
             | WeaponFxEvent::AttachedParticle(_)
             | WeaponFxEvent::SpectreStrafe(_)
+            | WeaponFxEvent::ParticleUplinkScorch(_)
+            | WeaponFxEvent::EmpSparks(_)
+            | WeaponFxEvent::NeutronScorch(_)
             | WeaponFxEvent::DestroyAttachedParticles(_)
             | WeaponFxEvent::Firestorm(_)
             | WeaponFxEvent::SlaveWeld(_)

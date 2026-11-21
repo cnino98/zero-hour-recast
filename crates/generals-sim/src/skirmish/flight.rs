@@ -22,6 +22,7 @@ pub enum Appearance {
 pub enum Height {
     None,
     Surface,
+    HighestLayer,
     Absolute,
     FixedSurface,
     FixedAbsolute,

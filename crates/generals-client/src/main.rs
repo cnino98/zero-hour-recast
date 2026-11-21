@@ -15,6 +15,7 @@ mod capture_framing;
 mod capture_verification;
 mod china_aircraft_capture;
 mod china_aircraft_verification;
+mod china_power_verification;
 mod cleanup_verification;
 mod container_data;
 mod content_overlay;
@@ -39,6 +40,8 @@ mod fire_verification;
 mod firebase_capture;
 mod firebase_verification;
 mod fonts;
+#[cfg(test)]
+mod gla_power_verification;
 mod ground_integration_verification;
 mod hacker_verification;
 mod helix_capture;
@@ -81,7 +84,13 @@ mod options_preferences;
 mod outpost_capture;
 mod outpost_verification;
 mod p02_ground_capture;
+mod p03_air_capture;
+mod p03_capture;
+mod p03_china_capture;
+mod p03_gla_capture;
+mod p03_recon_capture;
 mod paladin_capture;
+mod particle_uplink;
 mod particles;
 mod physical_debris;
 mod placement_verification;
@@ -371,7 +380,7 @@ fn validate_arguments(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-const SCREEN_CAPTURES: [(&str, playtest::ScreenCapture); 121] = {
+const SCREEN_CAPTURES: [(&str, playtest::ScreenCapture); 143] = {
     use generals_sim::skirmish::Faction;
     use playtest::ScreenCapture;
     [
@@ -568,6 +577,82 @@ const SCREEN_CAPTURES: [(&str, playtest::ScreenCapture); 121] = {
         ("--smoke-skirmish", ScreenCapture::Skirmish),
         ("--smoke-menu", ScreenCapture::Menu),
         ("--smoke-shell-flow", ScreenCapture::ShellFlow),
+        (
+            "--p03-a10-capture",
+            ScreenCapture::AirPower(crate::p03_air_capture::Kind::A10),
+        ),
+        (
+            "--p03-paradrop-capture",
+            ScreenCapture::AirPower(crate::p03_air_capture::Kind::Paradrop),
+        ),
+        (
+            "--p03-daisy-capture",
+            ScreenCapture::AirPower(crate::p03_air_capture::Kind::Daisy),
+        ),
+        (
+            "--p03-moab-capture",
+            ScreenCapture::AirPower(crate::p03_air_capture::Kind::Moab),
+        ),
+        (
+            "--p03-leaflet-capture",
+            ScreenCapture::AirPower(crate::p03_air_capture::Kind::Leaflet),
+        ),
+        (
+            "--p03-spectre-capture",
+            ScreenCapture::AirPower(crate::p03_air_capture::Kind::Spectre),
+        ),
+        (
+            "--p03-china-artillery-capture",
+            ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Artillery),
+        ),
+        (
+            "--p03-china-cluster-capture",
+            ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Cluster),
+        ),
+        (
+            "--p03-china-carpet-capture",
+            ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Carpet),
+        ),
+        (
+            "--p03-china-emp-capture",
+            ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Emp),
+        ),
+        (
+            "--p03-china-frenzy-capture",
+            ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Frenzy),
+        ),
+        (
+            "--p03-china-cannon-capture",
+            ScreenCapture::ChinaPower(crate::p03_china_capture::Kind::Cannon),
+        ),
+        (
+            "--p03-gla-ambush-capture",
+            ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Ambush),
+        ),
+        (
+            "--p03-gla-gps-capture",
+            ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Gps),
+        ),
+        (
+            "--p03-gla-sneak-capture",
+            ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Sneak),
+        ),
+        (
+            "--p03-gla-anthrax-capture",
+            ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Anthrax),
+        ),
+        (
+            "--p03-gla-radar-capture",
+            ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Radar),
+        ),
+        (
+            "--p03-gla-booby-capture",
+            ScreenCapture::GlaPower(crate::p03_gla_capture::Kind::Booby),
+        ),
+        ("--p03-usa-capture", ScreenCapture::Powers(Faction::Usa)),
+        ("--p03-china-capture", ScreenCapture::Powers(Faction::China)),
+        ("--p03-gla-capture", ScreenCapture::Powers(Faction::Gla)),
+        ("--p03-recon-capture", ScreenCapture::Recon),
     ]
 };
 

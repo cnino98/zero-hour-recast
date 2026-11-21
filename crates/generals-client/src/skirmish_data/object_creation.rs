@@ -78,6 +78,9 @@ pub(super) fn parse_object(lines: &[ContentLine]) -> Result<Object, Box<dyn Erro
         force_magnitude: [0.0; 2],
         force_pitch: [0.0; 2],
         spin_rate: -1.0,
+        formation_distances: [0.0; 3],
+        fade_frames: 0,
+        fade_sound: String::new(),
     };
     // INI callbacks mutate the same native nugget in authored order.
     for line in lines.iter().filter(|line| line.depth == Some(1)) {
@@ -117,36 +120,38 @@ pub(super) fn parse_object(lines: &[ContentLine]) -> Result<Object, Box<dyn Erro
                 object.spin_rate = super::finite_number(scalar(line)?)?
                     * ((1.0 / 30.0) * (std::f32::consts::PI / 180.0));
             }
-            "Disposition" => {
-                object.disposition = 0;
-                for name in &line.tokens[1..] {
-                    object.disposition |= match name.as_str() {
-                        "LIKE_EXISTING" => disposition::LIKE_EXISTING,
-                        "ON_GROUND_ALIGNED" => disposition::ON_GROUND,
-                        "RANDOM_FORCE" => disposition::RANDOM_FORCE,
-                        "SEND_IT_FLYING" => disposition::SEND_FLYING,
-                        "SEND_IT_UP" => disposition::SEND_UP,
-                        "SEND_IT_OUT" => disposition::SEND_OUT,
-                        "INHERIT_VELOCITY" => disposition::INHERIT_VELOCITY,
-                        _ => {
-                            return Err(
-                                format!("untranslated ordinary OCL disposition {name}").into()
-                            );
-                        }
-                    };
-                }
+            "MinDistanceAFormation" | "MinDistanceBFormation" | "MaxDistanceFormation" => {
+                let index = match key {
+                    "MinDistanceAFormation" => 0,
+                    "MinDistanceBFormation" => 1,
+                    _ => 2,
+                };
+                object.formation_distances[index] = super::finite_number(scalar(line)?)?;
             }
+            "FadeTime" => {
+                object.fade_frames = super::source_numbers::duration_frames(scalar(line)?)?;
+            }
+            "FadeSound" => object.fade_sound = scalar(line)?.into(),
+            "Disposition" => object.disposition = parse_disposition(line)?,
             "RequiresLivePlayer"
             | "ContainInsideSourceObject"
             | "PreserveLayer"
             | "IgnorePrimaryObstacle"
-            | "InheritsVeterancy" => {
+            | "InheritsVeterancy"
+            | "DiesOnBadLand"
+            | "SpreadFormation"
+            | "FadeIn"
+            | "FadeOut" => {
                 let flag = match key {
                     "RequiresLivePlayer" => object_creation::REQUIRES_LIVE_PLAYER,
                     "ContainInsideSourceObject" => object_creation::CONTAIN_INSIDE_SOURCE,
                     "PreserveLayer" => object_creation::PRESERVE_LAYER,
                     "IgnorePrimaryObstacle" => object_creation::IGNORE_PRIMARY_OBSTACLE,
-                    _ => object_creation::INHERITS_VETERANCY,
+                    "InheritsVeterancy" => object_creation::INHERITS_VETERANCY,
+                    "DiesOnBadLand" => object_creation::DIES_ON_BAD_LAND,
+                    "SpreadFormation" => object_creation::SPREAD_FORMATION,
+                    "FadeIn" => object_creation::FADE_IN,
+                    _ => object_creation::FADE_OUT,
                 };
                 let enabled = match scalar(line)?.to_ascii_lowercase().as_str() {
                     "yes" => true,
@@ -160,6 +165,25 @@ pub(super) fn parse_object(lines: &[ContentLine]) -> Result<Object, Box<dyn Erro
         }
     }
     Ok(object)
+}
+
+fn parse_disposition(line: &ContentLine) -> Result<u16, Box<dyn Error>> {
+    let mut flags = 0;
+    for name in &line.tokens[1..] {
+        flags |= match name.as_str() {
+            "LIKE_EXISTING" => disposition::LIKE_EXISTING,
+            "ON_GROUND_ALIGNED" => disposition::ON_GROUND,
+            "RANDOM_FORCE" => disposition::RANDOM_FORCE,
+            "SEND_IT_FLYING" => disposition::SEND_FLYING,
+            "SEND_IT_UP" => disposition::SEND_UP,
+            "SEND_IT_OUT" => disposition::SEND_OUT,
+            "INHERIT_VELOCITY" => disposition::INHERIT_VELOCITY,
+            _ => {
+                return Err(format!("untranslated ordinary OCL disposition {name}").into());
+            }
+        };
+    }
+    Ok(flags)
 }
 
 fn percent(line: &ContentLine) -> Result<f32, Box<dyn Error>> {

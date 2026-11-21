@@ -28,13 +28,44 @@ struct Check {
     next: u64,
     played: bool,
 }
+const EVA_NAMES: [&str; 29] = [
+    "CashStolen",
+    "BuildingSabotaged",
+    "VehicleStolen",
+    "BuildingStolen",
+    "BuildingBeingStolen",
+    "SuperweaponReady_Own_ParticleCannon",
+    "SuperweaponReady_Own_Nuke",
+    "SuperweaponReady_Own_ScudStorm",
+    "SuperweaponReady_Ally_ParticleCannon",
+    "SuperweaponReady_Ally_Nuke",
+    "SuperweaponReady_Ally_ScudStorm",
+    "SuperweaponReady_Enemy_ParticleCannon",
+    "SuperweaponReady_Enemy_Nuke",
+    "SuperweaponReady_Enemy_ScudStorm",
+    "SuperweaponLaunched_Own_ParticleCannon",
+    "SuperweaponLaunched_Own_Nuke",
+    "SuperweaponLaunched_Own_ScudStorm",
+    "SuperweaponLaunched_Ally_ParticleCannon",
+    "SuperweaponLaunched_Ally_Nuke",
+    "SuperweaponLaunched_Ally_ScudStorm",
+    "SuperweaponLaunched_Enemy_ParticleCannon",
+    "SuperweaponLaunched_Enemy_Nuke",
+    "SuperweaponLaunched_Enemy_ScudStorm",
+    "SuperweaponLaunched_Own_GPS_Scrambler",
+    "SuperweaponLaunched_Ally_GPS_Scrambler",
+    "SuperweaponLaunched_Enemy_GPS_Scrambler",
+    "SuperweaponLaunched_Own_Sneak_Attack",
+    "SuperweaponLaunched_Ally_Sneak_Attack",
+    "SuperweaponLaunched_Enemy_Sneak_Attack",
+];
 pub(super) struct State {
     sounds: [String; 5],
-    eva: [Eva; 5],
+    eva: [Option<Eva>; EVA_NAMES.len()],
     money_volume: f32,
     seen: BTreeSet<(u64, usize)>,
     checks: Vec<Check>,
-    should_play: [bool; 5],
+    should_play: [bool; EVA_NAMES.len()],
     frame: Option<u64>,
 }
 impl State {
@@ -56,13 +87,22 @@ impl State {
                 .into();
         }
         let files = [content::scan(assets.read("data/ini/eva.ini")?)?];
-        let eva = [
-            load_eva(&definition(&files, "EvaEvent", "CashStolen")?.lines)?,
-            load_eva(&definition(&files, "EvaEvent", "BuildingSabotaged")?.lines)?,
-            load_eva(&definition(&files, "EvaEvent", "VehicleStolen")?.lines)?,
-            load_eva(&definition(&files, "EvaEvent", "BuildingStolen")?.lines)?,
-            load_eva(&definition(&files, "EvaEvent", "BuildingBeingStolen")?.lines)?,
-        ];
+        let eva = EVA_NAMES
+            .into_iter()
+            .map(|name| {
+                if files[0]
+                    .declarations
+                    .iter()
+                    .any(|event| event.kind == "EvaEvent" && event.name == name)
+                {
+                    load_eva(&definition(&files, "EvaEvent", name)?.lines).map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("loaded original EVA slots"));
         let settings = [content::scan(assets.read("data/ini/audiosettings.ini")?)?];
         let settings = &definition(&settings, "AudioSettings", "")?.lines;
         // AudioSettings defaults this volume to zero for RTS_ZEROHOUR.
@@ -83,7 +123,7 @@ impl State {
             money_volume,
             seen: BTreeSet::new(),
             checks: Vec::new(),
-            should_play: [false; 5],
+            should_play: [false; EVA_NAMES.len()],
             frame: None,
         })
     }
@@ -95,18 +135,20 @@ impl State {
             .chain(
                 self.eva
                     .iter()
+                    .flatten()
                     .flat_map(|eva| eva.sounds.iter().flatten().map(String::as_str)),
             )
     }
     pub(super) fn eva_name(&self, name: &str) -> bool {
         self.eva
             .iter()
+            .flatten()
             .any(|eva| eva.sounds.iter().flatten().any(|sound| sound == name))
     }
     pub(super) fn reset(&mut self) {
         self.seen.clear();
         self.checks.clear();
-        self.should_play = [false; 5];
+        self.should_play = [false; EVA_NAMES.len()];
         self.frame = None;
     }
     fn next_eva(&mut self, frame: u64, playing: bool) -> Option<usize> {
@@ -115,21 +157,25 @@ impl State {
         }
         self.frame = Some(frame);
         // Native EVA enum order, retaining the existing storage indices.
-        for kind in [2, 3, 0, 4, 1] {
-            if self.should_play[kind] && !self.checks.iter().any(|check| check.kind == kind) {
+        for kind in (14..23).chain(5..14).chain([2, 3, 0, 4, 1]).chain(23..29) {
+            if self.should_play[kind]
+                && let Some(eva) = &self.eva[kind]
+                && !self.checks.iter().any(|check| check.kind == kind)
+            {
                 self.checks.push(Check {
                     kind,
                     triggered: frame,
-                    next: frame + u64::from(self.eva[kind].checks),
+                    next: frame + u64::from(eva.checks),
                     played: false,
                 });
             }
         }
-        self.should_play = [false; 5];
+        self.should_play = [false; EVA_NAMES.len()];
         self.checks.retain(|check| {
             !(check.played && check.next <= frame + 1
                 || !check.played
-                    && check.triggered + u64::from(self.eva[check.kind].expires) <= frame)
+                    && check.triggered + u64::from(self.eva[check.kind].as_ref().unwrap().expires)
+                        <= frame)
         });
         if playing {
             return None;
@@ -137,30 +183,33 @@ impl State {
         let mut chosen = None;
         let mut priority = 0;
         for (index, check) in self.checks.iter().enumerate() {
-            if !check.played && self.eva[check.kind].priority > priority {
-                priority = self.eva[check.kind].priority;
+            let eva = self.eva[check.kind].as_ref().unwrap();
+            if !check.played && eva.priority > priority {
+                priority = eva.priority;
                 chosen = Some(index);
             }
         }
         let check = &mut self.checks[chosen?];
         check.played = true;
-        check.next = frame + u64::from(self.eva[check.kind].checks);
+        check.next = frame + u64::from(self.eva[check.kind].as_ref().unwrap().checks);
         Some(check.kind)
     }
     #[cfg(test)]
     pub(super) fn fixture() -> Self {
         Self {
             sounds: std::array::from_fn(|_| String::new()),
-            eva: std::array::from_fn(|_| Eva {
-                sounds: std::array::from_fn(|_| Vec::new()),
-                priority: 4,
-                checks: 150,
-                expires: 150,
+            eva: std::array::from_fn(|_| {
+                Some(Eva {
+                    sounds: std::array::from_fn(|_| Vec::new()),
+                    priority: 4,
+                    checks: 150,
+                    expires: 150,
+                })
             }),
             money_volume: 0.0,
             seen: BTreeSet::new(),
             checks: Vec::new(),
-            should_play: [false; 5],
+            should_play: [false; EVA_NAMES.len()],
             frame: None,
         }
     }
@@ -188,6 +237,26 @@ fn load_eva(lines: &[ContentLine]) -> Result<Eva, Box<dyn Error>> {
     })
 }
 impl SourceAudio {
+    pub(crate) fn ready_superweapon(&mut self, relation: usize, power_type: &str) {
+        if let Some(kind) = superweapon_kind(power_type) {
+            self.sabotage.should_play[5 + relation * 3 + kind] = true;
+        }
+    }
+
+    pub(super) fn launch_superweapon(&mut self, relation: usize, power_type: &str) {
+        let index = match power_type {
+            "SPECIAL_GPS_SCRAMBLER" | "SLTH_SPECIAL_GPS_SCRAMBLER" => 23 + relation,
+            "SPECIAL_SNEAK_ATTACK" => 26 + relation,
+            name => {
+                let Some(kind) = superweapon_kind(name) else {
+                    return;
+                };
+                14 + relation * 3 + kind
+            }
+        };
+        self.sabotage.should_play[index] = true;
+    }
+
     pub(super) fn ability_feedback(
         &mut self,
         event: &generals_sim::skirmish::special_ability::FeedbackEvent,
@@ -208,6 +277,17 @@ impl SourceAudio {
             }
             FeedbackEffect::BuildingStolen => self.sabotage.should_play[3] = true,
             FeedbackEffect::CashStolen(_) => self.sabotage.should_play[0] = true,
+            FeedbackEffect::PowerCashStolen(_) => {
+                let name = self.sabotage.sounds[0].clone();
+                self.sabotage_sound(
+                    &name,
+                    None,
+                    None,
+                    Some(true),
+                    true,
+                    self.sabotage.money_volume,
+                );
+            }
             FeedbackEffect::CaptureFlash | FeedbackEffect::DisableParticles { .. } => {}
         }
     }
@@ -309,7 +389,7 @@ impl SourceAudio {
                 Faction::Gla => 2,
                 Faction::Civilian => return,
             };
-            let sounds = &self.sabotage.eva[kind].sounds[faction];
+            let sounds = &self.sabotage.eva[kind].as_ref().unwrap().sounds[faction];
             if !sounds.is_empty() {
                 let index = self
                     .random
@@ -348,6 +428,19 @@ impl SourceAudio {
     }
 }
 
+fn superweapon_kind(power_type: &str) -> Option<usize> {
+    Some(match power_type {
+        "SPECIAL_PARTICLE_UPLINK_CANNON"
+        | "SUPW_SPECIAL_PARTICLE_UPLINK_CANNON"
+        | "LAZR_SPECIAL_PARTICLE_UPLINK_CANNON" => 0,
+        "SPECIAL_NEUTRON_MISSILE"
+        | "NUKE_SPECIAL_NEUTRON_MISSILE"
+        | "SUPW_SPECIAL_NEUTRON_MISSILE" => 1,
+        "SPECIAL_SCUD_STORM" => 2,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,7 +449,7 @@ mod tests {
     #[test]
     fn simultaneous_native_ability_warnings_keep_eva_enum_order() {
         let mut state = State::fixture();
-        state.should_play = [true; 5];
+        state.should_play[..5].fill(true);
         state.next_eva(2, true);
         assert_eq!(
             state
@@ -455,12 +548,9 @@ mod tests {
         assert_eq!(audio.requests[0].event, audio.sabotage.sounds[0]);
         assert_eq!(audio.requests[0].object, None);
         assert!(audio.requests[0].position.is_some());
-        assert!(
-            !audio
-                .requests
-                .iter()
-                .any(|request| audio.sabotage.eva[0].sounds[0].contains(&request.event))
-        );
+        assert!(!audio.requests.iter().any(|request| {
+            audio.sabotage.eva[0].as_ref().unwrap().sounds[0].contains(&request.event)
+        }));
         audio.update_sabotage(&battle, false);
         assert_eq!(audio.requests.len(), 1);
         for _ in 0..3 {
@@ -491,14 +581,16 @@ mod tests {
         );
         audio.update_sabotage(&battle, false);
         assert_eq!(audio.requests.len(), 1);
-        assert!(audio.sabotage.eva[1].sounds[0].contains(&audio.requests[0].event));
+        assert!(
+            audio.sabotage.eva[1].as_ref().unwrap().sounds[0].contains(&audio.requests[0].event)
+        );
         assert!(audio.requests[0].position.is_none());
     }
 
     #[test]
     fn victim_eva_coalesces_and_preserves_priority_order_cooldown_and_expiration() {
         let mut state = State::fixture();
-        state.should_play = [true, true, false, false, false];
+        state.should_play[..2].fill(true);
         assert_eq!(state.next_eva(2, false), Some(0));
         assert_eq!(state.next_eva(2, false), None);
         assert_eq!(state.next_eva(3, true), None);
@@ -518,13 +610,23 @@ mod tests {
     #[test]
     fn simultaneous_victim_checks_keep_native_vehicle_cash_building_enum_order() {
         let mut state = State::fixture();
-        state.should_play = [true, true, true, false, false];
+        state.should_play[..3].fill(true);
         assert_eq!(state.next_eva(2, false), Some(2));
         assert_eq!(state.next_eva(2, false), None);
         assert_eq!(state.next_eva(3, false), Some(0));
         assert_eq!(state.next_eva(4, false), Some(1));
         state.should_play[2] = true;
         assert_eq!(state.next_eva(5, false), None);
+    }
+
+    #[test]
+    fn unauthored_launch_announcement_does_not_enter_eva_queue() {
+        let mut state = State::fixture();
+        state.eva[23] = None;
+        state.should_play[23] = true;
+        state.should_play[25] = true;
+        assert_eq!(state.next_eva(2, false), Some(25));
+        assert_eq!(state.checks.len(), 1);
     }
 
     #[ignore = "requires original game installation"]

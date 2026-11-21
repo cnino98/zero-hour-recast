@@ -91,6 +91,26 @@ fn local_countdown_nested_pause_extends_once_and_crc_zero_starts_ready_is_honore
 }
 
 #[test]
+fn unfinished_local_power_keeps_stock_initial_frame_until_creation_callback() {
+    let (mut game, prebuilt) = fixture(rules(false));
+    let kind = game.entities[prebuilt].type_index;
+    game.tick = 4;
+    let without_create = game.spawn(kind, 0, [400.0, 200.0], false);
+    assert!(game.special_power_ready(without_create, "Spectre"));
+    assert!(!game.can_use_power(without_create, "Spectre"));
+
+    register_behavior(&mut game.catalog[kind], "SpecialPowerCreate", 0x0008);
+    let with_create = game.spawn(kind, 0, [400.0, 400.0], false);
+    assert!(!game.can_use_power(with_create, "Spectre"));
+    game.tick = 9;
+    game.native_build_complete(with_create);
+    assert_eq!(game.special_power_remaining(with_create, "Spectre"), 60);
+    assert!(!game.special_power_ready(with_create, "Spectre"));
+    assert_eq!(game.special_power_remaining(prebuilt, "Spectre"), 51);
+    assert_eq!(game.special_power_remaining(without_create, "Spectre"), 0);
+}
+
+#[test]
 fn science_purchase_activates_existing_native_modules_and_sets_local_ready_frame() {
     let mut metadata = rules(false);
     metadata.required_science = "SCIENCE_Spectre".into();
@@ -159,7 +179,7 @@ fn per_type_disable_pauses_once_held_does_not_and_last_clear_resumes() {
         0
     );
     game.tick = 10;
-    game.entities[id].disabled_status |= 1 << 2;
+    game.set_emp_disabled_until(id, 30);
     game.observe_spy_vision_disabled(id);
     game.observe_spy_vision_disabled(id);
     assert_eq!(
@@ -168,18 +188,18 @@ fn per_type_disable_pauses_once_held_does_not_and_last_clear_resumes() {
     );
     let percent = game.special_power_percent(id, "Spectre").to_bits();
     game.tick = 20;
-    game.entities[id].disabled_status |= 1;
+    game.set_default_disabled_until(id, 40);
     game.observe_spy_vision_disabled(id);
     assert_eq!(
         game.entities[id].behaviors.special_powers[0].paused_count,
         2
     );
     game.tick = 30;
-    game.entities[id].disabled_status &= !(1 << 2);
+    game.expire_emp();
     game.observe_spy_vision_disabled(id);
     assert_eq!(game.special_power_percent(id, "Spectre").to_bits(), percent);
     game.tick = 40;
-    game.entities[id].disabled_status &= !1;
+    game.expire_default_disabled();
     game.observe_spy_vision_disabled(id);
     assert_eq!(
         game.entities[id].behaviors.special_powers[0].paused_count,
@@ -187,13 +207,13 @@ fn per_type_disable_pauses_once_held_does_not_and_last_clear_resumes() {
     );
     assert_eq!(game.entities[id].behaviors.special_powers[0].available, 90);
     // Both edges in one logic frame remain separate Object callbacks.
-    game.entities[id].disabled_status |= 1 << 2;
+    game.entities[id].disabled_status |= 1 << 6;
     game.observe_spy_vision_disabled(id);
     assert_eq!(
         game.entities[id].behaviors.special_powers[0].paused_count,
         1
     );
-    game.entities[id].disabled_status &= !(1 << 2);
+    game.entities[id].disabled_status &= !(1 << 6);
     game.observe_spy_vision_disabled(id);
     assert_eq!(
         game.entities[id].behaviors.special_powers[0].paused_count,
@@ -322,4 +342,136 @@ fn native_ready_frame_reports_shared_lazy_clock_and_paused_local_elapsed_time() 
     assert_eq!(game.entities[id].behaviors.special_powers[0].available, 60);
     game.pause_special_power(id, 0, false);
     assert_eq!(game.special_power_ready_frame(id, "Spectre"), Some(80));
+}
+
+#[test]
+fn location_powers_cannot_bypass_targeting_with_an_immediate_command() {
+    let mut rules = rules(false);
+    rules.power_type = "SPECIAL_NEUTRON_MISSILE".into();
+    rules.startup.ready = true;
+    let (mut game, actor) = fixture(rules);
+    assert!(game.can_use_power(actor, "Spectre"));
+    assert!(
+        game.cast_power(actor, "Spectre", crate::skirmish::PowerTarget::None)
+            .is_err()
+    );
+    assert!(game.special_power_triggers.is_empty());
+    assert!(game.can_use_power(actor, "Spectre"));
+}
+
+#[test]
+fn reconnaissance_can_target_shroud_but_attack_powers_require_explored_terrain() {
+    let mut rules = rules(false);
+    rules.startup.ready = true;
+    let (mut game, actor) = fixture(rules);
+    game.configure_visibility(crate::skirmish::visibility::VisibilityRules {
+        cell_size: 40.0,
+        unlook_persist_frames: 30,
+        use_shroud: true,
+    })
+    .unwrap();
+    let target = [700.0, 500.0, 0.0];
+    assert!(!game.can_use_power_at_location(actor, "Spectre", target));
+    let kind = game.entities[actor].type_index;
+    game.catalog[kind].special_powers[0].power_type = "SPECIAL_RADAR_VAN_SCAN".into();
+    assert!(game.can_use_power_at_location(actor, "Spectre", target));
+    assert!(!game.can_use_power_at_location(actor, "Spectre", [-100.0, -100.0, 0.0]));
+    game.catalog[kind].special_powers[0].power_type = "SPECIAL_SPECTRE_GUNSHIP".into();
+    game.particle_uplink_reveal(0, [target[0], target[1]], 60.0);
+    assert!(game.can_use_power_at_location(actor, "Spectre", target));
+}
+
+#[test]
+fn held_ready_provider_rejects_commands_without_consuming_its_ready_timer() {
+    let mut rules = rules(false);
+    rules.startup.ready = true;
+    rules.power_type = "SPECIAL_RADAR_VAN_SCAN".into();
+    let (mut game, actor) = fixture(rules);
+    let ready = game.special_power_ready_frame(actor, "Spectre");
+    assert!(game.can_use_power(actor, "Spectre"));
+    game.entities[actor].disabled_status |= 1 << 3;
+    assert!(!game.can_use_power(actor, "Spectre"));
+    assert!(!game.can_use_power_at_location(actor, "Spectre", [300.0, 300.0, 0.0]));
+    assert!(
+        game.cast_power(
+            actor,
+            "Spectre",
+            crate::skirmish::PowerTarget::Position([300.0; 2])
+        )
+        .is_err()
+    );
+    assert_eq!(game.special_power_ready_frame(actor, "Spectre"), ready);
+    assert!(game.special_power_triggers.is_empty());
+    game.entities[actor].disabled_status &= !(1 << 3);
+    assert!(game.can_use_power(actor, "Spectre"));
+}
+
+#[test]
+fn construction_target_does_not_bypass_the_location_powers_native_callback() {
+    let mut rules = rules(false);
+    rules.startup.ready = true;
+    rules.power_type = "SPECIAL_RADAR_VAN_SCAN".into();
+    let (mut game, actor) = fixture(rules);
+    assert!(game.can_use_power_at_location(actor, "Spectre", [300.0, 300.0, 0.0]));
+    assert_eq!(
+        game.cast_power(
+            actor,
+            "Spectre",
+            crate::skirmish::PowerTarget::Construction {
+                position: [300.0, 300.0, 0.0],
+                angle: 0.0,
+            }
+        ),
+        Err("Power does not support construction targeting")
+    );
+    assert!(game.special_power_triggers.is_empty());
+    assert!(game.can_use_power(actor, "Spectre"));
+}
+
+#[test]
+fn reconnaissance_uses_the_strict_playable_extent_and_rejects_nonfinite_orders() {
+    let mut rules = rules(false);
+    rules.startup.ready = true;
+    rules.power_type = "SPECIAL_RADAR_VAN_SCAN".into();
+    let (mut game, actor) = fixture(rules);
+    game.playable_extent = [[100.0, 100.0], [700.0, 500.0]];
+    for point in [
+        [99.0, 200.0, 0.0],
+        [100.0, 200.0, 0.0],
+        [700.0, 200.0, 0.0],
+        [200.0, 500.0, 0.0],
+        [200.0, 200.0, f32::NAN],
+        [f32::INFINITY, 200.0, 0.0],
+    ] {
+        assert!(!game.can_use_power_at_location(actor, "Spectre", point));
+        assert!(
+            game.cast_power(
+                actor,
+                "Spectre",
+                crate::skirmish::PowerTarget::Position3D(point)
+            )
+            .is_err()
+        );
+    }
+    assert!(game.can_use_power_at_location(actor, "Spectre", [101.0, 200.0, 0.0]));
+    assert!(
+        game.cast_power(
+            actor,
+            "Spectre",
+            crate::skirmish::PowerTarget::Position([f32::NAN, 200.0])
+        )
+        .is_err()
+    );
+    assert!(game.special_power_triggers.is_empty());
+    assert!(game.can_use_power(actor, "Spectre"));
+    for point in [
+        [f32::MAX, 200.0],
+        [f32::NAN, 200.0],
+        [200.0, f32::NEG_INFINITY],
+    ] {
+        assert!(matches!(
+            game.visibility_cell(0, point),
+            crate::skirmish::visibility::Status::Shrouded
+        ));
+    }
 }

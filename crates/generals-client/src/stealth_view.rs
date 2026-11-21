@@ -111,8 +111,16 @@ pub fn record(
     mut cloaks: ResMut<Cloaks>,
     mut battle: ResMut<Match>,
     mut animations: ResMut<Animations>,
+    mut feedback: ResMut<crate::selection_feedback::Feedback>,
 ) {
     let battle = battle.as_mut();
+    if cloaks.frame != Some(battle.simulation.tick) || cloaks.generation != battle.generation {
+        for event in &battle.simulation.presentation.stealth_events {
+            if let Event::GrantFlash { object } = event {
+                feedback.flash_as_selected(battle, *object);
+            }
+        }
+    }
     let game = &mut battle.simulation;
     if cloaks.generation != battle.generation {
         cloaks.states.clear();

@@ -20,6 +20,7 @@ struct Check {
     setup: stinger_verification::Setup,
     began: Option<u64>,
     phase: u8,
+    payment: Option<(u64, u32)>,
     sounds: [bool; 2],
 }
 
@@ -30,6 +31,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         setup,
         began: None,
         phase: 0,
+        payment: None,
         sounds: [false; 2],
     });
     app.world_mut().resource_mut::<Time<Virtual>>().pause();
@@ -148,16 +150,28 @@ impl View<'_, '_> {
                     matches!(action, CommandAction::Research(value) if value == index),
                     "CamoNetting icon has no original research action",
                 )?;
-                let cash = battle.simulation.players[0].cash;
+                let game = &battle.simulation;
+                let player = &game.players[0];
+                let balance = player.cash.wrapping_sub(player.statistics.money_earned);
+                check.payment = Some((game.tick, balance));
                 playtest_ui::dispatch_command(battle, mouse, action);
-                require(
-                    battle.simulation.players[0].cash == cash - 500,
-                    "native CamoNetting control did not pay its original price",
-                )?;
                 check.phase = 1;
                 time.unpause();
             }
             1 => {
+                if let Some((issued, balance)) = check.payment {
+                    let game = &battle.simulation;
+                    if game.tick == issued {
+                        return Ok(());
+                    }
+                    let player = &game.players[0];
+                    require(
+                        player.cash.wrapping_sub(player.statistics.money_earned)
+                            == balance.wrapping_sub(500),
+                        "native CamoNetting control did not pay its original price",
+                    )?;
+                    check.payment = None;
+                }
                 if check.sounds[1]
                     && stinger_verification::camouflage::concealed(&battle.simulation, setup.site)
                     && self.models(battle, setup, true)

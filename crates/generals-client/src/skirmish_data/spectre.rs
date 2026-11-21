@@ -133,19 +133,24 @@ fn duration(lines: &[ContentLine], key: &str, default: u32) -> Result<u32, Box<d
         source_numbers::duration_frames(scalar(line)?)
     })
 }
-fn decal(lines: &[ContentLine], key: &str) -> Result<Decal, Box<dyn Error>> {
+pub(super) fn decal(lines: &[ContentLine], key: &str) -> Result<Decal, Box<dyn Error>> {
     let mut result = Decal {
         texture: String::new(),
         opacity: [1.0; 2],
         throb_frames: 30,
         color: [0; 4],
         only_owner: true,
+        additive: false,
     };
     for module in blocks(lines, 1, key)? {
         for line in module.iter().filter(|line| line.depth == Some(2)) {
             match line.tokens[0].as_str() {
                 "Texture" => result.texture = scalar(line)?.into(),
-                "Style" if scalar(line)? == "SHADOW_ALPHA_DECAL" => {}
+                "Style" => match scalar(line)? {
+                    "SHADOW_ALPHA_DECAL" => result.additive = false,
+                    "SHADOW_ADDITIVE_DECAL" => result.additive = true,
+                    _ => return Err("unsupported native radius decal blend style".into()),
+                },
                 "OpacityMin" => result.opacity[0] = percent(scalar(line)?)?,
                 "OpacityMax" => result.opacity[1] = percent(scalar(line)?)?,
                 "OpacityThrobTime" => {
@@ -158,23 +163,7 @@ fn decal(lines: &[ContentLine], key: &str) -> Result<Decal, Box<dyn Error>> {
                         _ => return Err("invalid Spectre decal owner visibility".into()),
                     }
                 }
-                "Color" => {
-                    let tokens: Vec<_> = line.tokens[1..]
-                        .iter()
-                        .flat_map(|token| token.split(':'))
-                        .filter(|token| !token.is_empty())
-                        .collect();
-                    if !matches!(tokens.len(), 6 | 8) {
-                        return Err("invalid Spectre decal color".into());
-                    }
-                    result.color = [0, 0, 0, 255];
-                    for (index, pair) in tokens.chunks_exact(2).enumerate() {
-                        if !pair[0].eq_ignore_ascii_case(["R", "G", "B", "A"][index]) {
-                            return Err("invalid Spectre decal color order".into());
-                        }
-                        result.color[index] = pair[1].parse()?;
-                    }
-                }
+                "Color" => result.color = decal_color(line)?,
                 field => return Err(format!("unsupported Spectre decal field {field}").into()),
             }
         }
@@ -184,6 +173,29 @@ fn decal(lines: &[ContentLine], key: &str) -> Result<Decal, Box<dyn Error>> {
     }
     Ok(result)
 }
+fn decal_color(line: &ContentLine) -> Result<[u8; 4], Box<dyn Error>> {
+    let mut tokens = line.tokens[1..]
+        .iter()
+        .flat_map(|token| token.split(':').filter(|part| !part.is_empty()));
+    let mut color = [0, 0, 0, 255];
+    // INI::parseColorInt reads RGB and optional alpha. Tokens after an
+    // explicit alpha are outside the field, including the stock // suffix.
+    for (channel, component) in ["R", "G", "B", "A"].into_iter().zip(&mut color) {
+        let name = tokens.next();
+        if name.is_none() && channel == "A" {
+            break;
+        }
+        if !name.is_some_and(|name| name.eq_ignore_ascii_case(channel)) {
+            return Err("invalid radius decal color channel".into());
+        }
+        let value = tokens
+            .next()
+            .ok_or("missing radius decal color component")?;
+        *component = u8::try_from(source_numbers::unsigned(value)?)?;
+    }
+    Ok(color)
+}
+
 fn percent(value: &str) -> Result<f32, Box<dyn Error>> {
     Ok(finite_number(value.trim_end_matches('%'))? * 0.01)
 }
@@ -202,6 +214,19 @@ mod tests {
             })
             .unwrap(),
         ]
+    }
+
+    #[test]
+    fn stock_additive_grid_decal_reads_explicit_alpha_before_trailing_tokens() {
+        let files = files(
+            "Object SatelliteGrid\nBehavior = DynamicShroudClearingRangeUpdate Grow\nGridDecalTemplate\nTexture = EXGrid\nStyle = SHADOW_ADDITIVE_DECAL\nColor = R:32 G:64 B:128 A:0 //dim blue, additive\nEnd\nEnd\nEnd\n",
+        );
+        let object = definition(&files, "Object", "SatelliteGrid").unwrap();
+        let modules = blocks(&object.lines, 0, "Behavior").unwrap();
+        let grid = decal(modules[0], "GridDecalTemplate").unwrap();
+        assert_eq!(grid.texture, "EXGrid");
+        assert_eq!(grid.color, [32, 64, 128, 0]);
+        assert!(grid.additive);
     }
 
     #[test]

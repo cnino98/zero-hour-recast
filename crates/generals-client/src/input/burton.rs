@@ -49,7 +49,7 @@ pub(super) fn issue(battle: &mut Match, mouse: &mut Mouse, command: TargetComman
         match command {
             TargetCommand::Knife => mouse.voices.push(VoiceRequest::new(
                 &battle.simulation,
-                &battle.selected,
+                battle.command_drawables(),
                 Voice::BurtonKnifeAttack,
                 false,
             )),
@@ -78,5 +78,5 @@ fn charge_response(battle: &Match, charge: BurtonCharge) -> Option<VoiceRequest>
         BurtonCharge::Timed => "SPECIAL_TIMED_CHARGES",
         BurtonCharge::Remote => "SPECIAL_REMOTE_CHARGES",
     };
-    VoiceRequest::special_power(&battle.simulation, &battle.selected, &[power])
+    VoiceRequest::special_power(&battle.simulation, battle.command_drawables(), &[power])
 }

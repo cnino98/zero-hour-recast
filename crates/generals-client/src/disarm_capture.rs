@@ -34,6 +34,7 @@ struct Check {
 
 enum Stage {
     Hover,
+    ContextPending,
     Approach,
     Prime,
     Dig,
@@ -45,6 +46,7 @@ enum Stage {
     AreaPress,
     AreaRelease,
     AreaOrder,
+    AreaPending,
     AreaRun,
     Done,
 }
@@ -118,6 +120,31 @@ fn record(mut check: ResMut<Check>, battle: ResMut<Match>, mut time: ResMut<Time
     }
     let game = &mut battle.into_inner().simulation;
     let check = &mut *check;
+    let admitted = match check.stage {
+        Stage::ContextPending => require(
+            matches!(game.entities[check.setup.builder].ai.order,
+                generals_sim::skirmish::Order::Attack(target) if target == check.setup.trap),
+            "context attack omitted original disarm order",
+        ),
+        Stage::AreaPending => require(
+            matches!(
+                game.entities[check.setup.builder].ai.order,
+                generals_sim::skirmish::Order::FireAt { .. }
+            ),
+            "real ground click did not execute the original area command",
+        ),
+        _ => Ok(()),
+    };
+    if let Err(error) = admitted {
+        check.failure = Some(error.to_string());
+        time.pause();
+        return;
+    }
+    match check.stage {
+        Stage::ContextPending => check.stage = Stage::Approach,
+        Stage::AreaPending => check.stage = Stage::AreaRun,
+        _ => {}
+    }
     if matches!(
         check.stage,
         Stage::AreaMode | Stage::AreaPress | Stage::AreaRelease | Stage::AreaOrder | Stage::AreaRun

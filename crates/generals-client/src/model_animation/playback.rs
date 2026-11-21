@@ -75,16 +75,21 @@ pub(super) fn manual_frame(
     let Some(state) = draw.states.get(player.state) else {
         return;
     };
-    if state
-        .motions
-        .get(player.choice)
-        .is_some_and(|motion| clips.contains_key(&motion.name))
-    {
-        use num_traits::ToPrimitive;
+    let Some(motion) = state.motions.get(player.choice) else {
+        return;
+    };
+    // Unlike adjustAnimation, the explicit setter passes the null handle to
+    // Set_Animation, which releases any retained clip and restores the base pose.
+    player.retained_animation = None;
+    if clips.contains_key(&motion.name) {
         player.frame = frame
             .to_f32()
             .expect("native animation Int converts to Real");
         player.manual_animation = true;
+    } else {
+        player.frame = 0.0;
+        player.manual_animation = false;
+        player.restart_clock = false;
     }
 }
 
@@ -95,10 +100,7 @@ pub(super) fn select(
     desired: usize,
     random: &mut Random,
 ) -> bool {
-    let completed = draw
-        .states
-        .get(player.state)
-        .is_some_and(|state| complete(player, state, clips));
+    let completed = player.state != usize::MAX && complete(player, draw, clips);
     if completed
         && player.pending == Some(desired)
         && let Some(next) = player.pending.take()
@@ -106,7 +108,7 @@ pub(super) fn select(
         let duration = player.pending_duration.take();
         switch(player, draw, clips, next, random);
         if let Some(frames) = duration {
-            apply_duration(player, &draw.states[next], clips, frames);
+            apply_duration(player, draw, clips, frames);
         }
         return true;
     }
@@ -119,7 +121,15 @@ pub(super) fn select(
                 .is_some_and(|motion| motion.idle)
                 || state.flags.contains("RESTART_ANIM_WHEN_COMPLETE")
             {
-                choose(player, state, clips, true, random);
+                let animation = player
+                    .retained_animation
+                    .unwrap_or((player.state, player.choice));
+                let bound = player
+                    .animation(draw)
+                    .is_some_and(|(_, motion)| clips.contains_key(&motion.name));
+                if choose(player, state, clips, true, random).is_none() && bound {
+                    player.retained_animation = Some(animation);
+                }
             }
         }
         return false;
@@ -157,29 +167,46 @@ fn switch(
     random: &mut Random,
 ) {
     let previous = draw.states.get(player.state);
-    let fraction = previous
-        .and_then(|state| state.motions.get(player.choice))
-        .and_then(|motion| clips.get(&motion.name))
+    let animation = player
+        .retained_animation
+        .unwrap_or((player.state, player.choice));
+    let fraction = player
+        .animation(draw)
+        .and_then(|(_, motion)| clips.get(&motion.name))
         .map(|clip| player.frame / f32::from(clip.frame_count - 1));
     let state = &draw.states[next];
-    choose(player, state, clips, false, random);
-    if !state.flags.contains("RANDOMSTART")
-        && !state.flags.contains("START_FRAME_FIRST")
-        && !state.flags.contains("START_FRAME_LAST")
-        && previous.is_some_and(|previous| {
-            previous
-                .flags
-                .intersection(&state.flags)
-                .any(|flag| flag.starts_with("MAINTAIN_FRAME_ACROSS_STATES"))
-        })
-        && let Some(fraction) = fraction
-        && let Some(clip) = state
-            .motions
-            .get(player.choice)
-            .and_then(|motion| clips.get(&motion.name))
+    if previous.is_none_or(|previous| previous.render_model != state.render_model) {
+        // A newly created RenderObj is initially in the base pose.
+        player.retained_animation = None;
+        player.frame = 0.0;
+        player.direction = 1.0;
+        player.speed = 1.0;
+        player.manual_animation = false;
+        player.restart_clock = false;
+    }
+    let clip = choose(player, state, clips, false, random);
+    if let Some(clip) = clip {
+        if !state.flags.contains("RANDOMSTART")
+            && !state.flags.contains("START_FRAME_FIRST")
+            && !state.flags.contains("START_FRAME_LAST")
+            && previous.is_some_and(|previous| {
+                previous.hlod
+                    && previous
+                        .flags
+                        .intersection(&state.flags)
+                        .any(|flag| flag.starts_with("MAINTAIN_FRAME_ACROSS_STATES"))
+            })
+            && let Some(fraction) = fraction
+        {
+            let scaled = fraction * f32::from(clip.frame_count);
+            player.frame = (scaled - 1.0).trunc().max(0.0);
+        }
+    } else if state.render_model.is_some()
+        && previous.is_some_and(|previous| previous.render_model == state.render_model)
+        && fraction.is_some()
     {
-        let scaled = fraction * f32::from(clip.frame_count);
-        player.frame = (scaled - 1.0).trunc().max(0.0);
+        // A null HAnim or a state without animations never calls Set_Animation.
+        player.retained_animation = Some(animation);
     }
     player.state = next;
     player.pending_duration = None;
@@ -209,11 +236,11 @@ pub(super) fn set_duration(
         )
     {
         let transition = (frames * first / (first + second)).floor();
-        apply_duration(player, state, clips, transition);
+        apply_duration(player, draw, clips, transition);
         player.pending_duration = Some(frames - transition);
         return;
     }
-    apply_duration(player, state, clips, frames);
+    apply_duration(player, draw, clips, frames);
 }
 
 fn natural_duration(state: &State, clips: &BTreeMap<String, Clip>) -> Option<f32> {
@@ -221,11 +248,11 @@ fn natural_duration(state: &State, clips: &BTreeMap<String, Clip>) -> Option<f32
     Some(f32::from(clip.frame_count) * 1000.0 / f32::from(clip.frame_rate))
 }
 
-fn apply_duration(player: &mut Player, state: &State, clips: &BTreeMap<String, Clip>, frames: f32) {
-    let Some(clip) = state
-        .motions
-        .get(player.choice)
-        .and_then(|motion| clips.get(&motion.name))
+fn apply_duration(player: &mut Player, draw: &Draw, clips: &BTreeMap<String, Clip>, frames: f32) {
+    let Some(clip) = player
+        .animation(draw)
+        .filter(|(state, _)| state.hlod)
+        .and_then(|(_, motion)| clips.get(&motion.name))
     else {
         return;
     };
@@ -236,13 +263,13 @@ fn apply_duration(player: &mut Player, state: &State, clips: &BTreeMap<String, C
     }
 }
 
-fn choose(
+fn choose<'a>(
     player: &mut Player,
     state: &State,
-    clips: &BTreeMap<String, Clip>,
+    clips: &'a BTreeMap<String, Clip>,
     avoid: bool,
     random: &mut Random,
-) {
+) -> Option<&'a Clip> {
     let old = player.choice;
     player.choice = random.index(state.motions.len());
     while avoid && state.motions.len() > 1 && player.choice == old {
@@ -250,13 +277,11 @@ fn choose(
     }
     // adjustAnimation chooses first, but a null render object/animation handle
     // does not call Set_Animation or alter its clock, mode, frame or multiplier.
-    let Some(clip) = state
+    let clip = state
         .model
         .and_then(|_| state.motions.get(player.choice))
-        .and_then(|motion| clips.get(&motion.name))
-    else {
-        return;
-    };
+        .and_then(|motion| clips.get(&motion.name))?;
+    player.retained_animation = None;
     player.restart_clock = true;
     player.manual_animation = false;
     player.frame = 0.0;
@@ -278,34 +303,35 @@ fn choose(
     } else if state.flags.contains("START_FRAME_LAST") {
         player.frame = last;
     }
-    if state.hlod {
-        player.speed = random.real(state.speed[0], state.speed[1]);
-    }
+    player.speed = if state.hlod {
+        random.real(state.speed[0], state.speed[1])
+    } else {
+        1.0
+    };
+    Some(clip)
 }
 
-fn complete(player: &Player, state: &State, clips: &BTreeMap<String, Clip>) -> bool {
-    // W3DModelDraw::isAnimationComplete: absent/non-HLOD render objects complete;
-    // Animatable3DObjClass with no SINGLE_ANIM does not.
-    if !state.hlod {
+pub(super) fn complete(player: &Player, draw: &Draw, clips: &BTreeMap<String, Clip>) -> bool {
+    // An absent/non-HLOD render object is complete; an HLOD in base pose isn't.
+    if !draw.states[player.state].hlod {
         return true;
     }
-    let Some(clip) = state
-        .motions
-        .get(player.choice)
-        .and_then(|motion| clips.get(&motion.name))
+    let Some((state, clip)) = player
+        .animation(draw)
+        .and_then(|(state, motion)| clips.get(&motion.name).map(|clip| (state, clip)))
     else {
         return false;
     };
-    match state.mode.as_str() {
-        "ONCE" => player.frame >= f32::from(clip.frame_count - 1),
-        "ONCE_BACKWARDS" => player.frame <= 0.0,
+    match (state.mode.as_str(), player.manual_animation) {
+        ("ONCE", false) => player.frame >= f32::from(clip.frame_count - 1),
+        ("ONCE_BACKWARDS", false) => player.frame <= 0.0,
         _ => false,
     }
 }
 
 pub(super) fn update(
     player: &mut Player,
-    state: &State,
+    draw: &Draw,
     clips: &BTreeMap<String, Clip>,
     position: [f32; 2],
     time: &FrameTime,
@@ -318,17 +344,16 @@ pub(super) fn update(
     }
     let elapsed_ticks = time.tick.saturating_sub(player.tick);
     if elapsed_ticks != 0 {
-        adjust_movement_speed(player, state, clips, position, elapsed_ticks);
+        adjust_movement_speed(player, draw, clips, position, elapsed_ticks);
         player.tick = time.tick;
         player.position = position;
     }
     let milliseconds = time.milliseconds.wrapping_sub(player.last_sync_ms);
     if milliseconds != 0 {
-        if state.mode != "MANUAL"
-            && let Some(clip) = state
-                .motions
-                .get(player.choice)
-                .and_then(|motion| clips.get(&motion.name))
+        if let Some((state, clip)) = player
+            .animation(draw)
+            .filter(|(state, _)| state.mode != "MANUAL")
+            .and_then(|(state, motion)| clips.get(&motion.name).map(|clip| (state, clip)))
         {
             let elapsed = milliseconds.to_f32().expect("native u32 elapsed time");
             let animation_ms =
@@ -343,15 +368,18 @@ pub(super) fn update(
 
 fn adjust_movement_speed(
     player: &mut Player,
-    state: &State,
+    draw: &Draw,
     clips: &BTreeMap<String, Clip>,
     position: [f32; 2],
     elapsed_ticks: u64,
 ) {
-    let Some(motion) = state.motions.get(player.choice) else {
+    let Some(motion) = draw.states[player.state].motions.get(player.choice) else {
         return;
     };
-    let Some(clip) = clips.get(&motion.name) else {
+    let Some(clip) = player
+        .animation(draw)
+        .and_then(|(_, active)| clips.get(&active.name))
+    else {
         return;
     };
     let [dx, dy] = [
@@ -440,6 +468,23 @@ mod tests {
         bytes.extend(44_u32.to_le_bytes());
         bytes.extend(header);
         Clip::parse(&bytes).unwrap()
+    }
+
+    pub(super) fn one_draw(state: super::State) -> super::Draw {
+        super::Draw {
+            states: vec![state],
+            ignored: std::collections::BTreeSet::new(),
+            recoil: crate::model_animation::muzzle::Rules::new(),
+            receives_dynamic_lights: true,
+            requires_power: false,
+            attach_bone: None,
+            attach_offset: [0.0; 3],
+            upgrade_show: Vec::new(),
+            supply: std::collections::BTreeMap::new(),
+            treads: None,
+            truck_wheels: None,
+            track: None,
+        }
     }
 
     #[test]
@@ -538,7 +583,7 @@ mod tests {
         select(&mut player, &draw, &clips, 0, &mut random);
         update(
             &mut player,
-            &draw.states[0],
+            &draw,
             &clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(10),
@@ -546,7 +591,7 @@ mod tests {
         assert!(player.frame.abs() < 0.000_01);
         update(
             &mut player,
-            &draw.states[0],
+            &draw,
             &clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(11),
@@ -555,7 +600,7 @@ mod tests {
         select(&mut player, &draw, &clips, 1, &mut random);
         update(
             &mut player,
-            &draw.states[1],
+            &draw,
             &clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(12),
@@ -606,14 +651,14 @@ mod tests {
         assert!(select(&mut player, &draw, &clips, 0, &mut random));
         update(
             &mut player,
-            &draw.states[0],
+            &draw,
             &clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(0),
         );
         update(
             &mut player,
-            &draw.states[0],
+            &draw,
             &clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(15),
@@ -624,7 +669,7 @@ mod tests {
         assert!((player.frame - 18.75).abs() < 0.000_01);
         update(
             &mut player,
-            &draw.states[0],
+            &draw,
             &clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(40),
@@ -633,7 +678,7 @@ mod tests {
         assert!(!select(&mut player, &draw, &clips, 1, &mut random));
         update(
             &mut player,
-            &draw.states[0],
+            &draw,
             &clips,
             [0.0; 2],
             &super::FrameTime::logic_tick(41),
@@ -675,7 +720,7 @@ mod null_animation_tests {
         let mut random = Random::new(19);
         let mut expected = Random::new(19);
         let choice = expected.index(2);
-        choose(&mut player, &state, &clips, false, &mut random);
+        assert!(choose(&mut player, &state, &clips, false, &mut random).is_none());
         assert_eq!(player.choice, choice);
         assert_eq!(random.0, expected.0);
         assert_eq!(player.frame.to_bits(), 12.0_f32.to_bits());
@@ -684,11 +729,83 @@ mod null_animation_tests {
         assert!(player.manual_animation);
         assert!(!player.restart_clock);
         assert_eq!(player.last_sync_ms, 77);
-        assert!(!complete(&player, &state, &clips));
-        state.hlod = false;
-        assert!(complete(&player, &state, &clips));
-        state.model = None;
-        assert!(complete(&player, &state, &clips));
+        player.state = 0;
+        let mut draw = super::tests::one_draw(state);
+        assert!(!complete(&player, &draw, &clips));
+        draw.states[0].hlod = false;
+        assert!(complete(&player, &draw, &clips));
+        draw.states[0].model = None;
+        assert!(complete(&player, &draw, &clips));
+    }
+
+    #[test]
+    fn missing_clip_retains_previous_playback_then_recreated_model_restores_base_pose() {
+        let clip = super::tests::test_clip();
+        let mut active = State::empty();
+        active.model = Some(0);
+        active.render_model = Some(0);
+        active.hlod = true;
+        active.mode = "LOOP_BACKWARDS".into();
+        active.speed = [1.25; 2];
+        active.motions.push(Motion {
+            name: clip.name.clone(),
+            distance: 0.0,
+            idle: false,
+        });
+        let clips = BTreeMap::from([(clip.name.clone(), clip)]);
+        let mut draw = super::tests::one_draw(active.clone());
+        let mut missing = active;
+        missing.mode = "ONCE".into();
+        missing.speed = [2.0, 3.0];
+        missing.flags.insert("RANDOMSTART".into());
+        missing.motions[0].name = "RIG.NOT_EXPORTED".into();
+        draw.states.push(missing.clone());
+        missing.model = Some(1);
+        missing.render_model = Some(1);
+        draw.states.push(missing);
+        let mut player = Player::new([0.0; 2], 0);
+        let mut random = Random::new(0);
+        assert!(select(&mut player, &draw, &clips, 0, &mut random));
+        update(
+            &mut player,
+            &draw,
+            &clips,
+            [0.0; 2],
+            &FrameTime::logic_tick(3),
+        );
+        update(
+            &mut player,
+            &draw,
+            &clips,
+            [0.0; 2],
+            &FrameTime::logic_tick(6),
+        );
+        let before = player.frame;
+        let random_before = random.0;
+
+        assert!(select(&mut player, &draw, &clips, 1, &mut random));
+        assert_eq!(random.0, random_before);
+        let (mode, animation) = player.animation(&draw).unwrap();
+        assert_eq!(mode.mode, "LOOP_BACKWARDS");
+        assert_eq!(animation.name, "RIG.IDLE");
+        assert_eq!(player.frame.to_bits(), before.to_bits());
+        assert_eq!(player.speed.to_bits(), 1.25_f32.to_bits());
+        update(
+            &mut player,
+            &draw,
+            &clips,
+            [0.0; 2],
+            &FrameTime::logic_tick(9),
+        );
+        assert!((player.frame - before + 3.75).abs() < 0.000_01);
+        set_duration(&mut player, &draw, &clips, 45, false);
+        assert!((player.speed - (31.0 / 45.0)).abs() < 0.000_01);
+        assert!(!complete(&player, &draw, &clips));
+
+        assert!(select(&mut player, &draw, &clips, 2, &mut random));
+        assert!(!clips.contains_key(&player.animation(&draw).unwrap().1.name));
+        assert_eq!(player.frame.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(player.speed.to_bits(), 1.0_f32.to_bits());
     }
 
     #[test]
@@ -736,7 +853,10 @@ mod null_animation_tests {
             let mut expected = Random::new(23);
             let frame = present.then(|| expected.index(count));
             let speed = hlod.then(|| expected.real(0.5, 2.0));
-            choose(&mut player, &state, &clips, false, &mut random);
+            assert_eq!(
+                choose(&mut player, &state, &clips, false, &mut random).is_some(),
+                present
+            );
             assert_eq!(random.0, expected.0, "present={present} hlod={hlod}");
             if let Some(frame) = frame {
                 assert_eq!(player.frame.to_bits(), frame.to_f32().unwrap().to_bits());
@@ -753,7 +873,7 @@ mod fractional_tests {
     use super::*;
     use crate::model_animation::data::Motion;
 
-    fn fixture(mode: &str) -> (State, BTreeMap<String, Clip>, Player) {
+    fn fixture(mode: &str) -> (Draw, BTreeMap<String, Clip>, Player) {
         let clip = super::tests::test_clip();
         let mut state = State::empty();
         state.model = Some(0);
@@ -766,10 +886,11 @@ mod fractional_tests {
         });
         let clips = BTreeMap::from([(clip.name.clone(), clip)]);
         let mut player = Player::new([0.0; 2], 10);
-        choose(&mut player, &state, &clips, false, &mut Random::new(0));
+        let draw = super::tests::one_draw(state);
+        select(&mut player, &draw, &clips, 0, &mut Random::new(0));
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [0.0; 2],
             &FrameTime {
@@ -777,15 +898,15 @@ mod fractional_tests {
                 milliseconds: 700,
             },
         );
-        (state, clips, player)
+        (draw, clips, player)
     }
 
     #[test]
     fn fractional_milliseconds_advance_without_a_logic_tick_and_restart_at_current_time() {
-        let (state, clips, mut player) = fixture("ONCE");
+        let (draw, clips, mut player) = fixture("ONCE");
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [0.0; 2],
             &FrameTime {
@@ -796,7 +917,7 @@ mod fractional_tests {
         assert!((player.frame - 0.24).abs() < 0.000_01);
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [0.0; 2],
             &FrameTime {
@@ -808,7 +929,7 @@ mod fractional_tests {
         let frame = player.frame;
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [0.0; 2],
             &FrameTime {
@@ -817,10 +938,19 @@ mod fractional_tests {
             },
         );
         assert_eq!(player.frame.to_bits(), frame.to_bits());
-        choose(&mut player, &state, &clips, false, &mut Random::new(0));
+        assert!(
+            choose(
+                &mut player,
+                &draw.states[0],
+                &clips,
+                false,
+                &mut Random::new(0)
+            )
+            .is_some()
+        );
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [0.0; 2],
             &FrameTime {
@@ -831,7 +961,7 @@ mod fractional_tests {
         assert_eq!(player.frame.to_bits(), 0.0_f32.to_bits());
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [0.0; 2],
             &FrameTime {
@@ -852,10 +982,10 @@ mod fractional_tests {
             ("LOOP_PINGPONG", 30.0, -1.0),
             ("MANUAL", 0.0, 1.0),
         ] {
-            let (state, clips, mut player) = fixture(mode);
+            let (draw, clips, mut player) = fixture(mode);
             update(
                 &mut player,
-                &state,
+                &draw,
                 &clips,
                 [0.0; 2],
                 &FrameTime {
@@ -874,11 +1004,11 @@ mod fractional_tests {
 
     #[test]
     fn moving_animation_speed_uses_logic_displacement_between_fractional_renders() {
-        let (mut state, clips, mut player) = fixture("LOOP");
-        state.motions[0].distance = 31.0;
+        let (mut draw, clips, mut player) = fixture("LOOP");
+        draw.states[0].motions[0].distance = 31.0;
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [1.0, 0.0],
             &FrameTime {
@@ -890,7 +1020,7 @@ mod fractional_tests {
         let frame = player.frame;
         update(
             &mut player,
-            &state,
+            &draw,
             &clips,
             [1.0, 0.0],
             &FrameTime {

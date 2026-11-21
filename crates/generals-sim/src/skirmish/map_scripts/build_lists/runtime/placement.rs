@@ -1,11 +1,6 @@
 //! `AIPlayer::buildStructureWithDozer` for ordinary map NPC players.
 pub(in crate::skirmish::map_scripts::build_lists) use crate::skirmish::ai_repair::select_dozer;
-use crate::skirmish::{
-    Order, Skirmish,
-    movement::{distance_squared, footprints_overlap},
-    visibility::Status,
-};
-use crate::terrain::CellType;
+use crate::skirmish::{Order, Skirmish, movement::footprints_overlap, visibility::Status};
 
 pub(super) fn build(
     game: &mut Skirmish,
@@ -155,90 +150,14 @@ fn legal(
     if terrain {
         game.exit_areas_clear(kind, position, angle, false)
             && game.build_site_reachable(worker, position)
-            && terrain_clear(game, kind, position, angle)
+            && game.native_build_terrain_clear(
+                kind,
+                [position[0], position[1], game.ground_height(position)],
+                angle,
+            )
     } else {
         true
     }
-}
-
-fn terrain_clear(game: &Skirmish, kind: usize, position: [f32; 2], angle: f32) -> bool {
-    let ground = game.ground_height(position);
-    if game
-        .movement_terrain
-        .get_layer_for_destination([position[0], position[1], ground], ground)
-        != 1
-    {
-        return false;
-    }
-    let geometry = &game.catalog[kind].geometry;
-    let half = if matches!(geometry.shape, crate::collision_geometry::Shape::Box) {
-        [geometry.major, geometry.minor]
-    } else {
-        [geometry.major; 2]
-    };
-    let (sin, cos) = angle.sin_cos();
-    let mut low = f32::INFINITY;
-    let mut high = f32::NEG_INFINITY;
-    for resolution in [30.0, 10.0] {
-        let mut y = -half[1];
-        loop {
-            if y.partial_cmp(&(half[1] + resolution)) != Some(std::cmp::Ordering::Less) {
-                break;
-            }
-            if y > half[1] {
-                y = half[1];
-            }
-            let mut x = -half[0];
-            loop {
-                if x.partial_cmp(&(half[0] + resolution)) != Some(std::cmp::Ordering::Less) {
-                    break;
-                }
-                if x > half[0] {
-                    x = half[0];
-                }
-                let left = x * cos;
-                let right = y * sin;
-                let bottom = x * sin;
-                let top = y * cos;
-                let point = [left - right + position[0], bottom + top + position[1]];
-                if matches!(geometry.shape, crate::collision_geometry::Shape::Box)
-                    || distance_squared(point, position).sqrt() <= half[0]
-                {
-                    let Some(cell) = game.cell_at(point) else {
-                        return false;
-                    };
-                    if game.movement_terrain.build_restricted(cell)
-                        || game.movement_terrain.cell(cell).is_none_or(|cell| {
-                            matches!(
-                                cell.kind,
-                                CellType::Water | CellType::Cliff | CellType::Impassable
-                            )
-                        })
-                    {
-                        return false;
-                    }
-                    let height = game.ground_height([x, y]) + ground;
-                    low = low.min(height);
-                    high = high.max(height);
-                    let margin = game.rules.min_build_edge_distance;
-                    if margin > 0.0
-                        && (point[0] < margin
-                            || point[1] < margin
-                            || point[0] > f32::from(game.grid.width() - 1) * 10.0 - margin
-                            || point[1] > f32::from(game.grid.height() - 1) * 10.0 - margin)
-                    {
-                        return false;
-                    }
-                }
-                x += resolution;
-            }
-            y += resolution;
-        }
-        if high - low > game.rules.allowed_build_height_variation {
-            return false;
-        }
-    }
-    true
 }
 
 #[cfg(test)]

@@ -270,7 +270,12 @@ impl Skirmish {
         let actor = &mut self.entities[parent];
         if actor.firing.drone_spotting != value {
             actor.firing.drone_spotting = value;
-            actor.weapon_bonus_changed(&self.catalog[actor.type_index], self.tick, extra);
+            actor.weapon_bonus_changed(
+                &self.catalog[actor.type_index],
+                self.tick,
+                extra,
+                &mut self.random,
+            );
         }
     }
 

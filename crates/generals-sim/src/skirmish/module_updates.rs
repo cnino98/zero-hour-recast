@@ -286,6 +286,7 @@ impl Skirmish {
                     self.destroy_jet_module(owner);
                     self.cancel_docking(owner);
                 }
+                "DeliverPayloadAIUpdate" => self.destroy_delivery_module(owner),
                 // AIUpdateInterface's base destructor owns its nested dock machine.
                 "AIUpdateInterface"
                 | "DozerAIUpdate"
@@ -297,7 +298,6 @@ impl Skirmish {
                 | "DeployStyleAIUpdate"
                 | "TransportAIUpdate"
                 | "AssaultTransportAIUpdate"
-                | "DeliverPayloadAIUpdate"
                 | "MissileAIUpdate" => self.cancel_docking(owner),
                 "ProductionUpdate" => {
                     self.destroy_production_instance(owner, production);

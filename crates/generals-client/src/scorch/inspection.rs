@@ -28,15 +28,16 @@ impl Inspection<'_, '_> {
         self.at(position, 15.0)
     }
 
-    fn at(&self, position: [f32; 3], radius: f32) -> Result<bool, Box<dyn Error>> {
+    pub(crate) fn at(&self, position: [f32; 3], radius: f32) -> Result<bool, Box<dyn Error>> {
         let data = &self.particles.scorches;
-        if !data.marks().any(|mark| {
+        let Some(mark) = data.marks().find(|mark| {
             mark.position.map(f32::to_bits) == position.map(f32::to_bits)
                 && mark.radius.to_bits() == radius.to_bits()
+                && mark.radius > 0.0
                 && (0..4).contains(&mark.kind)
-        }) {
+        }) else {
             return Ok(false);
-        }
+        };
         for (visual, material, visible) in &self.visuals {
             if !visible.get() {
                 continue;
@@ -66,9 +67,9 @@ impl Inspection<'_, '_> {
                 .meshes
                 .get(&visual.mesh)
                 .ok_or("missing scorch geometry")?;
-            if mesh.indices().is_none_or(bevy::mesh::Indices::is_empty) {
-                return Ok(false);
-            }
+            let Some(indices) = mesh.indices().filter(|indices| !indices.is_empty()) else {
+                continue;
+            };
             let Some(VertexAttributeValues::Float32x3(points)) =
                 mesh.attribute(Mesh::ATTRIBUTE_POSITION)
             else {
@@ -86,8 +87,74 @@ impl Inspection<'_, '_> {
             {
                 return Err("scorch mesh contains nonfinite source geometry".into());
             }
-            return Ok(true);
+            if has_mark_triangle(mark, indices, points, uv) {
+                return Ok(true);
+            }
         }
         Ok(false)
+    }
+}
+
+fn has_mark_triangle(
+    mark: &super::Mark,
+    indices: &bevy::mesh::Indices,
+    points: &[[f32; 3]],
+    uv: &[[f32; 2]],
+) -> bool {
+    let atlas = [mark.kind % 3, mark.kind / 3]
+        .map(|value| f32::from(u16::try_from(value).expect("scorch atlas index")) * 1.5);
+    let belongs = |index: usize| {
+        let position = [points[index][0], -points[index][2]].map(|value| value.round() * 10.0);
+        let offset = std::array::from_fn::<_, 2, _>(|axis| position[axis] - mark.position[axis]);
+        let expected = std::array::from_fn(|axis| {
+            (atlas[axis] + 0.5 + offset[axis] / (2.0 * mark.radius)) / 4.0
+        });
+        offset
+            .into_iter()
+            .all(|distance| distance.abs() < mark.radius + 10.0)
+            && uv[index].map(f32::to_bits) == expected.map(f32::to_bits)
+    };
+    let mut indices = indices.iter();
+    while let (Some(first), Some(second), Some(third)) =
+        (indices.next(), indices.next(), indices.next())
+    {
+        if first != second
+            && second != third
+            && third != first
+            && [first, second, third].into_iter().all(belongs)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::Mark;
+    use super::has_mark_triangle;
+    use bevy::mesh::Indices;
+
+    #[test]
+    fn only_indexed_nondegenerate_source_triangles_prove_mark_geometry() {
+        let mark = Mark {
+            position: [100.0, 100.0, 0.0],
+            radius: 10.0,
+            kind: 0,
+        };
+        let points = [[10.0, 0.0, -10.0], [11.0, 0.0, -10.0], [10.0, 0.0, -11.0]];
+        let uv = [[0.125, 0.125], [0.25, 0.125], [0.125, 0.25]];
+        assert!(!has_mark_triangle(
+            &mark,
+            &Indices::U16(vec![0, 0, 0]),
+            &points,
+            &uv,
+        ));
+        assert!(has_mark_triangle(
+            &mark,
+            &Indices::U16(vec![0, 1, 2]),
+            &points,
+            &uv,
+        ));
     }
 }

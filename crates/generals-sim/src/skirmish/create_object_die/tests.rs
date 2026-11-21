@@ -18,6 +18,9 @@ fn ordinary(name: &str) -> object_creation::List {
             force_magnitude: [0.0; 2],
             force_pitch: [0.0; 2],
             spin_rate: -1.0,
+            formation_distances: [0.0; 3],
+            fade_frames: 0,
+            fade_sound: String::new(),
         }],
     }
 }
@@ -39,6 +42,7 @@ fn fixture() -> (Skirmish, usize, usize) {
     parent.behavior.create_object_die.push(Rules {
         conditions: tests::death_conditions(),
         actions: vec![Action::Objects(ordinary("NoPhysicsChild"))],
+        transfer_previous_health: false,
     });
     tests::register_behavior(&mut parent, "CreateObjectDie", 2);
     let kind = game.catalog.len();
@@ -94,6 +98,7 @@ fn two_die_instances_use_actual_required_exempt_and_veterancy_filters() {
     game.catalog[kind].behavior.create_object_die.push(Rules {
         conditions,
         actions: vec![Action::Objects(second)],
+        transfer_previous_health: false,
     });
     tests::register_behavior(&mut game.catalog[kind], "CreateObjectDie", 2);
     for (hijacked, level, expected) in [
@@ -119,4 +124,68 @@ fn two_die_instances_use_actual_required_exempt_and_veterancy_filters() {
             );
         }
     }
+}
+
+#[test]
+fn timed_tunnel_replacement_transfers_missing_health_subdual_and_attackers_once() {
+    let mut game = tests::game();
+    let mut tunnel = tests::fixture_type(Faction::Gla, Kind::Barracks);
+    tunnel.name = "ExposedTunnel".into();
+    tunnel.kind_of = vec!["STRUCTURE".into()];
+    tunnel.maintenance.subdual = Some(crate::skirmish::microwave::SubdualRules {
+        cap: 1200.0,
+        heal_rate: 15,
+        heal_amount: 100.0,
+    });
+    let tunnel_type = game.catalog.len();
+    game.catalog.push(tunnel);
+
+    let mut seed = tests::fixture_type(Faction::Gla, Kind::Barracks);
+    seed.kind_of = vec!["STRUCTURE".into()];
+    seed.maintenance.subdual = Some(crate::skirmish::microwave::SubdualRules {
+        cap: 1200.0,
+        heal_rate: 15,
+        heal_amount: 100.0,
+    });
+    seed.behavior.destroy_die.push(tests::death_conditions());
+    tests::register_behavior(&mut seed, "DestroyDie", 2);
+    let mut contents = ordinary("ExposedTunnel");
+    contents.objects[0].disposition = physical_ocl::LIKE_EXISTING;
+    seed.behavior.create_object_die.push(Rules {
+        conditions: tests::death_conditions(),
+        actions: vec![Action::Objects(contents)],
+        transfer_previous_health: true,
+    });
+    tests::register_behavior(&mut seed, "CreateObjectDie", 2);
+    let seed_type = game.catalog.len();
+    game.catalog.push(seed);
+
+    let source = game.spawn(seed_type, 0, [380.0, 270.0], true);
+    let attacker = game.spawn(6, 1, [380.0, 330.0], true);
+    game.attack(attacker, source).unwrap();
+    game.attempt_health_damage(
+        source,
+        Some(attacker),
+        15.0,
+        DamageType::Unresistable,
+        DeathType::Normal,
+    );
+    game.apply_subdual_damage(source, 20.0);
+    let expected_health = game.entities[source].health;
+    let replacement = game.entities.len();
+    game.kill_object(source, DeathType::Normal);
+
+    assert_eq!(game.entities.len(), replacement + 1);
+    assert_eq!(game.entities[replacement].type_index, tunnel_type);
+    assert_eq!(
+        game.entities[replacement].health.to_bits(),
+        expected_health.to_bits()
+    );
+    assert_eq!(
+        game.entities[replacement].subdual_damage().to_bits(),
+        20.0_f32.to_bits()
+    );
+    assert!(
+        matches!(game.entities[attacker].ai.order, crate::skirmish::Order::Attack(id) if id == replacement)
+    );
 }

@@ -7,6 +7,7 @@ use bevy::{
     camera::{primitives::Frustum, visibility::RenderLayers},
     ecs::system::SystemState,
     math::Affine3A,
+    mesh::MeshTag,
     prelude::*,
 };
 use num_traits::ToPrimitive;
@@ -82,6 +83,16 @@ fn identity(app: &App) -> Vec<Identity> {
 }
 
 fn frame(app: &mut App, inputs: &[Handle<SourceMaterial>; 2], counts: &[usize], phase: u16) {
+    frame_with_clear(app, inputs, counts, phase, &[]);
+}
+
+fn frame_with_clear(
+    app: &mut App,
+    inputs: &[Handle<SourceMaterial>; 2],
+    counts: &[usize],
+    phase: u16,
+    clear: &[bool],
+) {
     let world = app.world_mut();
     let mut pool = world.remove_resource::<Pool>().unwrap();
     pool.vertices.clear();
@@ -102,6 +113,7 @@ fn frame(app: &mut App, inputs: &[Handle<SourceMaterial>; 2], counts: &[usize], 
         nodes.push(Node {
             mesh: world.resource_mut::<Assets<Mesh>>().add(mesh),
             material: inputs[index % inputs.len()].clone(),
+            clear: clear.get(index).copied().unwrap_or(false),
             world: Affine3A::IDENTITY,
             scale: 1.0,
             depth: -1.0,
@@ -122,6 +134,23 @@ fn frame(app: &mut App, inputs: &[Handle<SourceMaterial>; 2], counts: &[usize], 
         world.resource_mut::<Assets<Mesh>>().remove(&node.mesh);
     }
     assert_outputs(app, inputs, &expected);
+}
+
+#[test]
+fn sorted_shroud_splits_shared_material_and_resets_reused_run() {
+    let (mut app, inputs) = scene();
+    let same_material = [inputs[0].clone(), inputs[0].clone()];
+    frame_with_clear(&mut app, &same_material, &[3, 3], 0, &[true, false]);
+    let before = identity(&app);
+    assert_eq!(before.len(), 2);
+    assert_eq!(before[0].2, before[1].2);
+    assert_eq!(app.world().get::<MeshTag>(before[0].0), Some(&MeshTag(1)));
+    assert_eq!(app.world().get::<MeshTag>(before[1].0), Some(&MeshTag(0)));
+
+    frame_with_clear(&mut app, &same_material, &[3, 3], 1, &[false, true]);
+    assert_eq!(identity(&app), before);
+    assert_eq!(app.world().get::<MeshTag>(before[0].0), Some(&MeshTag(0)));
+    assert_eq!(app.world().get::<MeshTag>(before[1].0), Some(&MeshTag(1)));
 }
 
 fn assert_outputs(app: &App, inputs: &[Handle<SourceMaterial>; 2], expected: &[Vec<u8>]) {

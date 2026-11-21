@@ -6,7 +6,10 @@ use crate::{
     playtest::{CameraRig, Match},
     playtest_ui::{dispatch_command, selected_command},
     playtest_view::Capture,
-    skirmish_verification::{advance_until, construct, friendly_entity, produce_type, require},
+    skirmish_verification::{
+        advance_until, construct, construct_type, friendly_entity, produce_type, require,
+    },
+    strategy_verification::template,
 };
 use bevy::{app::AppExit, prelude::*};
 use generals_sim::skirmish::{Faction, Kind, Order, Skirmish};
@@ -25,7 +28,8 @@ fn prepare_group(game: &mut Skirmish) -> Result<Group, Box<dyn Error>> {
     construct(game, builder, Kind::PowerPlant, 0)?;
     construct(game, builder, Kind::SupplyCenter, 0)?;
     construct(game, builder, Kind::Factory, 0)?;
-    let center = construct(game, builder, Kind::TechBuilding, 0)?;
+    let propaganda = template(game, "ChinaPropagandaCenter")?;
+    let center = construct_type(game, builder, propaganda, 0)?;
     let barracks = construct(game, builder, Kind::Barracks, 0)?;
     let redguard = game
         .catalog
@@ -143,6 +147,7 @@ struct Check {
     group: Group,
     phase: u8,
     began: u64,
+    research_began: Option<u64>,
 }
 
 pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> {
@@ -153,6 +158,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         group,
         phase: 0,
         began,
+        research_began: None,
     });
     Ok(())
 }
@@ -160,12 +166,52 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
 pub fn register(app: &mut App) {
     let focus = app.world().resource::<Check>().group.focus;
     app.world_mut().resource_mut::<CameraRig>().focus = Vec2::from_array(focus) * 0.1;
+    app.add_systems(FixedUpdate, record.after(crate::particles::step));
     app.add_systems(
         PostUpdate,
         inspect
             .after(bevy::ui::UiSystems::Layout)
             .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
     );
+}
+
+fn record(mut check: ResMut<Check>, mut battle: ResMut<Match>, mut exit: MessageWriter<AppExit>) {
+    if !matches!(check.phase, 4 | 5) {
+        return;
+    }
+    if check.phase == 4 {
+        if let Err(error) = require(
+            !battle.simulation.entities[check.group.center]
+                .queue
+                .is_empty(),
+            "original Nationalism command did not queue paid research",
+        ) {
+            check.phase = 3;
+            error!("Original Horde acceptance: {error}");
+            exit.write(AppExit::error());
+            return;
+        }
+        check.research_began = Some(battle.simulation.tick);
+        check.phase = 5;
+    }
+    if battle.simulation.has_upgrade(0, "Upgrade_Nationalism")
+        && check
+            .group
+            .units
+            .iter()
+            .all(|&id| battle.simulation.entities[id].horde_bonuses() == 3)
+    {
+        battle.select_objects(&check.group.units, true);
+        check.research_began = None;
+        check.phase = 2;
+    } else if check
+        .research_began
+        .is_some_and(|frame| battle.simulation.tick >= frame + 2400)
+    {
+        check.phase = 3;
+        error!("timed out waiting for paid Nationalism research and native horde refresh");
+        exit.write(AppExit::error());
+    }
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
@@ -223,15 +269,10 @@ impl Presentation<'_, '_> {
                 })
                 .ok_or("original Nationalism button missing")?;
             dispatch_command(battle, mouse, command.action);
-            require(
-                !battle.simulation.entities[check.group.center]
-                    .queue
-                    .is_empty(),
-                "original Nationalism command did not queue paid research",
-            )?;
-            wait_research(&mut battle.simulation, &check.group)?;
-            battle.selected.clone_from(&check.group.units);
-            check.phase = 2;
+            check.phase = 4;
+            return Ok(false);
+        }
+        if matches!(check.phase, 4 | 5) {
             return Ok(false);
         }
         for &id in &check.group.units {

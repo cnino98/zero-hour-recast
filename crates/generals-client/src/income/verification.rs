@@ -34,6 +34,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
     )?;
     let mut mouse = app.world_mut().resource_mut::<Mouse>();
     crate::playtest_ui::dispatch_command(battle, &mut mouse, action);
+    crate::input::commands::step(battle, &mut mouse);
     require(
         battle.simulation.entities[id].hacking_condition() == Some("UNPACKING"),
         "original UI Hack command failed to start unpacking",

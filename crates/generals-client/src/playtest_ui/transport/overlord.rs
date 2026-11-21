@@ -54,6 +54,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         .remove_resource::<Mouse>()
         .ok_or("pointer missing")?;
     dispatch_command(battle, &mut mouse, CommandAction::ExitContainer(0));
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         300,
@@ -65,6 +66,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         input::context_order(battle, None, Some(PickTarget::Unit(bunker)), &mut mouse),
         "Overlord right-click entry rejected",
     )?;
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         3000,
@@ -82,7 +84,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
             .move_to(id, [point[0] - 40.0, point[1] - 70.0])?;
     }
     for _ in 0..12 {
-        battle.simulation.step();
+        input::commands::step(battle, &mut mouse);
     }
     crate::skirmish_verification::overlord::engage(&mut battle.simulation, setup.tanks[0])?;
     mouse.voices.clear();
@@ -337,7 +339,7 @@ mod tests {
         battle.simulation.entities[rider].owner = 1;
         dispatch_command(&mut battle, &mut mouse, command);
         for _ in 0..3 {
-            battle.simulation.step();
+            input::commands::step(&mut battle, &mut mouse);
         }
         assert_eq!(
             battle.simulation.entities[rider].contained_by(),
@@ -345,6 +347,7 @@ mod tests {
         );
         battle.simulation.entities[rider].owner = 0;
         dispatch_command(&mut battle, &mut mouse, command);
+        input::commands::step(&mut battle, &mut mouse);
         advance_until(
             &mut battle.simulation,
             300,
@@ -370,6 +373,7 @@ mod tests {
             Some(PickTarget::Unit(parent)),
             &mut mouse,
         ));
+        input::commands::step(&mut battle, &mut mouse);
         advance_until(
             &mut battle.simulation,
             3000,
@@ -381,6 +385,7 @@ mod tests {
         let command = selected_command(&battle, &data, 6).unwrap().action;
         assert!(matches!(command, CommandAction::Evacuate));
         dispatch_command(&mut battle, &mut mouse, command);
+        input::commands::step(&mut battle, &mut mouse);
         advance_until(
             &mut battle.simulation,
             300,

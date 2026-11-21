@@ -1,5 +1,14 @@
-use super::{Mission, Phase, Rules, Skirmish};
-use crate::skirmish::{ai_goals::COMMAND_FROM_AI, locomotor, physical_ocl::transform};
+use super::{DiveState, Mission, Phase, Rules, Skirmish};
+use crate::skirmish::{ai_goals::COMMAND_FROM_AI, locomotor, physical_ocl::transform, startup};
+use num_traits::ToPrimitive;
+use std::f32::consts::FRAC_PI_2;
+
+struct DeliveryLeg {
+    start: [f32; 3],
+    move_to: [f32; 3],
+    target: [f32; 3],
+    lead: bool,
+}
 
 impl Skirmish {
     /// Installs only delivery lists whose actual creation/AI/containment closure exists.
@@ -17,18 +26,36 @@ impl Skirmish {
                     .ok_or("Delivery template is missing")
             };
             let transport = find(&list.transport)?;
-            if transport.deliver_payload.is_none() || transport.contain.is_none()
-                || transport.live_physics.is_none() || transport.locomotor.flight.is_none()
+            if transport.deliver_payload.is_none() || !list.payload.is_empty() && transport.contain.is_none()
+                || list.formation_size == 0
                 || !transport.update_modules.iter().any(|module| matches!(module, crate::skirmish::module_updates::ModuleRegistration::Behavior { family, .. } if family == "DeliverPayloadAIUpdate")) {
                 return Err("Delivery transport lacks its actual native consumers");
             }
-            if list.container.is_empty() || find(&list.container)?.parachute.is_none() {
-                return Err("Pad delivery requires original ParachuteContain container");
+            if !list.container.is_empty() {
+                find(&list.container)?;
+            }
+            if list.release.parachute_directly
+                && (list.container.is_empty() || find(&list.container)?.parachute.is_none())
+            {
+                return Err(
+                    "Direct parachute delivery requires original ParachuteContain container",
+                );
             }
             for payload in &list.payload {
                 if find(&payload.object)?.live_physics.is_none() {
                     return Err("Delivery payload lacks original physical body");
                 }
+            }
+            if let Some(visible) = &list.visible
+                && !visible.object.is_empty()
+                && !find(&visible.object)?.projectile_rules.is_empty()
+                && !(0..transport.weapon_template_count()).any(|index| {
+                    transport
+                        .weapon_template(index)
+                        .is_some_and(|weapon| weapon.name == visible.weapon)
+                })
+            {
+                return Err("Visible delivery projectile lacks its original weapon binding");
             }
         }
         self.delivery_lists = lists;
@@ -39,11 +66,95 @@ impl Skirmish {
         &mut self,
         source: usize,
         list: usize,
-        mut start: [f32; 3],
+        start: [f32; 3],
+    ) -> usize {
+        self.create_delivery_at(source, list, start, self.object_position(source), true)
+    }
+
+    pub(in crate::skirmish) fn create_delivery_at(
+        &mut self,
+        source: usize,
+        list: usize,
+        start: [f32; 3],
+        target: [f32; 3],
+        create_owner: bool,
     ) -> usize {
         let rules = self.delivery_lists[list].clone();
-        let target = self.object_position(source);
-        let orientation = (target[1] - start[1]).atan2(target[0] - start[0]);
+        let direction = [start[0] - target[0], start[1] - target[1]];
+        let [x_squared, y_squared] = direction.map(|axis| axis * axis);
+        let length = (x_squared + y_squared).sqrt();
+        let mut first = source;
+        for index in 0..rules.formation_size {
+            let offset = if index == 0 {
+                [0.0; 2]
+            } else {
+                let x = direction[0] / length;
+                let y = direction[1] / length;
+                let spacing = (index + 1).div_euclid(2).to_f32().expect("formation index")
+                    * rules.formation_spacing;
+                let spacing = spacing
+                    .to_i32()
+                    .expect("authored formation spacing")
+                    .to_f32()
+                    .expect("native spacing");
+                let angle = if index % 2 == 0 {
+                    -FRAC_PI_2
+                } else {
+                    FRAC_PI_2
+                };
+                let (sine, cosine) = (angle.sin(), angle.cos());
+                let rotated_x = [x * cosine, y * -sine];
+                let rotated_y = [x * sine, y * cosine];
+                [
+                    (rotated_x[0] + rotated_x[1] + x) * spacing,
+                    (rotated_y[0] + rotated_y[1] + y) * spacing,
+                ]
+            };
+            let start = [start[0] + offset[0], start[1] + offset[1], start[2]];
+            let move_to = [target[0] + offset[0], target[1] + offset[1], target[2]];
+            let convergence = 1.0 - rules.convergence;
+            let [aim_x, aim_y] = offset.map(|axis| axis * convergence);
+            let mut aim = [target[0] + aim_x, target[1] + aim_y, target[2]];
+            if index != 0 && rules.error_radius > 1.0 {
+                let radius = startup::random_real(&mut self.random, 0.0, rules.error_radius);
+                let angle = startup::random_angle(&mut self.random);
+                aim[0] += radius * angle.cos();
+                aim[1] += radius * angle.sin();
+            }
+            let transport = self.create_delivery_member(
+                source,
+                list,
+                &rules,
+                &DeliveryLeg {
+                    start,
+                    move_to,
+                    target: aim,
+                    lead: index == 0,
+                },
+                create_owner,
+            );
+            if index == 0 {
+                first = transport;
+            }
+        }
+        first
+    }
+
+    fn create_delivery_member(
+        &mut self,
+        source: usize,
+        list: usize,
+        rules: &Rules,
+        leg: &DeliveryLeg,
+        create_owner: bool,
+    ) -> usize {
+        let DeliveryLeg {
+            mut start,
+            move_to,
+            target,
+            lead,
+        } = *leg;
+        let orientation = (move_to[1] - start[1]).atan2(move_to[0] - start[0]);
         if rules.delivery_distance > 0.0 {
             let x_offset = orientation.cos() * rules.delivery_distance * 1.5;
             let y_offset = orientation.sin() * rules.delivery_distance * 1.5;
@@ -51,23 +162,35 @@ impl Skirmish {
             start[1] -= y_offset;
         }
         let owner = self.entities[source].owner;
-        let kind = self
-            .catalog
-            .iter()
-            .position(|unit| unit.name == rules.transport)
-            .expect("validated delivery transport");
-        // Native constructors and CREATE run at the zero pose before placement.
-        let transport = self.new_object(kind, owner, true);
-        self.set_object_position(transport, start);
-        self.set_object_orientation(transport, orientation);
-        self.entities[transport].producer = Some(source);
-        self.set_map_body_controls(transport, true, false);
-        if rules.max_speed {
+        let transport = if create_owner {
+            let kind = self
+                .catalog
+                .iter()
+                .position(|unit| unit.name == rules.transport)
+                .expect("validated delivery transport");
+            let transport = self.new_object(kind, owner, true);
+            self.set_object_position(transport, start);
+            self.set_object_orientation(transport, orientation);
+            self.entities[transport].producer = Some(source);
+            self.set_map_body_controls(transport, true, false);
+            transport
+        } else {
+            source
+        };
+        let kind = self.entities[transport].type_index;
+        let now = self.update_frame();
+        if create_owner && rules.transport_start.delay_delivery_max > 0 {
+            let frame =
+                now.wrapping_add(self.random_between(rules.transport_start.delay_delivery_max));
+            self.set_default_disabled_until(transport, frame);
+        }
+        self.set_special_power_completion_creator(transport, lead.then_some(source));
+        if rules.transport_start.max_speed
+            && create_owner
+            && let Some(mass) = self.object_physics_mass(transport)
+        {
             let speed = locomotor::speed(&self.entities[transport], &self.catalog[kind])
                 * crate::skirmish::STEP_SECONDS;
-            let mass = self
-                .object_physics_mass(transport)
-                .expect("delivery transport PhysicsBehavior");
             let direction = [orientation.cos(), orientation.sin(), 0.0];
             self.apply_physics_motive_force(
                 transport,
@@ -76,52 +199,106 @@ impl Skirmish {
         }
         self.delivery_state_mut(transport).mission = Some(Mission {
             list,
-            move_to: target,
+            move_to,
             target,
             phase: Phase::Approach,
             entries: 0,
             drop_delay: 0,
             reentry_frame: 0,
             exit_direction: [0.0; 3],
+            visible_delivered: 0,
+            dive: if rules.dive.is_some() {
+                DiveState::Before
+            } else {
+                DiveState::After
+            },
         });
+        self.delivery_state_mut(transport).previous_squared = 0.0;
+        self.entities[transport].radius_decal = None;
+        if lead && let Some((radius, template)) = &rules.decal {
+            self.create_radius_decal(transport, template.clone(), *radius, target, false);
+        }
+        if let Some(visible) = &rules.visible {
+            for index in 1..=visible.count {
+                self.delivery_visible_sub_object(transport, &visible.sub_object, index, true);
+            }
+        }
         self.enter_delivery_phase(transport, Phase::Approach);
-        if rules.preferred_height {
+        if rules.transport_start.preferred_height && create_owner {
             start[2] =
                 self.ground_height([start[0], start[1]]) + self.flight_preferred_height(transport);
             self.set_object_position(transport, start);
         }
+        self.create_delivery_cargo(source, transport, rules, start, lead);
+        transport
+    }
+
+    fn create_delivery_cargo(
+        &mut self,
+        source: usize,
+        transport: usize,
+        rules: &Rules,
+        start: [f32; 3],
+        lead: bool,
+    ) {
+        let owner = self.entities[source].owner;
         let container_kind = self
             .catalog
             .iter()
-            .position(|unit| unit.name == rules.container)
-            .expect("validated delivery parachute");
+            .position(|unit| unit.name == rules.container);
         for payload in &rules.payload {
             let kind = self
                 .catalog
                 .iter()
                 .position(|unit| unit.name == payload.object)
                 .expect("validated delivery payload");
-            for _ in 0..payload.count {
-                // DeliverPayloadNugget creates the rider BEFORE its chute.
+            for index in 0..payload.count {
+                let creator = (lead && index == 0).then_some(source);
                 let rider = self.new_object(kind, owner, true);
                 self.set_object_position(rider, start);
                 self.entities[rider].producer = Some(transport);
-                let chute = self.new_object(container_kind, owner, true);
-                self.set_object_position(chute, start);
-                self.entities[chute].producer = Some(transport);
-                assert!(
-                    self.native_container_admits(rider, chute, true),
-                    "original parachute admits delivery payload"
-                );
-                self.add_to_contain(rider, chute);
-                assert!(
-                    self.native_container_admits(chute, transport, true),
-                    "original cargo transport admits loaded parachute"
-                );
-                self.add_to_contain(chute, transport);
+                self.set_special_power_completion_creator(rider, creator);
+                let entry = if let Some(container_kind) = container_kind {
+                    let chute = self.new_object(container_kind, owner, true);
+                    self.set_object_position(chute, start);
+                    self.entities[chute].producer = Some(transport);
+                    self.set_special_power_completion_creator(chute, creator);
+                    if self.native_container_admits(rider, chute, true) {
+                        self.add_to_contain(rider, chute);
+                        chute
+                    } else {
+                        rider
+                    }
+                } else {
+                    rider
+                };
+                if self.native_container_admits(entry, transport, true) {
+                    self.add_to_contain(entry, transport);
+                }
             }
         }
-        transport
+    }
+
+    pub(super) fn delivery_visible_sub_object(
+        &mut self,
+        id: usize,
+        name: &str,
+        index: u32,
+        visible: bool,
+    ) {
+        if name.is_empty() || !self.entities[id].has_drawable() {
+            return;
+        }
+        let name = format!("{name}{index:02}");
+        let overrides = &mut self.entities[id].drawable.sub_objects;
+        if let Some(entry) = overrides
+            .iter_mut()
+            .find(|entry| entry.name.eq_ignore_ascii_case(&name))
+        {
+            entry.visible = visible;
+        } else {
+            overrides.push(crate::skirmish::SubObjectOverride { name, visible });
+        }
     }
 
     pub(in crate::skirmish) fn delivery_closest_edge(&self, point: [f32; 3]) -> [f32; 3] {

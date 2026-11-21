@@ -6,6 +6,7 @@ pub enum Action {
     PlayAtPosition,
     PlayAtPositionUnowned,
     PlayLoop(usize),
+    PlayOrbitalLoop(usize),
     StopLoop(usize),
     Stop,
     StopAmbient,

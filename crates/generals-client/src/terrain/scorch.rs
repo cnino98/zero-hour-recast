@@ -89,6 +89,12 @@ impl Geometry {
                 self.vertex(terrain, mark, [x, y]);
             }
         }
+        // The orbital beam creates a zero-radius mark before its first growth update.
+        // Retain its native buffer budget, but submit no area to the GPU.
+        if mark.radius == 0.0 {
+            self.indices.resize(self.indices.len() + indices, start);
+            return true;
+        }
         for y in min_y..max_y - 1 {
             for x in min_x..max_x - 1 {
                 let raw = raw_cell(terrain, [x, y]);
@@ -113,6 +119,10 @@ impl Geometry {
         let height = terrain.raw_height(raw[0], raw[1]).mul_add(0.625, 0.0625);
         self.positions
             .push([position[0] * 0.1, height * 0.1, -position[1] * 0.1]);
+        if mark.radius == 0.0 {
+            self.uv.push([0.0; 2]);
+            return;
+        }
         let offset = [mark.kind % 3, mark.kind / 3]
             .map(|value| f32::from(i16::try_from(value).expect("atlas index")) * 1.5);
         let uv = std::array::from_fn(|axis| {

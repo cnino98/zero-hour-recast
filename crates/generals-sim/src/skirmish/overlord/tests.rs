@@ -55,6 +55,9 @@ fn setup() -> (Skirmish, usize) {
                 force_magnitude: [0.0; 2],
                 force_pitch: [0.0; 2],
                 spin_rate: -1.0,
+                formation_distances: [0.0; 3],
+                fade_frames: 0,
+                fade_sound: String::new(),
                 names: vec!["PortableBunker".into()],
                 count: 1,
                 offset: [0.0; 3],
@@ -79,12 +82,16 @@ fn setup() -> (Skirmish, usize) {
             cost: 400,
             frames: 450,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         },
         Research {
             name: "Cannon".into(),
             cost: 1200,
             frames: 600,
             player: false,
+            sciences: Vec::new(),
+            ignores_underpowered: false,
         },
     ];
     game.catalog.push(parent);

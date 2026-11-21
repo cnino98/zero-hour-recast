@@ -297,6 +297,7 @@ pub mod tests {
                 simulation,
                 selected: Vec::new(),
                 logic_selection: Vec::new(),
+                commands: crate::input::commands::Queue::default(),
                 placing: None,
                 started: true,
                 paused: false,

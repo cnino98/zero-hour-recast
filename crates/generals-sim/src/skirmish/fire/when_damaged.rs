@@ -190,21 +190,7 @@ impl Skirmish {
         } else {
             None
         };
-        let mut position = self.object_position(id);
-        if let Some(offset) = pattern {
-            position[0] += offset[0];
-            position[1] += offset[1];
-            position[2] = self.ground_height([position[0], position[1]]);
-        }
-        let target = crate::skirmish::damage::WeaponTarget {
-            object: None,
-            position,
-            projectile_position: position,
-            scatter_radius: 0.0,
-        };
-        if template_branch {
-            self.fire_owned_weapon_payload(id, binding, barrel, target, true);
-        }
+        self.fire_damage_weapon_payload(id, binding, barrel, pattern, template_branch);
         let actor = &self.entities[id];
         let unit = &self.catalog[actor.type_index];
         let template = unit
@@ -221,9 +207,41 @@ impl Skirmish {
         let propagation = instance
             .as_mut()
             .expect("allocated damage weapon")
-            .finish_owned_shot(template, now, shot_rate, reload_rate, shared);
+            .finish_owned_shot(
+                template,
+                now,
+                shot_rate,
+                reload_rate,
+                shared,
+                &mut self.random,
+            );
         if let Some((status, deadline)) = propagation.shared {
             self.share_owned_weapon_deadline(id, status, deadline);
+        }
+    }
+
+    fn fire_damage_weapon_payload(
+        &mut self,
+        id: usize,
+        binding: crate::skirmish::WeaponBinding,
+        barrel: usize,
+        pattern: Option<[f32; 2]>,
+        template_branch: bool,
+    ) {
+        let mut position = self.object_position(id);
+        if let Some(offset) = pattern {
+            position[0] += offset[0];
+            position[1] += offset[1];
+            position[2] = self.ground_height([position[0], position[1]]);
+        }
+        let target = crate::skirmish::damage::WeaponTarget {
+            object: None,
+            position,
+            projectile_position: position,
+            scatter_radius: 0.0,
+        };
+        if template_branch {
+            self.fire_owned_weapon_payload(id, binding, barrel, target, true);
         }
     }
 }

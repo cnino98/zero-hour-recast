@@ -63,6 +63,8 @@ pub struct List {
     pub name: String,
     pub initial_force: Option<RandomForce>,
     pub nuggets: Vec<Nugget>,
+    /// Ordinary creations and the physical index each immediately precedes.
+    pub ordinary_nuggets: Vec<(usize, super::object_creation::Object)>,
 }
 
 #[derive(Clone)]

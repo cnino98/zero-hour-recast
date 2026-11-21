@@ -10,6 +10,21 @@ mod tests;
 pub(super) fn validate_targets(catalog: &[super::UnitType]) -> Result<(), Box<dyn Error>> {
     for unit in catalog {
         for list in generals_sim::skirmish::physical_ocl::lists(unit) {
+            for (_, object) in &list.ordinary_nuggets {
+                for name in object
+                    .names
+                    .iter()
+                    .chain((!object.container.is_empty()).then_some(&object.container))
+                {
+                    if !catalog.iter().any(|unit| &unit.name == name) {
+                        return Err(format!(
+                            "{}: death OCL {} requires admitted object {name}",
+                            unit.name, list.name
+                        )
+                        .into());
+                    }
+                }
+            }
             for nugget in &list.nuggets {
                 for name in &nugget.names {
                     let target = if nugget.debris_mass.is_some() {

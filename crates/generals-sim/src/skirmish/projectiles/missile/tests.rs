@@ -541,7 +541,7 @@ fn native_heap_keeps_each_launch_fire_before_exhaust_and_old_ignition_identity()
         game.entities[*object].projectile_id(),
         Some(created.projectile)
     );
-    assert!(matches!(ignition.stage, ProjectileFxStage::Ignition));
+    assert!(matches!(ignition.stage, ProjectileFxStage::Ignition { .. }));
     assert_eq!(ignition.projectile, first_projectile);
     assert_eq!(game.presentation.shots[0].source, second);
     assert_eq!(game.presentation.shots[1].source, rifle);

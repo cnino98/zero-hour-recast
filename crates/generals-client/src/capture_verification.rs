@@ -89,14 +89,13 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         crate::attack_cursor::context(battle, &mouse) == Some(7),
         "Capture target mode lacks original cursor",
     )?;
-    require(
-        input::capture::issue(battle, &mut mouse, target),
-        "Original capture input rejected oil",
-    )?;
+    let point = Vec2::from_array(battle.simulation.entities[target].position);
+    input::targeted_order(battle, &mut mouse, point, Some(target));
     require(
         matches!(mouse.pending_command, CommandMode::Normal),
         "Accepted capture failed to leave target mode",
     )?;
+    input::commands::step(battle, &mut mouse);
     advance_until(
         &mut battle.simulation,
         18_000,

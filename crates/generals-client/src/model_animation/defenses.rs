@@ -119,14 +119,14 @@ impl Animations {
                 playback::select(&mut player, draw, &self.clips, state_index, &mut random);
                 playback::update(
                     &mut player,
-                    state,
+                    draw,
                     &self.clips,
                     [0.0; 2],
                     &FrameTime::logic_tick(0),
                 );
                 playback::update(
                     &mut player,
-                    state,
+                    draw,
                     &self.clips,
                     [0.0; 2],
                     &FrameTime::logic_tick(5),

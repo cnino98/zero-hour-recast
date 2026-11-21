@@ -390,6 +390,7 @@ mod tests {
         super::super::Node {
             mesh: Handle::default(),
             material,
+            clear: false,
             world: Affine3A::IDENTITY,
             scale: 1.0,
             depth: -1.0,
@@ -448,6 +449,7 @@ mod tests {
             .map(|sequence| super::super::Node {
                 mesh: Handle::default(),
                 material: Handle::default(),
+                clear: false,
                 world: Affine3A::IDENTITY,
                 scale: 1.0,
                 depth: 0.0,
@@ -477,6 +479,7 @@ mod tests {
             .map(|sequence| super::super::Node {
                 mesh: Handle::default(),
                 material: Handle::default(),
+                clear: false,
                 world: Affine3A::IDENTITY,
                 scale: 1.0,
                 depth: 0.0,

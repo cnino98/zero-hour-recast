@@ -74,7 +74,7 @@ pub struct SourceMaterial {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct MaterialKey {
     double_sided: bool,
-    blend_source: Option<BlendFactor>,
+    blend: Option<BlendState>,
     force_sorted_phase: bool,
     depth_write: bool,
     depth_compare: Option<CompareFunction>,
@@ -84,12 +84,7 @@ impl From<&SourceMaterial> for MaterialKey {
     fn from(value: &SourceMaterial) -> Self {
         Self {
             double_sided: value.double_sided,
-            blend_source: match value.alpha_mode {
-                AlphaMode::Add => Some(BlendFactor::One),
-                AlphaMode::Blend => Some(BlendFactor::SrcAlpha),
-                AlphaMode::Multiply => Some(BlendFactor::Zero),
-                _ => None,
-            },
+            blend: source_blend(value.alpha_mode),
             force_sorted_phase: value.force_sorted_phase,
             depth_write: value.depth_write,
             depth_compare: value.depth_compare,
@@ -137,23 +132,11 @@ impl Material for SourceMaterial {
                 depth.depth_compare = Some(compare);
             }
         }
-        if let Some(source) = key.bind_group_data.blend_source
-            && let Some(fragment) = &mut descriptor.fragment
-        {
-            let blend = blend_component(source);
-            for target in fragment.targets.iter_mut().flatten() {
-                target.blend = Some(BlendState {
-                    color: blend,
-                    alpha: blend,
-                });
-            }
-        }
-        if key.bind_group_data.force_sorted_phase
-            && key.bind_group_data.blend_source.is_none()
+        if (key.bind_group_data.blend.is_some() || key.bind_group_data.force_sorted_phase)
             && let Some(fragment) = &mut descriptor.fragment
         {
             for target in fragment.targets.iter_mut().flatten() {
-                target.blend = None;
+                target.blend = key.bind_group_data.blend;
             }
         }
         Ok(())
@@ -204,15 +187,33 @@ impl SourceMaterial {
     }
 }
 
-// ShaderClass presets use identical source/destination factors for RGBA.
-const fn blend_component(source: BlendFactor) -> BlendComponent {
+const fn source_blend(mode: AlphaMode) -> Option<BlendState> {
+    use BlendFactor as Factor;
+    let (source, destination) = match mode {
+        AlphaMode::Add => (Factor::One, Factor::One),
+        AlphaMode::Blend => (Factor::SrcAlpha, Factor::OneMinusSrcAlpha),
+        AlphaMode::Multiply => (Factor::Zero, Factor::Src),
+        // ShaderClass::SSCAT_SCREEN uses ONE / INVSRCCOLOR in source RGBA.
+        // The GPU alpha equation selects the source alpha channel explicitly.
+        AlphaMode::Premultiplied => {
+            return Some(BlendState {
+                color: blend_component(Factor::One, Factor::OneMinusSrc),
+                alpha: blend_component(Factor::One, Factor::OneMinusSrcAlpha),
+            });
+        }
+        _ => return None,
+    };
+    let component = blend_component(source, destination);
+    Some(BlendState {
+        color: component,
+        alpha: component,
+    })
+}
+
+const fn blend_component(source: BlendFactor, destination: BlendFactor) -> BlendComponent {
     BlendComponent {
         src_factor: source,
-        dst_factor: match source {
-            BlendFactor::Zero => BlendFactor::Src,
-            BlendFactor::One => BlendFactor::One,
-            _ => BlendFactor::OneMinusSrcAlpha,
-        },
+        dst_factor: destination,
         operation: BlendOperation::Add,
     }
 }
@@ -231,20 +232,35 @@ mod tests {
             AlphaMode::Multiply,
             false,
         );
-        let source = MaterialKey::from(&material).blend_source.unwrap();
-        let blend = blend_component(source);
+        let state = MaterialKey::from(&material).blend.unwrap();
+        let blend = state.color;
         assert_eq!(blend.src_factor, BlendFactor::Zero);
         assert_eq!(blend.dst_factor, BlendFactor::Src);
         assert_eq!(blend.operation, BlendOperation::Add);
         assert!(!material.depth_write);
         assert!(material.parameters.alpha_test < 0.0);
         assert_eq!(
-            blend_component(BlendFactor::One).dst_factor,
+            source_blend(AlphaMode::Add).unwrap().color.dst_factor,
             BlendFactor::One
         );
         assert_eq!(
-            blend_component(BlendFactor::SrcAlpha).dst_factor,
+            source_blend(AlphaMode::Blend).unwrap().color.dst_factor,
             BlendFactor::OneMinusSrcAlpha
         );
+    }
+
+    #[test]
+    fn screen_preserves_native_inverse_source_color_for_rgb_and_alpha() {
+        let state = source_blend(AlphaMode::Premultiplied).unwrap();
+        assert_eq!(
+            state.color,
+            blend_component(BlendFactor::One, BlendFactor::OneMinusSrc)
+        );
+        assert_eq!(
+            state.alpha,
+            blend_component(BlendFactor::One, BlendFactor::OneMinusSrcAlpha)
+        );
+        assert_ne!(Some(state), source_blend(AlphaMode::Add));
+        assert_ne!(Some(state), source_blend(AlphaMode::Blend));
     }
 }

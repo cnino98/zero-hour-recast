@@ -137,7 +137,7 @@ impl Skirmish {
         let shared = unit.weapon_set_rules.share_reload;
         let completion = self.entities[id].behaviors.collision_weapons[ordinal]
             .weapon
-            .finish_owned_shot(weapon, now, shot_rate, rate, shared);
+            .finish_owned_shot(weapon, now, shot_rate, rate, shared, &mut self.random);
         if let Some((status, deadline)) = completion.shared {
             self.share_owned_weapon_deadline(id, status, deadline);
         }

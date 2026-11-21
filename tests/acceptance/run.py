@@ -34,8 +34,32 @@ HEADERS = {
 }
 AUDIO_COMPLETE = "Audio verification PASSED: original click/voice/weapon events and all three authored initial music tracks reached advancing output sinks."
 SCALING_TEST = "skirmish::tests::performance::simulation_scaling"
-COUNTS = {"installed": 31, "native": 121, "benchmarks": 3, "profiles": 3}
+COUNTS = {"installed": 31, "native": 143, "benchmarks": 3, "profiles": 3}
 REQUIRED_IMAGES = {
+    "native-smoke-internet-center": ("p03-internet-satellite-one-mines.png", "internet-center.png"),
+    "native-p03-recon-capture": ("p03-recon-cia.png", "p03-recon-satellite.png", "p03-recon-drone-grid.png", "p03-recon-drone.png", "p03-recon-cleared.png"),
+    'native-p03-usa-capture': ('p03-particle-ready.png', 'p03-particle-beam.png', 'p03-particle-scorch.png'),
+    'native-p03-china-capture': ('p03-nuke-ready.png', 'p03-nuke-flight.png', 'p03-nuke-blast.png'),
+    'native-p03-gla-capture': ('p03-scud-ready.png', 'p03-scud-flight.png', 'p03-scud-toxin.png'),
+    'native-p03-a10-capture': ('p03-a10-ready.png', 'p03-a10-approach.png', 'p03-a10-payload.png', 'p03-a10-effect.png', 'p03-a10-cleared.png'),
+    'native-p03-paradrop-capture': ('p03-paradrop-ready.png', 'p03-paradrop-approach.png', 'p03-paradrop-payload.png', 'p03-paradrop-effect.png', 'p03-paradrop-cleared.png'),
+    'native-p03-daisy-capture': ('p03-daisy-ready.png', 'p03-daisy-approach.png', 'p03-daisy-payload.png', 'p03-daisy-effect.png', 'p03-daisy-cleared.png'),
+    'native-p03-moab-capture': ('p03-moab-ready.png', 'p03-moab-approach.png', 'p03-moab-payload.png', 'p03-moab-effect.png', 'p03-moab-cleared.png'),
+    'native-p03-leaflet-capture': ('p03-leaflet-ready.png', 'p03-leaflet-approach.png', 'p03-leaflet-payload.png', 'p03-leaflet-effect.png', 'p03-leaflet-cleared.png'),
+    'native-p03-spectre-capture': ('p03-spectre-ready.png', 'p03-spectre-approach.png', 'p03-spectre-payload.png', 'p03-spectre-effect.png', 'p03-spectre-cleared.png'),
+    'native-p03-china-artillery-capture': ('p03-china-artillery.png',),
+    'native-p03-china-cluster-capture': ('p03-china-cluster.png',),
+    'native-p03-china-carpet-capture': ('p03-china-carpet.png',),
+    'native-p03-china-emp-capture': ('p03-china-emp.png',),
+    'native-p03-china-frenzy-capture': ('p03-china-frenzy.png',),
+    'native-p03-china-cannon-capture': ('p03-china-cannon-nuclear.png', 'p03-china-cannon-neutron.png'),
+    'native-p03-gla-ambush-capture': ('p03-gla-ambush.png',),
+    'native-p03-gla-gps-capture': ('p03-gla-gps.png',),
+    'native-p03-gla-sneak-capture': ('p03-gla-sneak.png',),
+    'native-p03-gla-anthrax-capture': ('p03-gla-anthrax.png',),
+    'native-p03-gla-radar-capture': ('p03-gla-radar.png',),
+    'native-p03-gla-booby-capture': ('p03-gla-booby.png',),
+
     "native-parachute-terrain-capture": ("parachute-bridge-canopy.png", "parachute-bridge-landed.png", "parachute-water-canopy.png", "parachute-water-destruction.png"),
     "native-neutral-damage-capture": ("neutral-tech-damaged.png", "neutral-tech-death.png"),
     "native-hijacker-airborne-capture": ("hijacker-airborne-canopy.png", "hijacker-airborne-landed.png"),
@@ -255,10 +279,10 @@ def inventory(help_text, source):
     dispatch = source.split("fn run()", 1)[1].split("fn validate_arguments", 1)[0]
     captures = source.split("const SCREEN_CAPTURES:", 1)[1].split("fn screen_capture", 1)[0]
     expected = {
-        "installed": set(re.findall(r'"(--verify-[a-z-]+)"', dispatch)),
-        "native": set(re.findall(r'"(--[a-z-]+)"', captures)),
-        "benchmarks": set(re.findall(r'"(--benchmark-[a-z-]+)"', dispatch)),
-        "profiles": set(re.findall(r'"(--profile-[a-z-]+)"', dispatch)),
+        "installed": set(re.findall(r'"(--verify-[a-z0-9-]+)"', dispatch)),
+        "native": set(re.findall(r'"(--[a-z0-9-]+)"', captures)),
+        "benchmarks": set(re.findall(r'"(--benchmark-[a-z0-9-]+)"', dispatch)),
+        "profiles": set(re.findall(r'"(--profile-[a-z0-9-]+)"', dispatch)),
     }
     for group, flags in found.items():
         if len(flags) != COUNTS[group] or len(set(flags)) != len(flags) or set(flags) != expected[group]:

@@ -37,6 +37,7 @@ fn cleanup_targets_only_ready_local_ambulances_without_falling_back_to_movement(
     battle.simulation.entities[first].build_progress = 1.0;
     mouse.pending_command = CommandMode::Cleanup;
     super::super::targeted_order(&mut battle, &mut mouse, center.into(), None);
+    crate::input::commands::step(&mut battle, &mut mouse);
     for id in [first, second] {
         assert_eq!(battle.simulation.entities[id].cleaning_area(), Some(center));
     }

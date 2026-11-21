@@ -1,5 +1,6 @@
 //! All three base Overlord attachments through paid installed commands.
-use super::{advance_until, construct, friendly_entity, produce_type, require};
+use super::{advance_until, construct, construct_type, friendly_entity, produce_type, require};
+use crate::strategy_verification::template;
 use generals_sim::skirmish::{Faction, Kind, Order, Skirmish};
 use std::error::Error;
 
@@ -15,7 +16,8 @@ pub fn prepare(game: &mut Skirmish) -> Result<Capture, Box<dyn Error>> {
     construct(game, worker, Kind::SupplyCenter, 0)?;
     let barracks = construct(game, worker, Kind::Barracks, 0)?;
     let factory = construct(game, worker, Kind::Factory, 0)?;
-    construct(game, worker, Kind::TechBuilding, 0)?;
+    let propaganda = template(game, "ChinaPropagandaCenter")?;
+    construct_type(game, worker, propaganda, 0)?;
     let index = game
         .catalog
         .iter()

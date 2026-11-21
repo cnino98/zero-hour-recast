@@ -20,6 +20,7 @@ pub mod burton;
 pub mod capture;
 pub mod car_bomb;
 pub mod cleanup;
+pub mod commands;
 pub mod contamination;
 pub mod hacker;
 mod idle_workers;
@@ -46,6 +47,7 @@ pub struct Mouse {
     pub pending_command: CommandMode,
     pub move_hints: Vec<[f32; 2]>,
     pub voices: Vec<VoiceRequest>,
+    pub sneak_placement_rejections: Vec<(u64, generals_sim::skirmish::PlacementFailure)>,
     pub idle_workers: Vec<usize>,
     generation: u32,
     groups: [Vec<usize>; 10],
@@ -113,6 +115,7 @@ impl Mouse {
             self.hovered = None;
             self.move_hints.clear();
             self.voices.clear();
+            self.sneak_placement_rejections.clear();
             self.idle_workers.clear();
             self.clicks.clear();
             self.guard_hint = None;
@@ -121,6 +124,7 @@ impl Mouse {
     }
 }
 
+#[derive(Clone)]
 pub enum CommandMode {
     Normal,
     AttackMove,
@@ -144,8 +148,9 @@ pub enum CommandMode {
     Sabotage,
     Power {
         caster: usize,
-        name: String,
+        name: &'static str,
         target_object: bool,
+        specific_source: bool,
     },
 }
 
@@ -168,7 +173,7 @@ impl Mouse {
     pub fn selection_voice(&mut self, battle: &Match) {
         self.voices.push(VoiceRequest::new(
             &battle.simulation,
-            &battle.selected,
+            battle.command_drawables(),
             Voice::Select,
             self.waypoint_mode,
         ));
@@ -226,6 +231,7 @@ pub fn load(
         pending_command: CommandMode::Normal,
         move_hints: Vec::new(),
         voices: Vec::new(),
+        sneak_placement_rejections: Vec::new(),
         idle_workers: Vec::new(),
         generation: 0,
         groups: std::array::from_fn(|_| Vec::new()),
@@ -489,7 +495,20 @@ fn double_click_guard(
     let Some(point) = point else {
         return;
     };
-    let response = VoiceRequest::new(&battle.simulation, &battle.selected, Voice::Guard, false);
+    let response = VoiceRequest::new(
+        &battle.simulation,
+        battle.command_drawables(),
+        Voice::Guard,
+        false,
+    );
+    if !battle.commands.executing {
+        commands::enqueue(battle, Some(mouse), commands::Kind::Guard(point));
+        mouse.voices.push(response);
+        if let Some(position) = hint {
+            mouse.guard_hint = Some((position, 11));
+        }
+        return;
+    }
     let members = selection::command_units(battle);
     if battle
         .simulation
@@ -591,6 +610,10 @@ fn targeted_order_world(
     world: Vec3,
     nearest: Option<usize>,
 ) {
+    if !battle.commands.executing {
+        queue_targeted_order(battle, mouse, world, nearest);
+        return;
+    }
     let point = world.truncate();
     if matches!(mouse.pending_command, CommandMode::CombatDrop) {
         combat_drop(battle, mouse, world, nearest);
@@ -681,10 +704,43 @@ fn targeted_order_world(
     targeted_movement(battle, mouse, world);
 }
 
+fn queue_targeted_order(
+    battle: &mut Match,
+    mouse: &mut Mouse,
+    world: Vec3,
+    nearest: Option<usize>,
+) {
+    if matches!(mouse.pending_command, CommandMode::Power { .. }) {
+        targeted_power(battle, mouse, world, nearest);
+    } else if matches!(mouse.pending_command, CommandMode::Rally) {
+        rally_order(battle, mouse, world);
+    } else if mouse.waypoint_mode
+        && matches!(
+            mouse.pending_command,
+            CommandMode::Sabotage | CommandMode::CarBomb
+        )
+    {
+        context_order_world(battle, Some(world), nearest.map(PickTarget::Unit), mouse);
+    } else if !matches!(mouse.pending_command, CommandMode::Normal)
+        && commands::target_admitted(battle, &mouse.pending_command, world, nearest)
+    {
+        commands::enqueue(
+            battle,
+            Some(mouse),
+            commands::Kind::Targeted {
+                mode: mouse.pending_command.clone(),
+                point: world,
+                target: nearest,
+            },
+        );
+        mouse.pending_command = CommandMode::Normal;
+    }
+}
+
 fn targeted_helix_bomb(battle: &mut Match, mouse: &mut Mouse, point: Vec2) {
     let response = VoiceRequest::special_power(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         &["SPECIAL_HELIX_NAPALM_BOMB"],
     );
     let mut issued = false;
@@ -702,7 +758,7 @@ fn targeted_helix_bomb(battle: &mut Match, mouse: &mut Mouse, point: Vec2) {
 fn combat_drop(battle: &mut Match, mouse: &mut Mouse, position: Vec3, target: Option<usize>) {
     let response = VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         Voice::CombatDrop,
         false,
     );
@@ -722,6 +778,21 @@ fn combat_drop(battle: &mut Match, mouse: &mut Mouse, position: Vec3, target: Op
 }
 
 pub fn targeted_movement(battle: &mut Match, mouse: &mut Mouse, point: Vec3) {
+    if !battle.commands.executing {
+        if commands::target_admitted(battle, &mouse.pending_command, point, None) {
+            commands::enqueue(
+                battle,
+                Some(mouse),
+                commands::Kind::Targeted {
+                    mode: mouse.pending_command.clone(),
+                    point,
+                    target: None,
+                },
+            );
+            mouse.pending_command = CommandMode::Normal;
+        }
+        return;
+    }
     let voice = match mouse.pending_command {
         CommandMode::AttackMove => Voice::Move,
         CommandMode::Guard | CommandMode::GuardFlying => Voice::Guard,
@@ -729,7 +800,7 @@ pub fn targeted_movement(battle: &mut Match, mouse: &mut Mouse, point: Vec3) {
     };
     let response = VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         voice,
         mouse.waypoint_mode,
     );
@@ -762,31 +833,103 @@ fn targeted_power(battle: &mut Match, mouse: &mut Mouse, point: Vec3, nearest: O
         caster,
         name,
         target_object,
+        specific_source,
     } = &mouse.pending_command
     else {
         return;
     };
-    let target = if *target_object {
-        let Some(id) = nearest else {
-            return;
-        };
-        generals_sim::skirmish::PowerTarget::Object(id)
-    } else {
-        generals_sim::skirmish::PowerTarget::Position3D(point.to_array())
-    };
-    drop(battle.command_message_members());
-    match battle.simulation.cast_power(*caster, name, target) {
-        Ok(()) => {
-            mouse.pending_command = CommandMode::Normal;
-            apply_spectre_selections(battle);
-        }
-        Err(error) => eprintln!("Special power rejected: {error}"),
+    if !locally_controlled(battle, *caster) {
+        mouse.pending_command = CommandMode::Normal;
+        return;
     }
+    if *target_object && nearest.is_none() {
+        return;
+    }
+    let target = || {
+        if *target_object {
+            generals_sim::skirmish::PowerTarget::Object(nearest.expect("object power target"))
+        } else {
+            generals_sim::skirmish::PowerTarget::Position3D(point.to_array())
+        }
+    };
+    if cast_command_power(battle, *caster, name, target, *specific_source) {
+        mouse.pending_command = CommandMode::Normal;
+        apply_spectre_selections(battle);
+    }
+}
+
+/// `GameLogic::onDoSpecialPower*` submits ordinary commands to the selected
+/// group and shortcut commands to a one-object group of the named provider.
+pub fn cast_command_power(
+    battle: &mut Match,
+    caster: usize,
+    name: &str,
+    target: impl Fn() -> generals_sim::skirmish::PowerTarget,
+    specific_source: bool,
+) -> bool {
+    if !battle.commands.executing {
+        let candidates = if specific_source {
+            vec![caster]
+        } else {
+            battle.selected.clone()
+        };
+        let target = target();
+        let accepted = candidates.into_iter().any(|id| {
+            if !locally_controlled(battle, id) || !battle.simulation.can_use_power(id, name) {
+                return false;
+            }
+            match target {
+                generals_sim::skirmish::PowerTarget::Object(object) => {
+                    battle.simulation.can_use_power_at_object(id, name, object)
+                }
+                generals_sim::skirmish::PowerTarget::Position(point) => {
+                    battle.simulation.can_use_power_at_location(
+                        id,
+                        name,
+                        [point[0], point[1], battle.simulation.ground_height(point)],
+                    )
+                }
+                generals_sim::skirmish::PowerTarget::Position3D(point)
+                | generals_sim::skirmish::PowerTarget::Construction {
+                    position: point, ..
+                } => battle.simulation.can_use_power_at_location(id, name, point),
+                generals_sim::skirmish::PowerTarget::None => true,
+            }
+        });
+        if accepted {
+            commands::enqueue(
+                battle,
+                None,
+                commands::Kind::Power {
+                    caster,
+                    name: name.to_owned(),
+                    target,
+                    specific: specific_source,
+                },
+            );
+        }
+        return accepted;
+    }
+    let mut members = battle.command_message_members();
+    if specific_source {
+        members.clear();
+        members.push(caster);
+    }
+    let mut cast = false;
+    for id in members {
+        if locally_controlled(battle, id) && battle.simulation.can_use_power(id, name) {
+            cast |= battle.simulation.cast_power(id, name, target()).is_ok();
+        }
+    }
+    cast
 }
 
 /// `GameLogic::selectObject` replaces the logic selection, but `selectDrawable`
 /// prepends the ship without clearing other selected drawables or playing a voice.
 pub fn apply_spectre_selections(battle: &mut Match) {
+    if battle.commands.executing {
+        return;
+    }
     for added in std::mem::take(&mut battle.simulation.spawn_selection_events) {
         for &id in &added {
             if !battle.selected.contains(&id) {
@@ -798,7 +941,9 @@ pub fn apply_spectre_selections(battle: &mut Match) {
 
     for id in std::mem::take(&mut battle.simulation.deselected_objects) {
         battle.selected.retain(|&selected| selected != id);
-        battle.logic_selection = battle.simulation.selected_objects(0).to_vec();
+        if !battle.simulation.selected_objects(0).contains(&id) {
+            battle.logic_selection.retain(|&selected| selected != id);
+        }
     }
     for id in std::mem::take(&mut battle.simulation.spectre_selections) {
         if battle
@@ -807,8 +952,7 @@ pub fn apply_spectre_selections(battle: &mut Match) {
             .get(id)
             .is_some_and(|object| object.exists() && object.owner == 0)
         {
-            battle.logic_selection.clear();
-            battle.logic_selection.push(id);
+            battle.logic_selection = battle.simulation.selected_objects(0).to_vec();
             if !battle.selected.contains(&id) {
                 battle.selected.insert(0, id);
             }
@@ -817,6 +961,19 @@ pub fn apply_spectre_selections(battle: &mut Match) {
 }
 
 pub fn rally_order(battle: &mut Match, mouse: &mut Mouse, point: Vec3) -> bool {
+    if !battle.commands.executing {
+        let members = battle
+            .simulation
+            .preview_selection_group(0, &battle.logic_selection);
+        let accepted = !members.is_empty();
+        for object in members {
+            commands::enqueue(battle, Some(mouse), commands::Kind::Rally { object, point });
+        }
+        if accepted {
+            mouse.pending_command = CommandMode::Normal;
+        }
+        return accepted;
+    }
     let mut issued = false;
     for id in selection::command_units(battle) {
         if locally_controlled(battle, id) {
@@ -839,7 +996,7 @@ fn targeted_laser(battle: &mut Match, mouse: &mut Mouse, nearest: Option<usize>)
     }
     let response = VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         Voice::LaserAttack,
         false,
     );
@@ -915,27 +1072,27 @@ pub fn context_order(
 }
 
 fn object_context(
-    game: &mut generals_sim::skirmish::Skirmish,
+    game: &generals_sim::skirmish::Skirmish,
     id: usize,
     target: usize,
     can_dock: bool,
-) -> Option<Result<(), &'static str>> {
+) -> Option<commands::ActorOrder> {
     let unit = &game.entities[id];
     let stats = &game.catalog[unit.type_index];
     let victim = &game.entities[target];
     let result = if game.can_repair(id, target) {
-        game.repair(id, target)
+        commands::ActorOrder::Repair(target)
     } else if game.player_attack_target_reachable(id, target) {
-        game.attack(id, target)
+        commands::ActorOrder::Attack(target)
     } else if victim.owner == unit.owner && !victim.complete() && stats.kind == Kind::Builder {
-        game.assist_build(id, target)
+        commands::ActorOrder::AssistBuild(target)
     } else if victim.owner == unit.owner
         && victim.complete()
         && can_dock
         && stats.supply.capacity > 0
         && game.catalog[victim.type_index].kind == Kind::SupplyCenter
     {
-        game.deliver_supplies(id, target)
+        commands::ActorOrder::Deliver(target)
     } else {
         return None;
     };
@@ -989,20 +1146,15 @@ fn context_order_world(
 ) -> bool {
     if !mouse.waypoint_mode
         && let Some(position) = point
+        && battle.selected.iter().copied().any(|id| {
+            locally_controlled(battle, id)
+                && battle
+                    .simulation
+                    .can_override_special_power_destination(id, position.to_array())
+        })
     {
-        let mut overridden = false;
-        for id in selection::command_units(battle) {
-            if locally_controlled(battle, id) {
-                overridden |= battle.simulation.override_special_power_destination(
-                    id,
-                    position.to_array(),
-                    0,
-                );
-            }
-        }
-        if overridden {
-            return true;
-        }
+        commands::issue(battle, mouse, commands::Kind::Override(position));
+        return true;
     }
     if mouse.force_attack_mode() {
         attack::force_order(battle, picked.and_then(PickTarget::unit), point, mouse);
@@ -1034,7 +1186,12 @@ fn context_order_world(
     // selection into a gather command and an unrelated movement command.
     let can_dock = can_dock_at(battle, picked);
     let voice = context_voice(battle, nearest, waypoints, supply.is_some() && can_dock);
-    let response = VoiceRequest::new(&battle.simulation, &battle.selected, voice, waypoints);
+    let response = VoiceRequest::new(
+        &battle.simulation,
+        battle.command_drawables(),
+        voice,
+        waypoints,
+    );
     let group_point = nearest
         .map(|id| Vec3::from_array(battle.simulation.object_position(id)))
         .or_else(|| {
@@ -1055,52 +1212,51 @@ fn context_order_world(
     if let Some(target) =
         nearest.filter(|&target| attack::ordinary_selection_target(battle, target))
     {
-        let members = selection::command_units(battle);
-        if let Err(error) = battle
-            .simulation
-            .group_attack_objects(&members, target, false)
-        {
-            eprintln!("Attack order rejected: {error}");
-        }
+        commands::issue(battle, mouse, commands::Kind::Attack(target));
         mouse.voices.push(response);
         return true;
     }
     if !ordinary_context_eligible(battle, nearest, supply, can_dock, group_point, waypoints) {
         return false;
     }
-    let mut issued = false;
-    let mut unit_order = false;
-    for id in selection::command_units(battle) {
-        let Some((rally, result)) = actor_context_order(
-            &mut battle.simulation,
+    let members = battle
+        .simulation
+        .preview_selection_group(0, &battle.logic_selection);
+    let order = members.iter().find_map(|&id| {
+        actor_context_order(
+            &battle.simulation,
             id,
             group_point,
             picked,
             can_dock,
             waypoints,
-        ) else {
-            continue;
+        )
+    });
+    let Some((rally, order)) = order else {
+        return false;
+    };
+    if rally {
+        let commands::ActorOrder::Rally(point) = order else {
+            unreachable!("rally context")
         };
-        issued = true;
-        unit_order |= !rally;
-        if let Err(error) = result {
-            eprintln!("Context order rejected: {error}");
+        for object in members {
+            commands::issue(battle, mouse, commands::Kind::Rally { object, point });
         }
-    }
-    if unit_order {
+    } else {
+        commands::issue(battle, mouse, commands::Kind::ActorContext(order));
         mouse.voices.push(response);
     }
-    issued
+    true
 }
 
 fn actor_context_order(
-    game: &mut generals_sim::skirmish::Skirmish,
+    game: &generals_sim::skirmish::Skirmish,
     id: usize,
     point: Option<Vec3>,
     picked: Option<PickTarget>,
     can_dock: bool,
     waypoints: bool,
-) -> Option<(bool, Result<(), &'static str>)> {
+) -> Option<(bool, commands::ActorOrder)> {
     let nearest = picked.and_then(PickTarget::unit);
     let supply = match picked {
         Some(PickTarget::Supply(id)) => Some(id),
@@ -1119,11 +1275,11 @@ fn actor_context_order(
             || game.is_tunnel(id));
     let result = if rally {
         let point = point?;
-        game.set_rally_point(id, point.to_array())
+        commands::ActorOrder::Rally(point)
     } else if let Some(target) = nearest {
         object_context(game, id, target, can_dock)?
     } else if let Some(supply) = supply.filter(|_| can_dock) {
-        game.harvest(id, supply)
+        commands::ActorOrder::Harvest(supply)
     } else {
         return None;
     };
@@ -1131,23 +1287,30 @@ fn actor_context_order(
 }
 
 fn special_context(battle: &mut Match, mouse: &mut Mouse, nearest: Option<usize>) -> Option<bool> {
-    if let Some(target) = hijacker::context_target(battle, mouse, nearest) {
-        return Some(hijacker::issue(battle, mouse, target));
-    }
-    if let Some(target) = car_bomb::context_target(battle, mouse, nearest) {
-        return Some(car_bomb::issue(battle, mouse, target, true));
-    }
-    if let Some(target) = sabotage::context_target(battle, mouse, nearest) {
-        return Some(sabotage::issue(battle, mouse, target));
-    }
-    if let Some(target) = capture::context_target(battle, mouse, nearest) {
-        return Some(capture::issue(battle, mouse, target));
-    }
-    if let Some((target, ability)) = hacker::finite_context_target(battle, mouse, nearest) {
-        return Some(hacker::issue_finite_context(battle, mouse, target, ability));
-    }
-    hacker::context_target(battle, mouse, nearest)
-        .map(|target| hacker::issue(battle, mouse, target, true))
+    let request = if let Some(target) = hijacker::context_target(battle, mouse, nearest) {
+        (CommandMode::Hijack, target)
+    } else if let Some(target) = car_bomb::context_target(battle, mouse, nearest) {
+        (CommandMode::CarBomb, target)
+    } else if let Some(target) = sabotage::context_target(battle, mouse, nearest) {
+        (CommandMode::Sabotage, target)
+    } else if let Some(target) = capture::context_target(battle, mouse, nearest) {
+        (CommandMode::Capture, target)
+    } else if let Some((target, ability)) = hacker::finite_context_target(battle, mouse, nearest) {
+        (CommandMode::Hack(ability), target)
+    } else if let Some(target) = hacker::context_target(battle, mouse, nearest) {
+        (CommandMode::DisableBuilding, target)
+    } else {
+        return None;
+    };
+    commands::issue(
+        battle,
+        mouse,
+        commands::Kind::Context {
+            mode: request.0,
+            target: request.1,
+        },
+    );
+    Some(true)
 }
 
 // CommandXlat uses SELECTION_ANY for boarding before attack/repair/build.
@@ -1159,7 +1322,16 @@ fn board_context(battle: &mut Match, mouse: &mut Mouse, carrier: usize) -> bool 
     {
         return false;
     }
-    let response = VoiceRequest::new(&battle.simulation, &battle.selected, Voice::Enter, false);
+    if !battle.commands.executing {
+        commands::enqueue(battle, Some(mouse), commands::Kind::Board(carrier));
+        return true;
+    }
+    let response = VoiceRequest::new(
+        &battle.simulation,
+        battle.command_drawables(),
+        Voice::Enter,
+        false,
+    );
     for id in selection::command_units(battle) {
         if locally_controlled(battle, id)
             && battle.simulation.can_enter(id, carrier)
@@ -1187,6 +1359,17 @@ fn move_group(battle: &mut Match, destination: Vec3, waypoints: bool) -> bool {
     });
     if !eligible {
         return false;
+    }
+    if !battle.commands.executing {
+        commands::enqueue(
+            battle,
+            None,
+            commands::Kind::Move {
+                point: destination,
+                waypoints,
+            },
+        );
+        return true;
     }
     let members: Vec<_> = selection::command_units(battle)
         .into_iter()
@@ -1314,6 +1497,7 @@ mod tests {
             Some(world),
             Some(position + Vec2::ONE),
         );
+        super::commands::step(&mut battle, &mut mouse);
         assert!(
             matches!(battle.simulation.entities[id].ai.order, generals_sim::skirmish::Order::Guard(point) if point.map(f32::to_bits) == position.to_array().map(f32::to_bits))
         );
@@ -1358,11 +1542,43 @@ mod tests {
         battle.logic_selection = vec![local[0]];
         battle
             .simulation
+            .create_selection(0, &[], &[local[1]], true);
+        battle
+            .simulation
             .spectre_selections
             .extend([local[1], foreign]);
         super::apply_spectre_selections(&mut battle);
         assert_eq!(battle.logic_selection, [local[1]]);
         assert_eq!(battle.selected, [local[1], local[0]]);
         assert!(battle.simulation.spectre_selections.is_empty());
+    }
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn ui_only_deselection_preserves_authoritative_member_and_pending_selection_preview() {
+        let (_, mut battle) = crate::cleanup_verification::tests::installed();
+        let local: Vec<_> = battle
+            .simulation
+            .entities
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| object.owner == 0 && object.alive())
+            .map(|(id, _)| id)
+            .take(2)
+            .collect();
+        battle
+            .simulation
+            .create_selection(0, &[], &[local[0]], true);
+        battle.selected = vec![local[0]];
+        battle.logic_selection = vec![local[0]];
+        battle.select_objects(&[local[1]], false);
+        // Deliver the UI-only notification produced by set_object_selectable.
+        // Its simulation setter has separate actual-Squad/group coverage.
+        battle.simulation.deselected_objects.push(local[0]);
+        super::apply_spectre_selections(&mut battle);
+        assert_eq!(battle.selected, [local[1]]);
+        assert_eq!(battle.simulation.selected_objects(0), &[local[0]]);
+        assert_eq!(battle.logic_selection, local);
+        assert!(battle.simulation.deselected_objects.is_empty());
     }
 }

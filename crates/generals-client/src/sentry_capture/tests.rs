@@ -30,10 +30,14 @@ fn paid_sentry_original_buttons_allocate_gun_and_issue_guard_then_pack_for_conte
     assert_eq!(rules.name, "Upgrade_AmericaSentryDroneGun");
     assert_eq!((rules.cost, rules.frames), (1000, 900));
     let cash = battle.simulation.players[0].cash;
+    let income = battle.simulation.players[0].statistics.money_earned;
     let frame = battle.simulation.tick;
     assert!(!battle.simulation.weapon_available(setup.drone, 0));
     dispatch_command(&mut battle, &mut mouse, button.action);
-    assert_eq!(battle.simulation.players[0].cash + 1000, cash);
+    assert_eq!(battle.simulation.players[0].cash, cash);
+    input::commands::step(&mut battle, &mut mouse);
+    let earned = battle.simulation.players[0].statistics.money_earned - income;
+    assert_eq!(battle.simulation.players[0].cash + 1000, cash + earned);
     advance_until(
         &mut battle.simulation,
         901,
@@ -49,6 +53,7 @@ fn paid_sentry_original_buttons_allocate_gun_and_issue_guard_then_pack_for_conte
     dispatch_command(&mut battle, &mut mouse, button.action);
     let point = battle.simulation.entities[setup.drone].position;
     input::targeted_order(&mut battle, &mut mouse, point.into(), None);
+    input::commands::step(&mut battle, &mut mouse);
     assert!(matches!(
         battle.simulation.entities[setup.drone].ai.order,
         Order::Guard(_)
@@ -78,6 +83,12 @@ fn paid_sentry_original_buttons_allocate_gun_and_issue_guard_then_pack_for_conte
             .voices
             .last()
             .is_some_and(|request| matches!(request.voice(), Voice::Move))
+    );
+    mouse.voices.clear();
+    input::commands::step(&mut battle, &mut mouse);
+    assert!(
+        mouse.voices.is_empty(),
+        "context Move voice was already consumed"
     );
     advance_until(
         &mut battle.simulation,
@@ -128,6 +139,18 @@ fn verify_context_attack(
         Some(input::PickTarget::Unit(setup.target)),
         mouse
     ));
+    assert!(
+        mouse
+            .voices
+            .last()
+            .is_some_and(|request| matches!(request.voice(), Voice::Attack))
+    );
+    mouse.voices.clear();
+    input::commands::step(battle, mouse);
+    assert!(
+        mouse.voices.is_empty(),
+        "context Attack voice was already consumed"
+    );
     advance_until(
         &mut battle.simulation,
         1500,

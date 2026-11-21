@@ -114,8 +114,12 @@ pub(super) fn dispatch(battle: &mut Match, mouse: &mut Mouse, action: CommandAct
             }
         }
         CommandAction::Evacuate => {
-            let response =
-                VoiceRequest::new(&battle.simulation, &battle.selected, Voice::Unload, false);
+            let response = VoiceRequest::new(
+                &battle.simulation,
+                battle.command_drawables(),
+                Voice::Unload,
+                false,
+            );
             let mut issued = false;
             for id in battle.command_message_members() {
                 if battle.simulation.entities.get(id).is_none_or(|actor| {

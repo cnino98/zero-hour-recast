@@ -1,6 +1,57 @@
 use super::*;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
+pub fn verify_sneak_release(
+    battle: &mut Match,
+    assets: &generals_assets::virtual_assets::VirtualAssets,
+    caster: usize,
+    kind: usize,
+    point: [f32; 2],
+    angle: f32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let power = crate::p03_gla_capture::Kind::Sneak.power();
+    let root = generals_assets::game_root()?;
+    let mut mouse = crate::input::load(
+        assets,
+        &root.join("UserData/Options.ini"),
+        &battle.simulation.catalog,
+    )?;
+    let mut placement = Placement::special_power(kind, caster, angle, power);
+    let anchor = Some([IVec2::ZERO, IVec2::ONE]);
+    placement.anchor = anchor;
+    placement.legal = true;
+    let blocked = Vec2::from_array(battle.simulation.entities[caster].position);
+    let count = battle.simulation.entities.len();
+    assert!(!commit(battle, &mut mouse, &mut placement, blocked));
+    assert!(placement.anchor.is_none());
+    assert_eq!(battle.simulation.entities.len(), count);
+    assert!(battle.simulation.can_use_power(caster, power));
+    assert_eq!(mouse.sneak_placement_rejections.len(), 1);
+    assert_eq!(
+        mouse.sneak_placement_rejections[0].0,
+        battle.simulation.tick
+    );
+    assert!(matches!(
+        mouse.sneak_placement_rejections[0].1,
+        generals_sim::skirmish::PlacementFailure::ObjectsInTheWay
+    ));
+    assert!(matches!(
+        mouse.voices.as_slice(),
+        [request] if matches!(request.voice(), Voice::NoBuild)
+    ));
+    placement.anchor = anchor;
+    assert!(commit(
+        battle,
+        &mut mouse,
+        &mut placement,
+        Vec2::from_array(point)
+    ));
+    crate::input::commands::step(battle, &mut mouse);
+    assert!(!battle.simulation.can_use_power(caster, power));
+    assert_eq!(mouse.sneak_placement_rejections.len(), 1);
+    Ok(())
+}
+
 #[test]
 fn force_attack_remembers_ctrl_first_but_does_not_start_for_shift_first() {
     let mut mode = ForceAttack::new();

@@ -17,6 +17,7 @@ use std::{
 pub(super) fn names(types: &[UnitType]) -> BTreeSet<&str> {
     let mut names = BTreeSet::new();
     for unit in types {
+        power_objects(unit, &mut names);
         for rules in &unit.behavior.toppling {
             names.insert(rules.topple_fx.as_str());
             names.insert(rules.bounce_fx.as_str());
@@ -108,6 +109,44 @@ pub(super) fn names(types: &[UnitType]) -> BTreeSet<&str> {
     }
     names.retain(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NONE"));
     names
+}
+
+fn power_objects<'a>(unit: &'a UnitType, names: &mut BTreeSet<&'a str>) {
+    names.extend(
+        unit.behavior
+            .particle_uplinks
+            .iter()
+            .flat_map(|rules| [rules.beam_launch_fx.as_str(), rules.ground_hit_fx.as_str()]),
+    );
+    names.extend(
+        unit.behavior
+            .nuclear_launcher
+            .iter()
+            .flat_map(|rules| rules.effects.iter().map(String::as_str)),
+    );
+    names.extend(
+        unit.behavior
+            .neutron_missile
+            .iter()
+            .flat_map(|rules| [rules.launch_fx.as_str(), rules.ignition_fx.as_str()]),
+    );
+    names.extend(
+        unit.behavior
+            .mine_generators
+            .iter()
+            .filter_map(|rules| rules.generation_fx.as_deref()),
+    );
+    if let Some(rules) = &unit.deliver_payload {
+        names.extend(rules.strafe_effects.iter().map(String::as_str));
+    }
+    if let Some(death) = &unit.death_lifecycle {
+        for slow in &death.slow {
+            if let generals_sim::skirmish::death_lifecycle::Derived::Neutron(rules) = &slow.derived
+            {
+                names.insert(rules.effect.as_str());
+            }
+        }
+    }
 }
 
 fn death_names<'a>(unit: &'a UnitType, names: &mut BTreeSet<&'a str>) {

@@ -53,7 +53,8 @@ impl Skirmish {
     }
 
     /// `Object::isDisabled` tests any disabled-mask bit, including `HELD`.
-    pub(in crate::skirmish) fn object_disabled(&self, id: usize) -> bool {
+    #[must_use]
+    pub fn object_disabled(&self, id: usize) -> bool {
         self.object_disabled_mask(id) != 0
     }
 }

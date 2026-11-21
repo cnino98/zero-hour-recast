@@ -35,7 +35,7 @@ pub fn issue(battle: &mut Match, mouse: &mut Mouse, target: usize) -> bool {
     }
     let response = VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         Voice::EnterHostile,
         false,
     );

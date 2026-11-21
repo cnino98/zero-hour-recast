@@ -18,6 +18,7 @@ struct Check {
     old: usize,
     next: Option<usize>,
     phase: u8,
+    conversion_issued: Option<u64>,
     began: Option<f64>,
     camera: Option<(Vec2, f32)>,
 }
@@ -39,6 +40,7 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         old,
         next: None,
         phase: 0,
+        conversion_issued: None,
         began: None,
         camera: None,
     });
@@ -140,15 +142,22 @@ fn inspect(
                 check.phase = 1;
             }
             1 => {
+                check.conversion_issued = Some(battle.simulation.tick);
                 dispatch_command(&mut battle, &mut mouse, CommandAction::Research(0));
-                require(
-                    !battle.simulation.entities[check.old].queue.is_empty(),
-                    "Native conversion command was rejected",
-                )?;
                 time.unpause();
                 check.phase = 2;
             }
             2 => {
+                if let Some(issued) = check.conversion_issued {
+                    if battle.simulation.tick == issued {
+                        return Ok(());
+                    }
+                    require(
+                        !battle.simulation.entities[check.old].queue.is_empty(),
+                        "Native conversion command was rejected",
+                    )?;
+                    check.conversion_issued = None;
+                }
                 if check.next.is_none() {
                     check.next = battle
                         .simulation
@@ -191,5 +200,87 @@ fn inspect(
         error!("Fake-building native acceptance: {error}");
         check.phase = 3;
         exit.write(AppExit::error());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input;
+
+    #[ignore = "requires original game installation"]
+    #[test]
+    fn paid_conversion_preserves_first_drawable_before_destroy_cleanup_and_queues_new_squad() {
+        let (assets, mut battle) = crate::cleanup_verification::tests::installed();
+        let setup = fake_building_verification::prepare(&mut battle.simulation).unwrap();
+        let old = setup.fakes[1];
+        let kind = battle.simulation.entities[old].type_index;
+        let cost = battle.simulation.catalog[kind].maintenance.research[0].cost;
+        crate::skirmish_verification::advance_until(
+            &mut battle.simulation,
+            18_000,
+            "conversion funding",
+            |game| game.players[0].cash >= cost,
+        )
+        .unwrap();
+        let mut mouse = input::load(
+            &assets,
+            std::path::Path::new(""),
+            &battle.simulation.catalog,
+        )
+        .unwrap();
+        battle.select_objects(&[old], true);
+        let cash = battle.simulation.players[0].cash;
+        dispatch_command(&mut battle, &mut mouse, CommandAction::Research(0));
+        assert!(battle.simulation.entities[old].queue.is_empty());
+        input::commands::step(&mut battle, &mut mouse);
+        assert!(!battle.simulation.entities[old].queue.is_empty());
+        assert_eq!(battle.simulation.players[0].cash, cash - cost);
+        let next = (0..9000)
+            .find_map(|_| {
+                input::commands::step(&mut battle, &mut mouse);
+                battle
+                    .simulation
+                    .presentation
+                    .replacement_events
+                    .iter()
+                    .find(|event| event.previous == old)
+                    .map(|event| event.next)
+            })
+            .expect("paid upgrade must create its actual replacement");
+        let game = &battle.simulation;
+        assert!(game.entities[old].masked());
+        assert_eq!(
+            game.catalog[game.entities[next].type_index].name,
+            "GLABarracks"
+        );
+        assert!(game.entities[next].complete());
+        assert_eq!(battle.selected, vec![next]);
+        assert!(!game.selected_objects(0).contains(&next));
+        assert!(game.deselected_objects.is_empty());
+        let rally = battle.simulation.object_position(next);
+        let rally = Vec3::new(rally[0] + 50.0, rally[1], rally[2]);
+        let previous_rally = battle.simulation.entities[next]
+            .rally_point
+            .map(|point| point.map(f32::to_bits));
+        assert!(input::rally_order(&mut battle, &mut mouse, rally));
+        assert_eq!(
+            battle.simulation.entities[next]
+                .rally_point
+                .map(|point| point.map(f32::to_bits)),
+            previous_rally
+        );
+        assert!(!battle.simulation.selected_objects(0).contains(&next));
+        // Native replacement selects the drawable immediately and emits a message
+        // for the player's authoritative selected group at the next command step.
+        input::commands::step(&mut battle, &mut mouse);
+        assert_eq!(battle.selected, vec![next]);
+        assert_eq!(battle.simulation.selected_objects(0), &[next]);
+        assert_eq!(
+            battle.simulation.entities[next]
+                .rally_point
+                .map(|point| point.map(f32::to_bits)),
+            Some(rally.to_array().map(f32::to_bits))
+        );
     }
 }

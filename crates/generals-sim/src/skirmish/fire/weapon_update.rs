@@ -174,7 +174,14 @@ impl Skirmish {
             .weapon
             .as_mut()
             .expect("allocated module Weapon")
-            .finish_owned_shot(weapon, now, shot_rate, reload_rate, shared);
+            .finish_owned_shot(
+                weapon,
+                now,
+                shot_rate,
+                reload_rate,
+                shared,
+                &mut self.random,
+            );
         if let Some((status, deadline)) = propagation.shared {
             self.share_owned_weapon_deadline(id, status, deadline);
         }

@@ -25,7 +25,7 @@ pub fn issue(battle: &mut Match, mouse: &mut Mouse, target: usize) -> bool {
     }
     mouse.voices.push(VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         Voice::Salvage,
         false,
     ));

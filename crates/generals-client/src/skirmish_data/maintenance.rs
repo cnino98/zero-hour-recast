@@ -114,6 +114,23 @@ fn percent(
     })
 }
 
+pub(super) fn validate_hole_references(
+    types: &[generals_sim::skirmish::UnitType],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for unit in types {
+        for hole in &unit.maintenance.expose_hole {
+            if !hole.health.is_finite() || !types.iter().any(|item| item.name == hole.template) {
+                return Err(format!(
+                    "{} has an invalid or missing rebuild-hole template {}",
+                    unit.name, hole.template
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

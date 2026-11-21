@@ -1,22 +1,18 @@
 //! Selected player progression and power modules from installed source definitions.
-//! Field defaults follow pinned `Player`, `Science`, `RankInfo`, `CashBountyPower`,
-//! `CashHackSpecialPower`, `OCLSpecialPower` and `AutoHealBehavior`.
+//! Field defaults follow pinned `Player`, `Science`, `RankInfo` and `CashBountyPower`.
 use std::error::Error;
 #[cfg(test)]
 mod identity_tests;
 
 use generals_assets::{
-    content::{self, ContentFile, ContentLine, Declaration},
+    content::{self, ContentFile, ContentLine},
     virtual_assets::VirtualAssets,
 };
 use generals_sim::skirmish::{
-    Faction, FactionProgression, PowerDefinition, PowerEffect, ProgressionRules, Rank, RepairBurst,
-    Science, UnitProgression, UnitType,
+    Faction, FactionProgression, ProgressionRules, Rank, Science, UnitProgression, UnitType,
 };
 
-use crate::skirmish_data::{
-    blocks, definition, duration_frames, field, finite_number, number, scalar, text, unsigned,
-};
+use crate::skirmish_data::{blocks, definition, field, finite_number, scalar, text, unsigned};
 
 pub fn load(
     assets: &VirtualAssets,
@@ -29,8 +25,6 @@ pub fn load(
         "science",
         "playertemplate",
         "specialpower",
-        "objectcreationlist",
-        "object/system",
         "multiplayer",
     ] {
         files.push(content::scan(
@@ -80,13 +74,13 @@ pub fn load(
         factions.push(player_template(lines, faction)?);
     }
 
-    let powers = unit_modules(&files, objects, catalog)?;
+    unit_modules(&files, objects, catalog)?;
     Ok(ProgressionRules {
-        multiplayer_colors: multiplayer_colors(&files[6])?,
+        multiplayer_colors: multiplayer_colors(&files[4])?,
         ranks,
         sciences,
         factions,
-        powers,
+        powers: Vec::new(),
     })
 }
 
@@ -147,8 +141,7 @@ fn unit_modules(
     files: &[ContentFile],
     objects: &[ContentFile],
     catalog: &mut [UnitType],
-) -> Result<Vec<PowerDefinition>, Box<dyn Error>> {
-    let mut powers = Vec::new();
+) -> Result<(), Box<dyn Error>> {
     for unit in catalog {
         let object = definition(objects, "Object", &unit.name)?;
         let kind = words(&object.lines, 0, "KindOf");
@@ -181,76 +174,10 @@ fn unit_modules(
                     text(&power.lines, 0, "RequiredScience")?.to_owned(),
                     finite_number(percent)? / 100.0,
                 ));
-            } else if name == "SuperweaponCashHack" || name == "SuperweaponEmergencyRepair" {
-                let power = active_power(files, module, module_type, name)?;
-                if let Some(previous) = powers
-                    .iter()
-                    .find(|previous: &&PowerDefinition| previous.name == power.name)
-                {
-                    if !same_power(previous, &power) {
-                        return Err(
-                            format!("Conflicting per-object power modules for {name}").into()
-                        );
-                    }
-                } else {
-                    powers.push(power);
-                }
-                unit.progression.powers.push(name.to_owned());
             }
         }
     }
-    Ok(powers)
-}
-
-fn active_power(
-    files: &[ContentFile],
-    module: &[ContentLine],
-    module_type: &str,
-    name: &str,
-) -> Result<PowerDefinition, Box<dyn Error>> {
-    validate_base_module(module)?;
-    let effect = if name == "SuperweaponCashHack" && module_type == "CashHackSpecialPower" {
-        let upgrades = pairs(module, "UpgradeMoneyAmount")?
-            .into_iter()
-            .map(|(science, value)| Ok((science, value.parse()?)))
-            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-        PowerEffect::CashHack {
-            amount: unsigned(module, 1, "MoneyAmount")?,
-            upgrades,
-        }
-    } else if name == "SuperweaponEmergencyRepair" && module_type == "OCLSpecialPower" {
-        if text(module, 1, "CreateLocation")? != "CREATE_AT_LOCATION" {
-            return Err("Unsupported repair OCL placement".into());
-        }
-        let burst = repair_burst(files, text(module, 1, "OCL")?)?;
-        let upgrades = pairs(module, "UpgradeOCL")?
-            .into_iter()
-            .map(|(science, ocl)| Ok((science, repair_burst(files, &ocl)?)))
-            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-        PowerEffect::EmergencyRepair { burst, upgrades }
-    } else {
-        return Err(format!("Unsupported module {module_type} for {name}").into());
-    };
-    let template = definition(files, "SpecialPower", name)?;
-    let expected_enum = if name == "SuperweaponCashHack" {
-        "SPECIAL_CASH_HACK"
-    } else {
-        "SPECIAL_REPAIR_VEHICLES"
-    };
-    if text(&template.lines, 0, "Enum")? != expected_enum {
-        return Err("Selected power has an unsupported source enum".into());
-    }
-    if text(&template.lines, 0, "SharedSyncedTimer")? != "Yes" {
-        return Err("Only source shared-timer powers are translated".into());
-    }
-    Ok(PowerDefinition {
-        name: name.to_owned(),
-        required_science: text(&template.lines, 0, "RequiredScience")?.to_owned(),
-        reload_frames: duration_frames(
-            field(&template.lines, 0, "ReloadTime").ok_or("Power missing ReloadTime")?,
-        )?,
-        effect,
-    })
+    Ok(())
 }
 
 fn science_words(lines: &[ContentLine], key: &str) -> Vec<String> {
@@ -298,125 +225,9 @@ fn int_list(
     ])
 }
 
-fn pairs(lines: &[ContentLine], key: &str) -> Result<Vec<(String, String)>, Box<dyn Error>> {
-    let mut result = Vec::new();
-    for line in lines.iter().filter(|line| {
-        line.depth == Some(1) && line.tokens.first().is_some_and(|value| value == key)
-    }) {
-        let [_, science, value] = line.tokens.as_slice() else {
-            return Err(format!("Malformed {key}").into());
-        };
-        result.push((science.clone(), value.clone()));
-    }
-    Ok(result)
-}
-
-fn validate_base_module(lines: &[ContentLine]) -> Result<(), Box<dyn Error>> {
-    for key in [
-        "StartsPaused",
-        "StartsReady",
-        "UpdateModuleStartsAttack",
-        "ScriptedSpecialPowerOnly",
-    ] {
-        if field(lines, 1, key)
-            .is_some_and(|line| line.tokens.get(1).is_none_or(|value| value != "No"))
-        {
-            return Err(format!("Unsupported selected special-power flag {key}").into());
-        }
-    }
-    Ok(())
-}
-
-fn repair_burst(files: &[ContentFile], ocl: &str) -> Result<RepairBurst, Box<dyn Error>> {
-    let creation = definition(files, "ObjectCreationList", ocl)?;
-    let created = blocks(&creation.lines, 0, "CreateObject")?;
-    if created.len() != 1 || unsigned(created[0], 1, "Count")? != 1 {
-        return Err("Repair requires exactly one source marker".into());
-    }
-    let marker = definition(files, "Object", text(created[0], 1, "ObjectNames")?)?;
-    let auto_heal = behavior(marker, "AutoHealBehavior")?;
-    let deletion = behavior(marker, "DeletionUpdate")?;
-    if text(auto_heal, 1, "StartsActive")? != "Yes"
-        || text(auto_heal, 1, "KindOf")? != "VEHICLE"
-        || text(auto_heal, 1, "SingleBurst")? != "Yes"
-        || field(auto_heal, 1, "ForbiddenKindOf").is_some()
-        || unsigned(deletion, 1, "MinLifetime")? != 0
-        || unsigned(deletion, 1, "MaxLifetime")? != 0
-    {
-        return Err("Unsupported repair marker behavior".into());
-    }
-    // INI::scanReal uses atof; installed Radius contains the optional C float suffix.
-    let radius = finite_number(text(auto_heal, 1, "Radius")?.trim_end_matches('f'))?;
-    let delay_frames = duration_frames(
-        field(auto_heal, 1, "HealingDelay").ok_or("Repair missing healing delay")?,
-    )?;
-    Ok(RepairBurst {
-        amount: number(auto_heal, 1, "HealingAmount")?,
-        radius,
-        delay_frames,
-    })
-}
-
-fn behavior<'a>(object: &'a Declaration, name: &str) -> Result<&'a [ContentLine], Box<dyn Error>> {
-    let modules = blocks(&object.lines, 0, "Behavior")?;
-    let mut selected = modules
-        .into_iter()
-        .filter(|module| module[0].tokens.get(1).is_some_and(|kind| kind == name));
-    let module = selected
-        .next()
-        .ok_or_else(|| format!("Missing {name} module"))?;
-    if selected.next().is_some() {
-        return Err(format!("Ambiguous {name} module").into());
-    }
-    Ok(module)
-}
-
-fn same_power(left: &PowerDefinition, right: &PowerDefinition) -> bool {
-    if left.required_science != right.required_science || left.reload_frames != right.reload_frames
-    {
-        return false;
-    }
-    match (&left.effect, &right.effect) {
-        (
-            PowerEffect::CashHack {
-                amount: left,
-                upgrades: lu,
-            },
-            PowerEffect::CashHack {
-                amount: right,
-                upgrades: ru,
-            },
-        ) => left == right && lu == ru,
-        (
-            PowerEffect::EmergencyRepair {
-                burst: left,
-                upgrades: lu,
-            },
-            PowerEffect::EmergencyRepair {
-                burst: right,
-                upgrades: ru,
-            },
-        ) => {
-            same_burst(left, right)
-                && lu.len() == ru.len()
-                && lu
-                    .iter()
-                    .zip(ru)
-                    .all(|((ls, lb), (rs, rb))| ls == rs && same_burst(lb, rb))
-        }
-        _ => false,
-    }
-}
-
-const fn same_burst(left: &RepairBurst, right: &RepairBurst) -> bool {
-    left.amount.to_bits() == right.amount.to_bits()
-        && left.radius.to_bits() == right.radius.to_bits()
-        && left.delay_frames == right.delay_frames
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{int_list, repair_burst, science_words};
+    use super::{int_list, science_words};
     use generals_assets::{content, virtual_assets::Asset};
 
     #[test]
@@ -440,28 +251,5 @@ mod tests {
         })
         .unwrap();
         assert!(int_list(&file.declarations[0].lines, "SkillPointValue", [10; 4]).is_err());
-    }
-
-    #[test]
-    fn repair_loader_resolves_original_marker_but_rejects_changed_target_kind() {
-        let fixture = "ObjectCreationList REPAIR\nCreateObject\nObjectNames=MARKER\nCount=1\nEnd\nEnd\nObject MARKER\nBehavior=AutoHealBehavior Heal\nHealingAmount=100\nHealingDelay=1\nRadius=100.0f\nStartsActive=Yes\nKindOf=VEHICLE\nSingleBurst=Yes\nEnd\nBehavior=DeletionUpdate Delete\nMinLifetime=0\nMaxLifetime=0\nEnd\nEnd\n";
-        let scan = |bytes: Vec<u8>| {
-            content::scan(Asset {
-                path: "fixture.ini".into(),
-                origin: "fixture".into(),
-                bytes,
-            })
-            .unwrap()
-        };
-        let files = [scan(fixture.as_bytes().to_vec())];
-        let burst = repair_burst(&files, "REPAIR").unwrap();
-        assert_eq!(burst.delay_frames, 1);
-        assert!((burst.radius - 100.0).abs() < f32::EPSILON);
-        let files = [scan(
-            fixture
-                .replace("KindOf=VEHICLE", "KindOf=INFANTRY")
-                .into_bytes(),
-        )];
-        assert!(repair_burst(&files, "REPAIR").is_err());
     }
 }

@@ -3,6 +3,7 @@ use generals_sim::skirmish::{Faction, Skirmish};
 use std::error::Error;
 pub mod construction;
 pub mod pathfinder;
+mod repair;
 
 pub fn initial(game: &Skirmish) -> Result<(), Box<dyn Error>> {
     for player in &game.players {
@@ -113,24 +114,7 @@ pub fn exercise(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
     use generals_sim::skirmish::{Kind, PowerTarget};
 
     println!("Checking earned promotions through ordinary construction and combat commands");
-    let junk_repair = game.players[0].faction == Faction::Gla;
-    let (factory, mut army) = prepare_army(game, junk_repair)?;
-    let retreat: Vec<_> = army.iter().map(|&id| game.entities[id].position).collect();
-    for _ in 0..12 {
-        if game.players[0].rank >= 3 {
-            break;
-        }
-        if junk_repair {
-            wait_for_junk_repair(game, &army)?;
-        }
-        let target = target_supply_center(game)?;
-        destroy_target(game, &army, target)?;
-        retreat_and_replenish(game, factory, &mut army, &retreat, target)?;
-    }
-    require(
-        game.players[0].rank >= 3,
-        "ordinary combat did not earn rank-three sciences",
-    )?;
+    let (army, retreat) = earn_combat_rank(game, 3)?;
     let command_center = friendly_entity(game, Kind::CommandCenter, 0)?;
     game.purchase_science(0, "SCIENCE_EmergencyRepair1")?;
     let target = army[0];
@@ -158,15 +142,7 @@ pub fn exercise(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
         }
         Faction::Civilian => return Err("Neutral has no player progression".into()),
         Faction::Usa => {
-            let remaining =
-                game.power_cooldown_remaining(command_center, "SuperweaponEmergencyRepair");
-            game.purchase_science(0, "SCIENCE_EmergencyRepair2")?;
-            game.purchase_science(0, "SCIENCE_EmergencyRepair3")?;
-            require(
-                game.power_cooldown_remaining(command_center, "SuperweaponEmergencyRepair")
-                    == remaining,
-                "repair upgrades reset the existing recharge",
-            )?;
+            repair::verify_higher_ranks(game, command_center)?;
             pathfinder::verify(game, &army, &retreat)?;
         }
     }
@@ -179,6 +155,43 @@ pub fn exercise(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
         game.players[0].rank, game.tick
     );
     Ok(())
+}
+
+type RankArmy = ([usize; 4], [[f32; 2]; 4]);
+
+pub fn earn_combat_rank(game: &mut Skirmish, rank: u32) -> Result<RankArmy, Box<dyn Error>> {
+    let junk_repair = game.players[0].faction == Faction::Gla;
+    let (factory, mut army) = prepare_army(game, junk_repair)?;
+    let retreat = army.map(|id| game.entities[id].position);
+    // The original rank-five threshold is 5,000 and a China Supply Center
+    // awards 200. Allow the full ordinary combat run plus a small margin.
+    for _ in 0..if rank > 3 { 32 } else { 12 } {
+        if game.players[0].rank >= rank {
+            break;
+        }
+        if junk_repair {
+            wait_for_junk_repair(game, &army)?;
+        }
+        let target = target_supply_center(game)?;
+        let truck = (junk_repair && rank == 5)
+            .then(|| practice_supply_truck(game, target))
+            .transpose()?;
+        destroy_target(game, &army, target)?;
+        if let Some(truck) = truck.filter(|&id| game.entities[id].alive()) {
+            let attackers: Vec<_> = army
+                .iter()
+                .copied()
+                .filter(|&id| game.entities[id].complete())
+                .collect();
+            destroy_target(game, &attackers, truck)?;
+            println!("  Defeated practice Supply Center's surviving truck {truck} through combat");
+        }
+        retreat_and_replenish(game, factory, &mut army, &retreat, target)?;
+    }
+    if game.players[0].rank < rank {
+        return Err(format!("ordinary combat did not earn rank {rank}").into());
+    }
+    Ok((army, retreat))
 }
 
 fn prepare_army(
@@ -454,6 +467,27 @@ pub fn target_supply_center(game: &mut Skirmish) -> Result<usize, Box<dyn Error>
     Ok(target)
 }
 
+fn practice_supply_truck(game: &mut Skirmish, center: usize) -> Result<usize, Box<dyn Error>> {
+    // Source SpawnBehavior clears the producer link on death without
+    // killing this free-willed collector. Record it while the center is live.
+    let mut truck = None;
+    crate::skirmish_verification::advance_until(
+        game,
+        300,
+        "stock Supply Center spawning its independent Supply Truck",
+        |game| {
+            truck = game.entities.iter().position(|actor| {
+                actor.alive()
+                    && actor.owner == game.entities[center].owner
+                    && actor.producer() == Some(center)
+                    && game.catalog[actor.type_index].name == "ChinaVehicleSupplyTruck"
+            });
+            truck.is_some()
+        },
+    )?;
+    Ok(truck.expect("observed original Supply Truck"))
+}
+
 pub fn destroy_target(
     game: &mut Skirmish,
     army: &[usize],
@@ -561,6 +595,51 @@ fn verify_cash_hack(game: &mut Skirmish, command_center: usize) -> Result<(), Bo
 
 fn verify_cash_bounty(game: &mut Skirmish, army: &[usize]) -> Result<(), Box<dyn Error>> {
     game.purchase_science(0, "SCIENCE_CashBounty1")?;
+    verify_cash_bounty_payout(game, army, 5)?;
+    game.purchase_science(0, "SCIENCE_CashBounty2")?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn verify_cash_bounty_ranks(game: &mut Skirmish) -> Result<(), Box<dyn Error>> {
+    use crate::skirmish_verification::{construct, friendly_entity, require};
+    use generals_sim::skirmish::Kind;
+
+    require(
+        !game.can_purchase_science(0, "SCIENCE_CashBounty1"),
+        "Cash Bounty was purchasable before an earned rank three",
+    )?;
+    let (mut army, retreat) = earn_combat_rank(game, 3)?;
+    assert_eq!(game.players[0].rank, 3);
+    assert_eq!(game.players[0].science_points, 3);
+    let factory = friendly_entity(game, Kind::Factory, 0)?;
+    // The installed GLA Command Center declares one CashBountyPower per rank.
+    for (science, percent) in [
+        ("SCIENCE_CashBounty1", 5),
+        ("SCIENCE_CashBounty2", 10),
+        ("SCIENCE_CashBounty3", 20),
+    ] {
+        let points = game.players[0].science_points;
+        game.purchase_science(0, science)?;
+        assert_eq!(game.players[0].science_points, points - 1);
+        if percent == 20 {
+            let worker = friendly_entity(game, Kind::Builder, 0)?;
+            construct(game, worker, Kind::CommandCenter, 0)?;
+        }
+        wait_for_junk_repair(game, &army)?;
+        let target = verify_cash_bounty_payout(game, &army, percent)?;
+        if percent < 20 {
+            retreat_and_replenish(game, factory, &mut army, &retreat, target)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_cash_bounty_payout(
+    game: &mut Skirmish,
+    army: &[usize],
+    percent: u32,
+) -> Result<usize, Box<dyn Error>> {
     let target = target_supply_center(game)?;
     // Ordinary Stop orders isolate kill income from collection income for this assertion.
     for id in 0..game.entities.len() {
@@ -595,8 +674,9 @@ fn verify_cash_bounty(game: &mut Skirmish, army: &[usize]) -> Result<(), Box<dyn
                     .filter(|&id| game.entities[id].owner == 0)
             {
                 // Player::doBountyForKill prices the victim for its own owner.
-                // Integer costs at 5% give exact ceil(cost / 20) in this roster.
-                let amount = game.build_cost(actor.owner, actor.type_index).div_ceil(20);
+                // Stock costs and whole percentages allow exact integer rounding.
+                let amount =
+                    (game.build_cost(actor.owner, actor.type_index) * percent).div_ceil(100);
                 credited.push((
                     id,
                     game.catalog[actor.type_index].name.clone(),
@@ -624,12 +704,11 @@ fn verify_cash_bounty(game: &mut Skirmish, army: &[usize]) -> Result<(), Box<dyn
         || cash_delta != expected + deposits
         || earned_delta != expected + deposits
     {
-        return Err(format!("installed five-percent bounty mismatch: target={target} cash={cash_delta} earned={earned_delta} noncombat_deposits={deposits} expected_bounty={expected} credited={credited:?}; target_state={:?}", combat_details(game, &[target])).into());
+        return Err(format!("installed {percent}% bounty mismatch: target={target} cash={cash_delta} earned={earned_delta} noncombat_deposits={deposits} expected_bounty={expected} credited={credited:?}; target_state={:?}", combat_details(game, &[target])).into());
     }
     println!(
-        "  Paid combat bounty: {expected} across {} credited kills; {deposits} in separately observed deposits",
+        "  Paid {percent}% combat bounty: {expected} across {} credited kills; {deposits} in separately observed deposits",
         credited.len()
     );
-    game.purchase_science(0, "SCIENCE_CashBounty2")?;
-    Ok(())
+    Ok(target)
 }

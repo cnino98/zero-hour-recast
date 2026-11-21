@@ -15,6 +15,10 @@ impl Entity {
 }
 
 impl Damage {
+    pub(in crate::skirmish) const fn unmodified() -> Self {
+        Self { launch_flags: 0 }
+    }
+
     pub(in crate::skirmish) fn factor(
         &self,
         weapon: &WeaponRules,

@@ -61,6 +61,65 @@ pub(super) fn load(
 }
 
 impl Particles {
+    pub fn emp_sparks(
+        &mut self,
+        battle: &crate::playtest::Match,
+        index: usize,
+        animations: &mut crate::model_animation::Animations,
+    ) {
+        self.begin(battle.generation, battle.simulation.tick);
+        let sparks = &battle.simulation.presentation.emp_sparks[index];
+        let Some(template) = self
+            .templates
+            .iter()
+            .position(|entry| entry.name == sparks.name)
+        else {
+            return;
+        };
+        let geometry = battle.simulation.body_geometry(sparks.target);
+        let generation = battle.generation;
+        for _ in 0..sparks.count {
+            // CRC=0: native particle construction and offsets use client RNG,
+            // after the pulse's gameplay callbacks have completed.
+            let id = self.create(
+                template,
+                Pose::at([0.0; 3]),
+                None,
+                &mut super::random(animations, generation),
+            );
+            let mut offset = footprint(geometry, &mut super::random(animations, generation));
+            offset[2] = animations
+                .effect_integer(generation, [3, sparks.height.trunc().to_u32().unwrap_or(0)])
+                .to_f32()
+                .expect("EMP offset converts to Real");
+            let squared = offset.map(|component| component * component);
+            let length = ((squared[0] + squared[1]) + squared[2]).sqrt();
+            if length > sparks.height {
+                offset[2] = (offset[2] * (1.0 / length)) * sparks.height;
+            }
+            let emitter = self
+                .emitters
+                .iter_mut()
+                .find(|emitter| emitter.id == id)
+                .expect("created EMP spark");
+            emitter.object_attachment = Some((sparks.target, Pose::at(offset)));
+            emitter.remaining = sparks
+                .lifetime
+                .to_f32()
+                .expect("EMP lifetime converts to Real");
+            emitter.delay = animations
+                .effect_integer(generation, [1, 100])
+                .to_f32()
+                .expect("EMP delay converts to Real");
+        }
+    }
+
+    pub fn neutron_scorch(&mut self, battle: &crate::playtest::Match, index: usize) {
+        self.begin(battle.generation, battle.simulation.tick);
+        let scorch = &battle.simulation.presentation.neutron_scorches[index];
+        self.scorches.add(scorch.position, scorch.radius, 0);
+    }
+
     pub(crate) fn ability_feedback(
         &mut self,
         battle: &crate::playtest::Match,

@@ -54,14 +54,13 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         "Friendly infantry incorrectly accepts Disable Building",
     )?;
     mouse.hovered = Some(target);
-    require(
-        input::hacker::issue(battle, &mut mouse, target, false),
-        "Original targeted disable command was rejected",
-    )?;
+    let point = Vec2::from_array(battle.simulation.entities[target].position);
+    input::targeted_order(battle, &mut mouse, point, Some(target));
     require(
         matches!(mouse.pending_command, CommandMode::Normal),
         "Accepted disable command retained its target mode",
     )?;
+    input::commands::step(battle, &mut mouse);
     app.insert_resource(mouse).insert_resource(Check {
         actor,
         target,

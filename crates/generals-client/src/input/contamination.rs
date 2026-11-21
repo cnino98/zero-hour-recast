@@ -11,7 +11,7 @@ mod tests;
 pub fn issue(battle: &mut Match, mouse: &mut Mouse, slot: usize, point: [f32; 2]) {
     let response = VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         if slot == 2 {
             Voice::Attack
         } else if battle.selected.iter().any(|&id| {
@@ -52,7 +52,12 @@ pub fn mine_mode(battle: &mut Match, mouse: &mut Mouse, slot: usize) {
 }
 
 pub fn clear_mines(battle: &mut Match, mouse: &mut Mouse, slot: usize, point: [f32; 2]) {
-    let response = VoiceRequest::new(&battle.simulation, &battle.selected, Voice::Disarm, false);
+    let response = VoiceRequest::new(
+        &battle.simulation,
+        battle.command_drawables(),
+        Voice::Disarm,
+        false,
+    );
     let mut issued = false;
     for id in battle.command_message_members() {
         if locally_controlled(battle, id) {

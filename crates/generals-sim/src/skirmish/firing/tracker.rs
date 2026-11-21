@@ -57,7 +57,15 @@ impl FiringTracker {
 }
 
 impl Entity {
-    fn continuous_flag(&mut self, flag: u32, value: bool, unit: &UnitType, frame: u64, extra: u32) {
+    fn continuous_flag(
+        &mut self,
+        flag: u32,
+        value: bool,
+        unit: &UnitType,
+        frame: u64,
+        extra: u32,
+        random: &mut [u32; 6],
+    ) {
         let old = self.firing.continuous_flags;
         if value {
             self.firing.continuous_flags |= flag;
@@ -65,14 +73,20 @@ impl Entity {
             self.firing.continuous_flags &= !flag;
         }
         if self.firing.continuous_flags != old {
-            self.weapon_bonus_changed(unit, frame, extra);
+            self.weapon_bonus_changed(unit, frame, extra, random);
         }
     }
 
-    fn cool_firing_tracker(&mut self, unit: &UnitType, frame: u64, extra: u32) {
+    fn cool_firing_tracker(
+        &mut self,
+        unit: &UnitType,
+        frame: u64,
+        extra: u32,
+        random: &mut [u32; 6],
+    ) {
         self.firing.slow = self.firing.continuous_flags & (FAST | MEAN) != 0;
-        self.continuous_flag(FAST, false, unit, frame, extra);
-        self.continuous_flag(MEAN, false, unit, frame, extra);
+        self.continuous_flag(FAST, false, unit, frame, extra, random);
+        self.continuous_flag(MEAN, false, unit, frame, extra, random);
         if !self.firing.slow {
             self.firing.cooldown_at = 0;
         }
@@ -130,7 +144,7 @@ impl Skirmish {
         let painted = target.is_some_and(|target| self.entities[target].painted());
         let actor = &mut self.entities[id];
         let unit = &self.catalog[actor.type_index];
-        actor.update_painted_target(unit, painted, self.tick, extra);
+        actor.update_painted_target(unit, painted, self.tick, extra, &mut self.random);
         actor.firing.record_target(target, now);
         let weapon = unit.weapon_template(weapon_index).expect("fired weapon");
         if weapon.auto_reload_idle_frames != 0 {
@@ -174,7 +188,7 @@ impl Skirmish {
         if (flags & MEAN != 0 && shots < thresholds[0])
             || (flags & MEAN == 0 && flags & FAST != 0 && shots < thresholds[1])
         {
-            actor.cool_firing_tracker(unit, self.tick, extra);
+            actor.cool_firing_tracker(unit, self.tick, extra, &mut self.random);
             return;
         }
         let faster = if flags & MEAN != 0 {
@@ -195,11 +209,11 @@ impl Skirmish {
         let actor = &mut self.entities[id];
         let unit = &self.catalog[actor.type_index];
         if flags & MEAN != 0 {
-            actor.continuous_flag(FAST, true, unit, self.tick, extra);
-            actor.continuous_flag(MEAN, false, unit, self.tick, extra);
+            actor.continuous_flag(FAST, true, unit, self.tick, extra, &mut self.random);
+            actor.continuous_flag(MEAN, false, unit, self.tick, extra, &mut self.random);
         } else {
-            actor.continuous_flag(MEAN, true, unit, self.tick, extra);
-            actor.continuous_flag(FAST, false, unit, self.tick, extra);
+            actor.continuous_flag(MEAN, true, unit, self.tick, extra, &mut self.random);
+            actor.continuous_flag(FAST, false, unit, self.tick, extra, &mut self.random);
         }
         actor.firing.slow = false;
     }
@@ -247,7 +261,12 @@ impl Skirmish {
         let actor = &mut self.entities[id];
         if actor.firing.cooldown_at != 0 && now > actor.firing.cooldown_at {
             actor.firing.cooldown_at = now.wrapping_add(30);
-            actor.cool_firing_tracker(&self.catalog[actor.type_index], self.tick, extra);
+            actor.cool_firing_tracker(
+                &self.catalog[actor.type_index],
+                self.tick,
+                extra,
+                &mut self.random,
+            );
             // This return takes precedence even if another timer is due sooner.
             return 30;
         }

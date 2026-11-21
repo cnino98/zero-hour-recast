@@ -105,6 +105,23 @@ pub(super) fn names(catalog: &[UnitType]) -> impl Iterator<Item = &str> {
                     rules.module_initiate_sound.as_str(),
                 ]
             }))
+            .chain(
+                unit.behavior
+                    .particle_uplinks
+                    .iter()
+                    .flat_map(|rules| rules.sounds.iter().map(String::as_str)),
+            )
+            .chain(
+                unit.behavior
+                    .nuclear_launcher
+                    .iter()
+                    .map(|rules| rules.open_sound.as_str()),
+            )
+            .chain(
+                unit.deliver_payload
+                    .iter()
+                    .map(|rules| rules.dive_sound.as_str()),
+            )
     })
 }
 
@@ -116,6 +133,7 @@ impl SourceAudio {
         }
         let instance = match event.action {
             Action::PlayLoop(index) | Action::StopLoop(index) => Some(index),
+            Action::PlayOrbitalLoop(ordinal) => Some(ordinal * 4 + 3),
             _ => None,
         };
         let key = (event.object, event.name.clone(), instance);
@@ -151,6 +169,11 @@ impl SourceAudio {
         let _ = self.queue(&event.name, bound, Some(point), None, false);
         if hidden {
             self.requests.truncate(count);
+        }
+        if let Action::PlayOrbitalLoop(ordinal) = event.action
+            && let Some(request) = self.requests.get_mut(count)
+        {
+            request.orbital = Some(ordinal);
         }
         if bound.is_some()
             && let Some(looping) = self

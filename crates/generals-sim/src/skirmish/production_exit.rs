@@ -156,6 +156,28 @@ impl Skirmish {
         angle: f32,
         computer: bool,
     ) -> bool {
+        self.exit_area_failure(type_index, position, angle, computer, None)
+            .is_none()
+    }
+
+    pub(super) fn exit_area_failure_ignoring_stealth(
+        &self,
+        type_index: usize,
+        position: [f32; 2],
+        angle: f32,
+        caster: usize,
+    ) -> Option<super::PlacementFailure> {
+        self.exit_area_failure(type_index, position, angle, false, Some(caster))
+    }
+
+    fn exit_area_failure(
+        &self,
+        type_index: usize,
+        position: [f32; 2],
+        angle: f32,
+        computer: bool,
+        ignore_stealth_for: Option<usize>,
+    ) -> Option<super::PlacementFailure> {
         // GeneralsMD/.../BuildAssistant.cpp isLocationClearOfObjects, exit-area
         // checks, including the original computer player's minimum extra bib.
         let unit = &self.catalog[type_index];
@@ -169,45 +191,79 @@ impl Skirmish {
         let bounds = bib_bounds(&shape, extra, extra);
         let exit = exit_area(&shape, exit_width);
         let range = 2.0 * (shape.major + shape.minor);
-        let clear = |other: &Footprint, other_exit: f32, other_bib: f32| {
-            if (distance_squared(shape.position, other.position).sqrt() - bounding_radius(other))
+        let obstruction =
+            |other: &Footprint, other_exit: f32, other_bib: f32, shrouded: bool, immobile: bool| {
+                if (distance_squared(shape.position, other.position).sqrt()
+                    - bounding_radius(other))
                 .max(0.0)
-                >= range
-            {
-                return true;
-            }
-            // Preserve the pinned source's box minor expansion by myExtraWidth.
-            let other_bounds = bib_bounds(other, other_bib, extra);
-            let other_exit = exit_area(other, other_exit);
-            !footprints_overlap(&bounds, &other_bounds)
-                && exit
+                    >= range
+                {
+                    return None;
+                }
+                // Preserve the pinned source's box minor expansion by myExtraWidth.
+                let other_bounds = bib_bounds(other, other_bib, extra);
+                let other_exit = exit_area(other, other_exit);
+                if footprints_overlap(&bounds, &other_bounds) {
+                    return Some(super::PlacementFailure::ObjectsInTheWay);
+                }
+                if !immobile {
+                    return None;
+                }
+                if exit
                     .as_ref()
-                    .is_none_or(|exit| !footprints_overlap(exit, &other_bounds))
-                && other_exit
-                    .as_ref()
-                    .is_none_or(|exit| !footprints_overlap(exit, &bounds))
-                && exit
-                    .as_ref()
-                    .zip(other_exit.as_ref())
-                    .is_none_or(|(left, right)| !footprints_overlap(left, right))
-        };
-        self.entities
+                    .is_some_and(|exit| footprints_overlap(exit, &other_bounds))
+                    || other_exit
+                        .as_ref()
+                        .is_some_and(|exit| footprints_overlap(exit, &bounds))
+                    || exit
+                        .as_ref()
+                        .zip(other_exit.as_ref())
+                        .is_some_and(|(left, right)| footprints_overlap(left, right))
+                {
+                    return Some(if shrouded {
+                        super::PlacementFailure::Shroud
+                    } else {
+                        super::PlacementFailure::ObjectsInTheWay
+                    });
+                }
+                None
+            };
+        for (id, entity) in self
+            .entities
             .iter()
-            .filter(|entity| entity.alive())
-            .all(|entity| {
-                let other = &self.catalog[entity.type_index];
-                !other.kind_of.iter().any(|kind| kind == "STRUCTURE")
-                    || clear(
-                        &other.footprint(entity.position, entity.facing),
-                        other.factory_bib.exit_width,
-                        other.factory_bib.extra_width,
-                    )
-            })
-            && self
-                .layout
-                .obstacles
-                .iter()
-                .all(|other| clear(other, 0.0, 0.0))
+            .enumerate()
+            .filter(|(_, entity)| entity.alive())
+        {
+            let other = &self.catalog[entity.type_index];
+            if !other.kind_of.iter().any(|kind| kind == "STRUCTURE")
+                || ignore_stealth_for.is_some_and(|caster| {
+                    self.ignores_stealth_for_placement(caster, id)
+                        || self.removable_for_construction(id)
+                })
+            {
+                continue;
+            }
+            let shrouded = ignore_stealth_for.is_some_and(|caster| {
+                matches!(
+                    self.visibility_status(self.entities[caster].owner, id),
+                    super::visibility::Status::Fogged | super::visibility::Status::Shrouded
+                )
+            });
+            let failure = obstruction(
+                &other.footprint(entity.position, entity.facing),
+                other.factory_bib.exit_width,
+                other.factory_bib.extra_width,
+                shrouded,
+                other.kind_of.iter().any(|kind| kind == "IMMOBILE"),
+            );
+            if failure.is_some() {
+                return failure;
+            }
+        }
+        self.layout
+            .obstacles
+            .iter()
+            .find_map(|other| obstruction(other, 0.0, 0.0, false, true))
     }
 
     pub(super) fn spawn_produced_unit(

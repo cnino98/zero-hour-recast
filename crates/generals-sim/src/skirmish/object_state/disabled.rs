@@ -5,10 +5,122 @@ use crate::skirmish::{
     object_sounds::Action,
 };
 
+const DEFAULT: u32 = 1;
 const HACKED: u32 = 1 << 1;
+const EMP: u32 = 1 << 2;
 const POWER_LOSS: u32 = (1 << 1) | (1 << 2) | (1 << 6) | (1 << 10);
 
 impl Skirmish {
+    pub(in crate::skirmish) fn set_emp_disabled_until(&mut self, id: usize, frame: u32) {
+        self.set_timed_disabled_until(id, frame, EMP);
+    }
+
+    pub(in crate::skirmish) fn set_default_disabled_until(&mut self, id: usize, frame: u32) {
+        self.set_timed_disabled_until(id, frame, DEFAULT);
+    }
+
+    fn set_timed_disabled_until(&mut self, id: usize, frame: u32, flag: u32) {
+        let old_mask = self.object_disabled_mask(id);
+        if flag == EMP && old_mask & POWER_LOSS == 0 {
+            self.hacked_audio(id, false);
+        }
+        if self.timed_disabled_deadline(id, flag) != frame {
+            if old_mask & flag == 0 {
+                self.native_timed_power_change(id, flag, true);
+            }
+            self.write_timed_disabled_deadline(id, flag, frame);
+            let active = frame > self.update_frame();
+            let actor = &mut self.entities[id];
+            actor.disabled_status = (actor.disabled_status & !flag) | (u32::from(active) * flag);
+            if self.object_disabled(id) && self.entities[id].drawable.present {
+                self.entities[id].drawable.tint_status |= 1;
+            }
+            self.remember_disabled_observer_mask(id);
+            if let Some(rider) = self.native_disabled_rider(id) {
+                self.set_timed_disabled_until(rider, frame, flag);
+            }
+            if self.uses_spawn_weapons(id) {
+                for child in self.spawned_children(id).to_vec() {
+                    if self.entities[child].exists() {
+                        self.set_timed_disabled_until(child, frame, flag);
+                    }
+                }
+            }
+        }
+        if old_mask == 0 {
+            self.native_disabled_edge(id, true, false);
+        }
+        self.remember_disabled_observer_mask(id);
+    }
+
+    fn clear_timed_disabled(&mut self, id: usize, flag: u32) {
+        let old_mask = self.object_disabled_mask(id);
+        if old_mask & flag == 0 {
+            return;
+        }
+        if flag == EMP && old_mask & (POWER_LOSS & !EMP) == 0 {
+            self.hacked_audio(id, true);
+        }
+        self.native_timed_power_change(id, flag, false);
+        if self.timed_disabled_deadline(id, flag) == u32::MAX
+            && let Some(rider) = self.native_disabled_rider(id)
+        {
+            self.clear_timed_disabled(rider, flag);
+        }
+        if self.uses_spawn_weapons(id) {
+            for child in self.spawned_children(id).to_vec() {
+                if self.entities[child].exists() {
+                    self.clear_timed_disabled(child, flag);
+                }
+            }
+        }
+        self.write_timed_disabled_deadline(id, flag, 0);
+        self.entities[id].disabled_status &= !flag;
+        self.clear_native_disabled_tint(id);
+        self.remember_disabled_observer_mask(id);
+        if self.object_disabled_mask(id) == 0 {
+            self.native_disabled_edge(id, false, true);
+        }
+        self.remember_disabled_observer_mask(id);
+    }
+
+    pub(in crate::skirmish) fn expire_emp(&mut self) {
+        self.expire_timed_disabled(EMP);
+    }
+
+    pub(in crate::skirmish) fn expire_default_disabled(&mut self) {
+        self.expire_timed_disabled(DEFAULT);
+    }
+
+    fn expire_timed_disabled(&mut self, flag: u32) {
+        let now = self.update_frame();
+        for id in 0..self.entities.len() {
+            if self.entities[id].disabled_status & flag != 0
+                && now >= self.timed_disabled_deadline(id, flag)
+            {
+                self.clear_timed_disabled(id, flag);
+            }
+        }
+    }
+
+    fn timed_disabled_deadline(&self, id: usize, flag: u32) -> u32 {
+        let actor = &self.entities[id];
+        if flag == EMP {
+            actor.emp_until
+        } else {
+            actor.default_disabled_until
+        }
+    }
+
+    fn write_timed_disabled_deadline(&mut self, id: usize, flag: u32, frame: u32) {
+        let actor = &mut self.entities[id];
+        if flag == EMP {
+            actor.emp_until = frame;
+        } else {
+            actor.default_disabled_until = frame;
+        }
+    }
+
     /// Native immutable `MiscAudio` bindings, installed before Object construction.
     pub fn configure_disabled_sounds(&mut self, sounds: [String; 4]) {
         self.disabled_sounds = sounds;

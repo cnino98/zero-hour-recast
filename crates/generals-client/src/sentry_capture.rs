@@ -10,9 +10,10 @@ use crate::{
     playtest_view::Capture,
     sentry_verification,
     skirmish_verification::require,
-    source_audio::FiringAudioInspection,
+    source_audio::{FiringAudioInspection, Voice},
 };
 use bevy::{ecs::system::SystemParam, prelude::*};
+use generals_sim::skirmish::Order;
 use std::error::Error;
 use view::View;
 
@@ -22,6 +23,9 @@ struct Check {
     stage: Stage,
     began: Option<f64>,
     research: u64,
+    research_balance: Option<u32>,
+    command_issued: Option<(u64, Voice)>,
+    command_dispatched: Option<bool>,
     transitions: [Option<u64>; 4],
     next: [f32; 2],
     moved: bool,
@@ -62,6 +66,9 @@ pub fn prepare(app: &mut App, battle: &mut Match) -> Result<(), Box<dyn Error>> 
         stage: Stage::Cloak,
         began: None,
         research: 0,
+        research_balance: None,
+        command_issued: None,
+        command_dispatched: None,
         transitions: [None; 4],
         next: [0.0; 2],
         moved: false,
@@ -105,10 +112,24 @@ fn audio(mut check: ResMut<Check>, audio: FiringAudioInspection) {
     }
 }
 
-fn record(mut check: ResMut<Check>, battle: Res<Match>) {
+fn record(mut check: ResMut<Check>, battle: Res<Match>, mouse: Res<Mouse>) {
+    let mouse = mouse.into_inner();
     let battle = battle.into_inner();
     let game = &battle.simulation;
     let id = check.setup.drone;
+    if let Some((issued, voice)) = check.command_issued
+        && game.tick > issued
+    {
+        check.command_dispatched = Some(
+            !matches!(voice, Voice::Guard)
+                || (matches!(game.entities[id].ai.order, Order::Guard(_))
+                    && mouse
+                        .voices
+                        .last()
+                        .is_some_and(|request| matches!(request.voice(), Voice::Guard))),
+        );
+        check.command_issued = None;
+    }
     let condition = game.entities[id].deployment_condition();
     let transition = match (&check.stage, condition) {
         (Stage::Deploy, Some("UNPACKING")) => Some(0),
@@ -159,6 +180,21 @@ fn inspect(mut check: ResMut<Check>, view: View, mut control: Control) {
         "native Sentry acceptance exceeded 180 seconds",
     )
     .and_then(|()| {
+        let game = &control.battle.simulation;
+        if game.tick > check.research
+            && let Some(balance) = check.research_balance.take()
+        {
+            let player = &game.players[0];
+            require(
+                player.cash.wrapping_sub(player.statistics.money_earned)
+                    == balance.wrapping_sub(1000),
+                "original Sentry Gun button did not pay its research cost",
+            )?;
+        }
+        require(
+            check.command_dispatched != Some(false),
+            "Sentry original world command failed to issue its order and response",
+        )?;
         if control.capture.ready_for_scenario() {
             view.progress(&mut check, &mut control)?;
         }

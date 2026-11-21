@@ -36,6 +36,7 @@ fn original_contamination_button_targets_both_tractors_and_keeps_mixed_commands_
     let origin = battle.simulation.entities[setup.actor].position;
     let point = [origin[0] + 4.0, origin[1]];
     super::super::targeted_order(&mut battle, &mut mouse, point.into(), None);
+    crate::input::commands::step(&mut battle, &mut mouse);
     for id in [setup.actor, second] {
         let actor = &battle.simulation.entities[id];
         assert!(matches!(actor.ai.order, Order::FireAt { position, weapon }

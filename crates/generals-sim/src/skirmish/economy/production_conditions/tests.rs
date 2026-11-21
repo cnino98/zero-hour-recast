@@ -12,6 +12,8 @@ fn unit_and_research_share_the_flag_until_the_last_removal_is_delivered() {
         cost: 100,
         frames: 2,
         player: true,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     game.train(0, 1).unwrap();
     game.queue_upgrade(0, 0).unwrap();
@@ -38,6 +40,8 @@ fn cancellation_changes_only_the_final_queue_flag_on_the_next_update() {
         cost: 100,
         frames: 20,
         player: true,
+        sciences: Vec::new(),
+        ignores_underpowered: false,
     });
     game.train(0, 1).unwrap();
     game.queue_upgrade(0, 0).unwrap();

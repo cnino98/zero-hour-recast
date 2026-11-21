@@ -3,6 +3,41 @@ use super::{Particles, Pose, random};
 use crate::model_animation::Animations;
 
 impl Particles {
+    pub fn particle_uplink_emitter(
+        &mut self,
+        name: &str,
+        matrix: [[f32; 4]; 3],
+        animations: &mut Animations,
+        generation: u32,
+        frame: u64,
+    ) -> Option<u64> {
+        self.begin(generation, frame);
+        let template = self
+            .templates
+            .iter()
+            .position(|template| template.name == name)?;
+        let pose = Pose {
+            position: matrix.map(|row| row[3]),
+            axes: std::array::from_fn(|column| std::array::from_fn(|row| matrix[row][column])),
+        };
+        Some(self.create(template, pose, None, &mut random(animations, generation)))
+    }
+
+    pub fn particle_uplink_scorch(
+        &mut self,
+        battle: &crate::playtest::Match,
+        index: usize,
+        animations: &mut Animations,
+    ) {
+        self.begin(battle.generation, battle.simulation.tick);
+        let scorch = &battle.simulation.presentation.particle_uplink_scorches[index];
+        self.scorches.add(
+            scorch.position,
+            scorch.radius,
+            animations.effect_scorch(battle.generation),
+        );
+    }
+
     pub fn optional_laser_emitters(
         &mut self,
         names: &[String; 2],

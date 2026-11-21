@@ -485,6 +485,7 @@ impl Capture {
 
     pub const fn wait_for_scenario(&mut self) {
         self.stage = CaptureStage::Waiting;
+        self.started_at = None;
     }
 
     pub const fn finish_scenario(&mut self) {
@@ -1573,6 +1574,55 @@ mod capture_tests {
         assert!(capture.request_ready(&mut frame));
         assert!(matches!(capture.stage, CaptureStage::Pending));
         assert_eq!(capture.frames, 0);
+    }
+
+    #[test]
+    fn scenario_wait_preserves_the_final_readback_window_and_its_timeout() {
+        use bevy::prelude::*;
+        use std::{
+            sync::{Arc, Mutex},
+            time::Duration,
+        };
+
+        let mut capture = capture();
+        capture.pipelines_ready = true;
+        capture.wait_for_scenario();
+        let mut app = App::new();
+        app.add_message::<AppExit>()
+            .insert_resource(capture)
+            .insert_resource(Time::<Real>::default())
+            .insert_resource(super::CaptureSurface(Arc::new(Mutex::new(surface()))))
+            .add_systems(Update, super::capture);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_secs(100));
+        app.update();
+        assert!(app.world().resource::<Capture>().ready_for_scenario());
+        assert!(app.world().resource::<Capture>().started_at.is_none());
+        app.world_mut().resource_mut::<Capture>().finish_scenario();
+        app.update();
+        let capture = app.world().resource::<Capture>();
+        assert!(matches!(capture.stage, CaptureStage::Verified));
+        assert_eq!(
+            capture.started_at.map(f32::to_bits),
+            Some(100.0_f32.to_bits())
+        );
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_secs(59));
+        app.update();
+        assert!(matches!(
+            app.world().resource::<Capture>().stage,
+            CaptureStage::Verified
+        ));
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_secs(1));
+        app.update();
+        assert!(matches!(
+            app.world().resource::<Capture>().stage,
+            CaptureStage::Disabled
+        ));
     }
 
     #[test]

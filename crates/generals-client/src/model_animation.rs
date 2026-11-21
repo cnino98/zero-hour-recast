@@ -185,10 +185,9 @@ impl Animations {
             let Some(bone) = muzzle::fire_bone(&state.fields, model, slot, barrel) else {
                 continue;
             };
-            let clip = state
-                .motions
-                .get(player.choice)
-                .and_then(|motion| self.clips.get(&motion.name));
+            let clip = player
+                .animation(draw)
+                .and_then(|(_, motion)| self.clips.get(&motion.name));
             let mut controls = turret::controls(
                 &state.fields,
                 unit.ai.turret.angle,
@@ -223,10 +222,9 @@ impl Animations {
             let Some(model) = state.model.and_then(|index| self.models.get(index)) else {
                 continue;
             };
-            let clip = state
-                .motions
-                .get(player.choice)
-                .and_then(|motion| self.clips.get(&motion.name));
+            let clip = player
+                .animation(draw)
+                .and_then(|(_, motion)| self.clips.get(&motion.name));
             let mut controls = turret::controls(
                 &state.fields,
                 unit.ai.turret.angle,
@@ -476,7 +474,6 @@ impl Animations {
                 playback::set_duration(player, draw, &self.clips, frames, completion);
             }
         }
-        let state = &draw.states[player.state];
         let disabled = (unit.hacked() || unit.paralyzed() || unit.subdued())
             && !self
                 .animate_when_disabled
@@ -492,7 +489,7 @@ impl Animations {
             player.last_sync_ms = time.milliseconds;
             player.position = unit.position;
         } else {
-            playback::update(player, state, &self.clips, unit.position, time);
+            playback::update(player, draw, &self.clips, unit.position, time);
         }
     }
 
@@ -578,10 +575,9 @@ impl Animations {
         if let Some(rules) = &draw.truck_wheels {
             player.truck_wheels.controls(rules, model, &mut controls);
         }
-        let clip = state
-            .motions
-            .get(player.choice)
-            .and_then(|motion| self.clips.get(&motion.name));
+        let clip = player
+            .animation(draw)
+            .and_then(|(_, motion)| self.clips.get(&motion.name));
         match model.controlled_pose_and_bones(clip, player.frame, &controls) {
             Ok((mut pose, bones)) => {
                 player.current_bones = bones;
@@ -673,7 +669,7 @@ impl Animations {
 }
 
 // One previous pure geometry input, never a cache indexed by every float frame.
-type PoseSample = (usize, Option<usize>, usize, u32, [u32; 4]);
+type PoseSample = (usize, Option<usize>, (usize, usize), u32, [u32; 4]);
 
 pub struct Player {
     drawn_disguise: Option<(usize, u32)>,
@@ -682,6 +678,8 @@ pub struct Player {
     pending: Option<usize>,
     model: Option<usize>,
     choice: usize,
+    // A missing HAnim changes the condition selection without changing playback.
+    retained_animation: Option<(usize, usize)>,
     frame: f32,
     direction: f32,
     speed: f32,
@@ -754,11 +752,17 @@ impl Player {
             .map_or(original, |(template, _)| template)
     }
 
+    fn animation<'a>(&self, draw: &'a Draw) -> Option<(&'a State, &'a Motion)> {
+        let (state, choice) = self.retained_animation.unwrap_or((self.state, self.choice));
+        let state = draw.states.get(state)?;
+        Some((state, state.model.and_then(|_| state.motions.get(choice))?))
+    }
+
     fn sample(&self, state: &State, turret: [f32; 4]) -> PoseSample {
         (
             self.state,
             state.model,
-            self.choice,
+            self.retained_animation.unwrap_or((self.state, self.choice)),
             self.frame.to_bits(),
             turret.map(f32::to_bits),
         )
@@ -772,6 +776,7 @@ impl Player {
             pending: None,
             model: None,
             choice: 0,
+            retained_animation: None,
             frame: 0.0,
             direction: 1.0,
             speed: 1.0,
@@ -814,6 +819,7 @@ pub struct DrawInspection {
     pub clip: String,
     pub mode: String,
     pub frame: f32,
+    pub complete: bool,
     /// Bounds of visible posed geometry in the renderer's local coordinates.
     pub bounds: Option<[[f32; 3]; 2]>,
 }
@@ -826,16 +832,16 @@ impl Animations {
     ) -> Result<Vec<DrawInspection>, generals_assets::w3d::Error> {
         let mut result = Vec::new();
         for (module, player) in players.0.iter().enumerate() {
-            let Some(state) = self.draws[player.draw_type(type_index)]
-                .get(module)
-                .and_then(|draw| draw.states.get(player.state))
-            else {
+            let Some(draw) = self.draws[player.draw_type(type_index)].get(module) else {
+                continue;
+            };
+            let Some(state) = draw.states.get(player.state) else {
                 continue;
             };
             let Some(model) = state.model else {
                 continue;
             };
-            let Some(motion) = state.motions.get(player.choice) else {
+            let Some((animation_state, motion)) = player.animation(draw) else {
                 continue;
             };
             let Some(clip) = self.clips.get(&motion.name) else {
@@ -859,8 +865,9 @@ impl Animations {
                 module,
                 model: state.render_model.unwrap_or(model),
                 clip: motion.name.clone(),
-                mode: state.mode.clone(),
+                mode: animation_state.mode.clone(),
                 frame: player.frame,
+                complete: playback::complete(player, draw, &self.clips),
                 bounds,
             });
         }
@@ -1392,13 +1399,13 @@ pub fn update_world(
         } else {
             playback::update(
                 &mut visual.player,
-                state,
+                draw,
                 clips,
                 [0.0; 2],
                 &clock.time(battle.simulation.tick),
             );
         }
-        let pose = world_pose(&mut visual.player, state, models, clips);
+        let pose = world_pose(&mut visual.player, draw, models, clips);
         let frame = Frame {
             supply: None,
             meshes: pose,
@@ -1423,19 +1430,19 @@ pub fn update_world(
 
 fn world_pose(
     player: &mut Player,
-    state: &State,
+    draw: &Draw,
     models: &[Model],
     clips: &BTreeMap<String, Clip>,
 ) -> Option<Vec<MeshPose>> {
+    let state = &draw.states[player.state];
     let sample = player.sample(state, [0.0; 4]);
     if player.sampled == Some(sample) && player.model == state.model {
         return None;
     }
     let model = state.model?;
-    let clip = state
-        .motions
-        .get(player.choice)
-        .and_then(|motion| clips.get(&motion.name));
+    let clip = player
+        .animation(draw)
+        .and_then(|(_, motion)| clips.get(&motion.name));
     match models[model].controlled_pose(clip, player.frame, &[]) {
         Ok(pose) => {
             player.sampled = Some(sample);

@@ -50,20 +50,28 @@ pub fn prepare(game: &mut Skirmish) -> Result<Setup, Box<dyn Error>> {
     let shots = move_near(game, builder, point(center, direction, 60.0))?;
     let station = point(center, direction, 100.0);
     game.move_to(parent, station)?;
+    // Detector feedback precedes StealthUpdate's detected status. Remember the
+    // real Scout callback until that target becomes visible and attackable.
+    let mut revealed_by_scout = false;
     advance_until(
         game,
         18_000,
         "paid Scout revealing the original Demo Trap",
         |game| {
-            game.presentation.stealth_events.iter().any(|event| {
+            revealed_by_scout |= game.presentation.stealth_events.iter().any(|event| {
                 matches!(event,
             generals_sim::skirmish::stealth::Event::Detection { detector, target }
                 if *detector == scout && *target == trap)
-            }) && game.logically_visible(0, trap)
+            });
+            revealed_by_scout
+                && game.entities[trap].alive()
+                && game.entities[trap].detected()
+                && game.logically_visible(0, trap)
+                && game.weapon_can_target(builder, trap)
         },
     )?;
     game.stop(parent)?;
-    // Return on the real detector callback. The native capture pauses here
+    // Return on the real Scout revelation. The native capture pauses here
     // and issues its context order before advancing the simulation again.
     require(
         game.entities[trap].health.to_bits() == game.entities[trap].max_health.to_bits()

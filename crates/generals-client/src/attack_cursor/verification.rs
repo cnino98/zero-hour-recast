@@ -22,6 +22,7 @@ pub struct TargetCapture {
 
 enum Phase {
     Target,
+    Pending { frame: u64 },
     Empty,
     Return,
     Done,
@@ -46,7 +47,8 @@ pub fn register(app: &mut App, scenario: TargetCapture) {
             Update,
             (position, move_pointer).chain().before(input::pointer),
         )
-        .add_systems(Update, inspect.after(super::update));
+        .add_systems(Update, inspect.after(super::update))
+        .add_systems(FixedUpdate, record.after(crate::particles::step));
 }
 
 fn position(
@@ -85,6 +87,9 @@ fn move_pointer(
     mut clock: ResMut<Time<Virtual>>,
 ) {
     let scenario = scenario.into_inner();
+    if matches!(scenario.phase, Phase::Pending { .. }) {
+        return;
+    }
     if let Some(point) = scenario.point {
         // This exercises Bevy's window pointer state and the ordinary pick path;
         // it does not assert delivery of a physical macOS mouse event.
@@ -145,9 +150,10 @@ fn inspect(
     mut mouse: ResMut<Mouse>,
     pointer: Single<&Node, With<AttackPointer>>,
     window: Single<&CursorOptions, With<PrimaryWindow>>,
-    mut capture: ResMut<Capture>,
+    capture_control: (ResMut<Capture>, ResMut<Time<Virtual>>),
     mut exit: MessageWriter<AppExit>,
 ) {
+    let (mut capture, mut clock) = capture_control;
     let pointer = pointer.into_inner();
     let window = window.into_inner();
     let visible = pointer.display != Display::None;
@@ -160,15 +166,15 @@ fn inspect(
                 Some(PickTarget::Unit(target)),
                 &mut mouse,
             );
-            let commanded = battle.selected.iter().any(|id| {
-                matches!(battle.simulation.entities[*id].ai.order, Order::Attack(victim) if victim == target)
-            });
-            if !issued || !commanded {
-                error!("Visible target cursor did not dispatch the ordinary attack command");
+            if !issued {
+                error!("Visible target cursor did not admit the ordinary attack command");
                 exit.write(AppExit::error());
                 return;
             }
-            scenario.phase = Phase::Empty;
+            scenario.phase = Phase::Pending {
+                frame: battle.simulation.tick,
+            };
+            clock.unpause();
         }
         Phase::Empty if mouse.hovered.is_none() && !visible && window.visible => {
             scenario.phase = Phase::Return;
@@ -181,5 +187,33 @@ fn inspect(
             capture.finish_scenario();
         }
         _ => {}
+    }
+}
+
+fn record(
+    mut scenario: ResMut<TargetCapture>,
+    battle: Res<Match>,
+    mut clock: ResMut<Time<Virtual>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Phase::Pending { frame } = scenario.phase else {
+        return;
+    };
+    let battle = battle.into_inner();
+    if battle.simulation.tick <= frame {
+        return;
+    }
+    let target = scenario.target;
+    let commanded = battle.selected.iter().any(|id| {
+        matches!(battle.simulation.entities[*id].ai.order,
+            Order::Attack(victim) if victim == target)
+    });
+    clock.pause();
+    if commanded {
+        scenario.phase = Phase::Empty;
+    } else {
+        scenario.phase = Phase::Done;
+        error!("Visible target cursor did not dispatch the ordinary attack command");
+        exit.write(AppExit::error());
     }
 }

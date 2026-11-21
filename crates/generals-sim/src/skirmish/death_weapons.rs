@@ -177,7 +177,14 @@ impl Skirmish {
             .expect("temporary Weapon template");
         let reload_rate = self.entities[id].weapon_rate_for(weapon, self.passenger_bonus_flags(id));
         if let Some((status, deadline)) = instance
-            .finish_owned_shot(weapon, now, shot_rate, reload_rate, shared)
+            .finish_owned_shot(
+                weapon,
+                now,
+                shot_rate,
+                reload_rate,
+                shared,
+                &mut self.random,
+            )
             .shared
         {
             self.share_owned_weapon_deadline(id, status, deadline);

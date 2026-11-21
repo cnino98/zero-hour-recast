@@ -257,6 +257,7 @@ pub enum FeedbackEffect {
     CaptureFlash,
     BuildingStolen,
     CashStolen(u32),
+    PowerCashStolen(u32),
     DisableParticles {
         name: String,
         lifetime: u32,
@@ -276,7 +277,12 @@ pub struct FeedbackEvent {
 }
 
 impl Skirmish {
-    fn native_ability_feedback(&mut self, id: usize, target: usize, effect: FeedbackEffect) {
+    pub(in crate::skirmish) fn native_ability_feedback(
+        &mut self,
+        id: usize,
+        target: usize,
+        effect: FeedbackEffect,
+    ) {
         self.presentation
             .weapon_fx
             .push(super::WeaponFxEvent::AbilityFeedback(

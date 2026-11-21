@@ -71,10 +71,11 @@ impl Entity {
         painted: bool,
         frame: u64,
         extra: u32,
+        random: &mut [u32; 6],
     ) {
         if self.firing.painted_target != painted {
             self.firing.painted_target = painted;
-            self.weapon_bonus_changed(unit, frame, extra);
+            self.weapon_bonus_changed(unit, frame, extra, random);
         }
     }
 }
@@ -266,7 +267,7 @@ impl Skirmish {
                 .point_defense[module]
                 .weapon;
             self.entities[id].behaviors.point_defense[module].reload =
-                num_traits::ToPrimitive::to_i32(&(weapon.delay * 30.0).ceil())
+                i32::try_from(weapon.sample_shot_delay(&mut self.random, 1.0))
                     .expect("native point-defense shot delay");
         }
         if !self.point_target_alive(target) {

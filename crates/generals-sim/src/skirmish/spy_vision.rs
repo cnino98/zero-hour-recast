@@ -86,15 +86,23 @@ impl Skirmish {
             .behavior
             .spy_vision[ordinal]
             .duration;
-        self.spy_activation(id, ordinal, self.entities[id].owner, true);
+        self.entities[id].spy_vision.modules[ordinal].upgraded = true;
+        self.activate_spy_vision(id, ordinal, duration);
+    }
+
+    pub(in crate::skirmish) fn activate_spy_vision(
+        &mut self,
+        id: usize,
+        ordinal: usize,
+        duration: u32,
+    ) {
         let now = self.update_frame();
-        let state = &mut self.entities[id].spy_vision.modules[ordinal];
-        state.upgraded = true;
-        state.deactivate = if duration == 0 {
+        self.entities[id].spy_vision.modules[ordinal].deactivate = if duration == 0 {
             u32::MAX
         } else {
             now.wrapping_add(duration)
         };
+        self.spy_activation(id, ordinal, self.entities[id].owner, true);
         self.wake_family_update(
             id,
             "SpyVisionUpdate",

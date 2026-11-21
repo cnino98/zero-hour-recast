@@ -16,6 +16,16 @@ pub(super) fn record(
     for event in std::mem::take(&mut battle.simulation.presentation.money_deposit_events) {
         audio.money_deposit(event.owner == viewer);
     }
+    for event in std::mem::take(&mut battle.simulation.presentation.cash_bounties) {
+        show_cash(
+            commands,
+            ui,
+            (battle.generation, event.frame),
+            event.position,
+            i64::from(event.amount),
+            ([1.0, 1.0, 0.0], 255),
+        );
+    }
     for event in std::mem::take(&mut battle.simulation.presentation.deposit_events) {
         if event.visible_players & (1 << viewer) == 0 {
             continue;
@@ -28,36 +38,59 @@ pub(super) fn record(
             }
         }
         let color = super::owner_color(&battle.simulation, event.owner);
-        commands.spawn((
-            Floating {
-                color,
-                generation: battle.generation,
-                started: event.frame,
-                last_update: event.frame.saturating_sub(1),
-                frames: 0,
-                alpha: 230,
-                position: Vec3::new(position[0], position[2], -position[1]) * 0.1,
-                map_position: [position[0], position[1]],
-            },
-            Text::new(
-                ui.label("GUI:AddCash")
-                    .replacen("%d", &event.amount.to_string(), 1),
-            ),
-            TextFont {
-                font: FontSource::Handle(ui.serif_handle.clone()),
-                ..default()
-            },
-            TextColor(Color::srgba(color[0], color[1], color[2], 230.0 / 255.0)),
-            TextShadow {
-                offset: Vec2::ONE,
-                color: Color::BLACK,
-            },
-            Node {
-                position_type: PositionType::Absolute,
-                ..default()
-            },
-            FocusPolicy::Pass,
-            ZIndex(3),
-        ));
+        show_cash(
+            commands,
+            ui,
+            (battle.generation, event.frame),
+            position,
+            i64::from(event.amount),
+            (color, 230),
+        );
     }
+}
+
+fn show_cash(
+    commands: &mut Commands,
+    ui: &UiData,
+    (generation, frame): (u32, u64),
+    position: [f32; 3],
+    amount: i64,
+    (color, alpha): ([f32; 3], u8),
+) {
+    commands.spawn((
+        Floating {
+            color,
+            generation,
+            started: frame,
+            last_update: frame.saturating_sub(1),
+            frames: 0,
+            alpha,
+            position: Vec3::new(position[0], position[2], -position[1]) * 0.1,
+            map_position: [position[0], position[1]],
+        },
+        Text::new(
+            ui.label("GUI:AddCash")
+                .replacen("%d", &amount.to_string(), 1),
+        ),
+        TextFont {
+            font: FontSource::Handle(ui.serif_handle.clone()),
+            ..default()
+        },
+        TextColor(Color::srgba(
+            color[0],
+            color[1],
+            color[2],
+            f32::from(alpha) / 255.0,
+        )),
+        TextShadow {
+            offset: Vec2::ONE,
+            color: Color::BLACK,
+        },
+        Node {
+            position_type: PositionType::Absolute,
+            ..default()
+        },
+        FocusPolicy::Pass,
+        ZIndex(3),
+    ));
 }

@@ -1,7 +1,8 @@
 //! Actual installed Hacker construction, commands, income and earned veterancy.
 use crate::skirmish_verification::{
-    advance_until, construct, friendly_entity, produce_type, require,
+    advance_until, construct, construct_type, friendly_entity, produce_type, require,
 };
+use crate::strategy_verification::template;
 use generals_sim::skirmish::{Faction, Kind, Order, Skirmish};
 use std::error::Error;
 
@@ -24,7 +25,8 @@ pub fn prepare(game: &mut Skirmish) -> Result<usize, Box<dyn Error>> {
         "Hacker bypassed the Propaganda Center prerequisite",
     )?;
     construct(game, worker, Kind::Factory, 0)?;
-    construct(game, worker, Kind::TechBuilding, 0)?;
+    let propaganda = template(game, "ChinaPropagandaCenter")?;
+    construct_type(game, worker, propaganda, 0)?;
     let id = produce_type(game, barracks, index, 0)?;
     for collector in 0..game.entities.len() {
         if game.entities[collector].owner == 0

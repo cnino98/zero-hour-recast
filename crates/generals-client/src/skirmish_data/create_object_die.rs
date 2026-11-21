@@ -20,11 +20,19 @@ pub(super) fn load(
         {
             continue;
         }
+        let mut transfer_previous_health = false;
         for line in module.iter().filter(|line| line.depth == Some(1)) {
             match line.tokens[0].as_str() {
                 "CreationList" | "DeathTypes" | "VeterancyLevels" | "ExemptStatus"
                 | "RequiredStatus" => {}
-                "TransferPreviousHealth" | "TransferSelection" => {
+                "TransferPreviousHealth" => {
+                    transfer_previous_health = match scalar(line)? {
+                        value if value.eq_ignore_ascii_case("yes") => true,
+                        value if value.eq_ignore_ascii_case("no") => false,
+                        _ => return Err("invalid CreateObjectDie TransferPreviousHealth".into()),
+                    };
+                }
+                "TransferSelection" => {
                     if !scalar(line)?.eq_ignore_ascii_case("no") {
                         return Err(format!(
                             "CreateObjectDie {} requires actual first-object transfer behavior",
@@ -44,6 +52,7 @@ pub(super) fn load(
         result.push(Rules {
             conditions: super::death_callbacks::conditions(module)?,
             actions: list.map(parse_list).transpose()?.unwrap_or_default(),
+            transfer_previous_health,
         });
     }
     Ok(result)
@@ -78,6 +87,7 @@ fn parse_list(list: &Declaration) -> Result<Vec<Action>, Box<dyn Error>> {
                 name: list.name.clone(),
                 initial_force: None,
                 nuggets: vec![super::physical_ocl::nugget(module)?],
+                ordinary_nuggets: Vec::new(),
             }),
             _ => {
                 if !actions.is_empty() {
@@ -87,6 +97,7 @@ fn parse_list(list: &Declaration) -> Result<Vec<Action>, Box<dyn Error>> {
                     name: list.name.clone(),
                     initial_force: Some(super::physical_ocl::source_force(module)?),
                     nuggets: Vec::new(),
+                    ordinary_nuggets: Vec::new(),
                 })
             }
         };

@@ -18,9 +18,9 @@ use bevy::{
 use generals_assets::virtual_assets::VirtualAssets;
 use std::error::Error;
 
-struct Beam {
-    width: f32,
-    color: [f32; 3],
+pub struct Beam {
+    pub width: f32,
+    pub color: [f32; 3],
 }
 #[derive(Resource)]
 pub struct Lasers {
@@ -41,15 +41,11 @@ pub fn load(
 }
 
 impl Lasers {
-    pub(crate) fn retire_native(
-        &mut self,
-        object: usize,
-        particles: &mut crate::particles::Particles,
-    ) {
+    pub fn retire_native(&mut self, object: usize, particles: &mut crate::particles::Particles) {
         self.native.retire(object, particles);
     }
 
-    pub(crate) fn initialize_native(
+    pub fn initialize_native(
         &mut self,
         battle: &Match,
         index: usize,
@@ -86,7 +82,7 @@ impl Lasers {
     }
 }
 
-fn color(line: &generals_assets::content::ContentLine) -> Result<[f32; 4], Box<dyn Error>> {
+pub fn color(line: &generals_assets::content::ContentLine) -> Result<[f32; 4], Box<dyn Error>> {
     let mut result = [0.0; 4];
     for (index, key) in ["R", "G", "B", "A"].into_iter().enumerate() {
         let value = line
@@ -105,7 +101,7 @@ fn color(line: &generals_assets::content::ContentLine) -> Result<[f32; 4], Box<d
     Ok(result)
 }
 
-fn beam(index: u16, count: u16, widths: [f32; 2], inner: [f32; 4], outer: [f32; 4]) -> Beam {
+pub fn beam(index: u16, count: u16, widths: [f32; 2], inner: [f32; 4], outer: [f32; 4]) -> Beam {
     if count == 1 {
         return Beam {
             width: widths[0],
@@ -212,7 +208,7 @@ pub fn update(
     }
 }
 
-fn geometry(
+pub fn geometry(
     beams: &[Beam],
     points: [[f32; 3]; 2],
     camera: &Transform,

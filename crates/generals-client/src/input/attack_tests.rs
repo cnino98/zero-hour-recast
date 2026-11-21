@@ -50,25 +50,24 @@ fn original_golden() -> (Match, Mouse, usize) {
     let mouse = load(&assets, &root.join("UserData/Options.ini"), &game.catalog).unwrap();
     // The new cursor is decoded from the installed Mouse.ini/ANI data too.
     crate::attack_cursor::load(&assets).unwrap();
-    (
-        Match {
-            game_speed: 30,
-            observer_player: None,
-            observer_players: Vec::new(),
-            simulation: game,
-            selected: vec![tank],
-            logic_selection: vec![tank],
-            placing: None,
-            started: true,
-            paused: false,
-            promotions_open: false,
-            generation: 0,
-            opponent_difficulty: None,
-            opponent_faction: Faction::China,
-        },
-        mouse,
-        tank,
-    )
+    let mut battle = Match {
+        game_speed: 30,
+        observer_player: None,
+        observer_players: Vec::new(),
+        simulation: game,
+        selected: Vec::new(),
+        logic_selection: Vec::new(),
+        commands: super::commands::Queue::default(),
+        placing: None,
+        started: true,
+        paused: false,
+        promotions_open: false,
+        generation: 0,
+        opponent_difficulty: None,
+        opponent_faction: Faction::China,
+    };
+    battle.select_objects(&[tank], true);
+    (battle, mouse, tank)
 }
 
 #[ignore = "requires original game installation"]
@@ -97,6 +96,7 @@ fn original_targetable_tower_uses_player_attack_cursor_order_and_voice() {
         Some(PickTarget::Unit(target)),
         &mut mouse
     ));
+    super::commands::step(&mut battle, &mut mouse);
     assert!(matches!(battle.simulation.entities[tank].ai.order, Order::Attack(id) if id == target));
     assert!(matches!(
         mouse.voices.last().unwrap().voice(),
@@ -142,6 +142,7 @@ fn force_neutral_and_allied_objects(battle: &mut Match, mouse: &mut Mouse, tank:
         assert_eq!(crate::attack_cursor::context(battle, mouse), Some(13));
         mouse.set_alternate_mouse(false);
         left_click(battle, None, Some(PickTarget::Unit(target)), true, mouse);
+        super::commands::step(battle, mouse);
         assert!(
             matches!(battle.simulation.entities[tank].ai.order, Order::Attack(id) if id == target)
         );
@@ -161,6 +162,7 @@ fn force_neutral_and_allied_objects(battle: &mut Match, mouse: &mut Mouse, tank:
         Order::Attack(_)
     ));
     right_click(battle, mouse, Some(PickTarget::Unit(allied)), None);
+    super::commands::step(battle, mouse);
     assert!(matches!(battle.simulation.entities[tank].ai.order, Order::Attack(id) if id == allied));
     force_ground_and_modifier_reset(battle, mouse, tank);
 }
@@ -181,6 +183,7 @@ fn force_ground_and_modifier_reset(battle: &mut Match, mouse: &mut Mouse, tank: 
         None,
         mouse
     ));
+    super::commands::step(battle, mouse);
     assert!(!matches!(
         battle.simulation.entities[tank].ai.order,
         Order::Move(_)
@@ -214,6 +217,7 @@ fn first_selected_force_gate(battle: &mut Match, mouse: &mut Mouse, tank: usize,
     // attack hint for its invalid shot at a tower and sends no attack command.
     assert_eq!(crate::attack_cursor::context(battle, mouse), Some(3));
     left_click(battle, None, Some(PickTarget::Unit(target)), false, mouse);
+    super::commands::step(battle, mouse);
     assert!(!matches!(
         battle.simulation.entities[tank].ai.order,
         Order::Attack(_)
@@ -222,6 +226,7 @@ fn first_selected_force_gate(battle: &mut Match, mouse: &mut Mouse, tank: usize,
     battle.select_objects(&[tank, builder], true);
     assert_eq!(crate::attack_cursor::context(battle, mouse), Some(13));
     left_click(battle, None, Some(PickTarget::Unit(target)), false, mouse);
+    super::commands::step(battle, mouse);
     assert!(matches!(battle.simulation.entities[tank].ai.order, Order::Attack(id) if id == target));
     assert!(!matches!(
         battle.simulation.entities[builder].ai.order,

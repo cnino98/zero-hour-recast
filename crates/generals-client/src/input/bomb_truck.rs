@@ -22,7 +22,7 @@ pub(super) fn issue_disguise(battle: &mut Match, mouse: &mut Mouse, target: usiz
     }
     let response = VoiceRequest::special_power(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         &["SPECIAL_DISGUISE_AS_VEHICLE"],
     );
     let mut issued = false;
@@ -91,7 +91,7 @@ pub fn research_payload(
     };
     mouse.voices.push(VoiceRequest::new(
         &battle.simulation,
-        &battle.selected,
+        battle.command_drawables(),
         voice,
         false,
     ));

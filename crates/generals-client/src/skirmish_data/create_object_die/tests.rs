@@ -182,7 +182,7 @@ fn installed_drone_mixed_ocl_preserves_object_then_debris_birth_order() {
 }
 
 #[test]
-fn native_nullable_lists_and_unsupported_transfer_are_explicit() {
+fn native_nullable_lists_and_health_transfer_flag_are_explicit() {
     let parse = |fields: &str| {
         let file = content::scan(Asset {
             path: "native.ini".into(),
@@ -195,6 +195,9 @@ fn native_nullable_lists_and_unsupported_transfer_are_explicit() {
     };
     assert!(parse("").unwrap()[0].actions.is_empty());
     assert!(parse("CreationList=NONE").unwrap()[0].actions.is_empty());
-    assert!(parse("TransferPreviousHealth=Yes").is_err());
+    assert!(!parse("").unwrap()[0].transfer_previous_health);
+    assert!(parse("TransferPreviousHealth=Yes").unwrap()[0].transfer_previous_health);
+    assert!(!parse("TransferPreviousHealth=No").unwrap()[0].transfer_previous_health);
+    assert!(parse("TransferPreviousHealth=Maybe").is_err());
     assert!(parse("TransferSelection=Yes").is_err());
 }
